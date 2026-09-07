@@ -233,7 +233,7 @@ const DEFAULT_BUDGETS = ['房貸 / 房租','餐飲','交通','娛樂','其他'];
 function emptyState(){
   return {
     version:2,
-    assets:[], liabilities:[],
+    assets:[], liabilities:[], trades:[],
     budgets: DEFAULT_BUDGETS.map(n => ({ id:uid(), name:n, budget:0 })),
     transactions:[], netWorthHistory:[],
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
@@ -247,6 +247,17 @@ function normalize(raw){
   s.assets = arr(raw.assets).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
   s.liabilities = arr(raw.liabilities).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
+  s.trades = arr(raw.trades).map(t => ({
+    id: t.id || uid(),
+    date: String(t.date || todayISO()).slice(0, 10),
+    symbol: String(t.symbol || '00631L'),
+    action: t.action === 'sell' ? 'sell' : 'buy',
+    shares: num(t.shares),
+    price: num(t.price),
+    fee: num(t.fee),
+    source: t.source === 'loan' ? 'loan' : 'cash',
+    note: String(t.note || '')
+  }));
   s.transactions = arr(raw.transactions).map(t => ({
     id:t.id||uid(), date:String(t.date||todayISO()).slice(0,10),
     cat:String(t.cat||'其他'), desc:String(t.desc||''), amount:num(t.amount)
@@ -658,11 +669,90 @@ function maybeAutoQuote(){
   if (Date.now() - last > 3600000) fetchQuotes(false);   // 一小時內不重覆抓
 }
 
+/* ===================== 部位損益 =====================
+   買賣紀錄用加權平均成本法。整體損益要扣掉借款的累積利息,
+   否則槓桿部位看起來永遠比實際好。 */
+const SYMBOLS = [
+  { id:'00631L', name:'元大台灣50正2' },
+  { id:'00675L', name:'富邦臺灣加權正2' }
+];
+const symbolName = id => (SYMBOLS.find(s => s.id === id) || {}).name || id;
+function symbolPrice(sym){
+  const L = state.leverage;
+  return sym === '00631L' ? L.price631L : sym === '00675L' ? L.price675L : 0;
+}
+const hasTrades = () => state.trades.length > 0;
+function heldShares(sym){
+  let n = 0;
+  state.trades.forEach(t => { if (t.symbol === sym) n += (t.action === 'sell' ? -t.shares : t.shares); });
+  return Math.max(0, n);
+}
+/* 手續費 0.1425%(最低 20 元),賣出另加 0.1% 證交稅 */
+function defaultFee(action, gross){
+  if (!(gross > 0)) return 0;
+  const broker = Math.max(20, gross * 0.001425);
+  return Math.round(action === 'sell' ? broker + gross * 0.001 : broker);
+}
+/* 已動用的房貸,從動用日算到今天的累積利息 */
+function accruedInterest(){
+  const L = state.leverage;
+  let total = 0;
+  L.tranches.forEach(t => {
+    if (t.useDate) total += t.amount * (L.annualRate / 100) * (daysSince(t.useDate) / 365.25);
+  });
+  if (L.core.useDate) total += L.core.amount * (L.annualRate / 100) * (daysSince(L.core.useDate) / 365.25);
+  return total;
+}
+function computePosition(){
+  const lots = {};
+  let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0;
+  const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  sorted.forEach(t => {
+    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
+    const gross = t.shares * t.price;
+    fees += t.fee;
+    if (t.action === 'sell'){
+      const avg = lot.shares > 0 ? lot.cost / lot.shares : 0;
+      const qty = Math.min(t.shares, lot.shares);
+      const costOut = avg * qty;
+      realized += (gross - t.fee) - costOut;
+      sellNet += gross - t.fee;
+      lot.shares -= qty;
+      lot.cost -= costOut;
+    }else{
+      lot.shares += t.shares;
+      lot.cost += gross + t.fee;
+      if (t.source === 'loan') buyLoan += gross + t.fee; else buyCash += gross + t.fee;
+    }
+  });
+  let marketValue = 0, remainCost = 0;
+  Object.keys(lots).forEach(sym => {
+    marketValue += lots[sym].shares * symbolPrice(sym);
+    remainCost += lots[sym].cost;
+  });
+  const unrealized = marketValue - remainCost;
+  const interest = accruedInterest();
+  const total = unrealized + realized - interest;
+  const invested = buyCash + buyLoan;
+  const years = sorted.length ? Math.max(daysSince(sorted[0].date) / 365.25, 0) : 0;
+  return {
+    lots, buyCash, buyLoan, invested, sellNet, realized, unrealized, interest, total,
+    marketValue, remainCost, fees, years,
+    hasData: sorted.length > 0,
+    returnOnCash: buyCash > 0 ? total / buyCash * 100 : 0,
+    returnOnAll: invested > 0 ? total / invested * 100 : 0,
+    annualized: (invested > 0 && years > 0.08) ? (total / invested * 100) / years : null
+  };
+}
+
 /* ===================== 分頁 ===================== */
 const TAB_TITLES = { overview:'總覽', budget:'預算', assets:'資產', leverage:'槓桿', ledger:'記帳' };
 let currentTab = 'overview';
 let viewMonth = thisMonth();
 let editingTx = null;
+let editingTrade = null;
+let tradeError = '';
+let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', fee:'', note:'' };
 let pendingConfirm = null;   // iframe 內 confirm() 可能被擋,改用頁面內二次確認
 let dataMsg = '';
 let draftError = '';
@@ -692,6 +782,8 @@ function renderAll(){
 function switchTab(tab){
   currentTab = tab;
   editingTx = null;
+  editingTrade = null;
+  tradeError = '';
   pendingConfirm = null;
   draftError = '';
   dataMsg = '';
@@ -790,6 +882,22 @@ function renderOverview(){
           <button class="xbtn" data-act="del-hist" data-id="${h.id}" aria-label="刪除">✕</button>
         </div>`).join('')}</div>` : ''}
     </div>
+
+    ${(() => {
+      const p = computePosition();
+      if (!p.hasData) return '';
+      const cls = p.total >= 0 ? 'pos' : 'neg';
+      const sign = (p.total >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(p.total));
+      return `
+      <div class="card">
+        <h3>投資部位</h3>
+        <div class="big-num ${cls}">${sign}</div>
+        <div class="big-sub">整體損益(已扣借款利息)${p.buyCash > 0 ? ' · 自有資金 ' + fmtPct(p.returnOnCash) : ''}</div>
+        <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
+        <div class="row"><span class="label">投入成本</span><span class="val">NT$ ${fmt(p.invested)}(自有 ${fmt(p.buyCash)} + 房貸 ${fmt(p.buyLoan)})</span></div>
+        <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
+      </div>`;
+    })()}
 
     <div class="card">
       <h3>${esc(monthLabel(viewMonth))}收支</h3>
@@ -1012,8 +1120,11 @@ function renderLedger(){
 /* ===================== 槓桿 ===================== */
 function computeLeverage(){
   const L = state.leverage;
-  const value675L = L.shares675L * L.price675L;
-  const value631L = L.shares631L * L.price631L;
+  // 有買賣紀錄就以紀錄為準,否則用手填的股數
+  const sh675 = hasTrades() ? heldShares('00675L') : L.shares675L;
+  const sh631 = hasTrades() ? heldShares('00631L') : L.shares631L;
+  const value675L = sh675 * L.price675L;
+  const value631L = sh631 * L.price631L;
   const totalValue = value675L + value631L;
 
   const tranches = L.tranches.map(t => {
@@ -1037,7 +1148,7 @@ function computeLeverage(){
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
-  return { value675L, value631L, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
+  return { value675L, value631L, sh675, sh631, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
            exitThreshold, exitReached, anyUsed, positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
@@ -1070,19 +1181,124 @@ function syncHighInput(){
   if (el && document.activeElement !== el) el.value = state.leverage.historicalHighValue || '';
 }
 
+function renderPnL(){
+  const p = computePosition();
+  if (!p.hasData){
+    return `
+      <div class="card">
+        <h3>部位損益</h3>
+        <div class="empty">還沒有買賣紀錄,所以算不出賺賠。<br>在下面「買賣紀錄」記下每次進場,這裡就會顯示成本與損益。</div>
+      </div>`;
+  }
+  const sign = n => (n >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(n));
+  const cls = n => n >= 0 ? 'pos' : 'neg';
+  return `
+    <div class="card">
+      <h3>部位損益</h3>
+      <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
+      <div class="big-sub">扣掉借款利息後的整體損益${p.buyCash > 0 ? ' · 自有資金報酬率 ' + fmtPct(p.returnOnCash) : ''}</div>
+      <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
+      <div class="row"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
+      <div class="row"><span class="label">未實現損益</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
+      ${p.realized ? `<div class="row"><span class="label">已實現損益</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
+      <div class="row"><span class="label">累積借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
+      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
+        <span class="label" style="font-weight:700; color:var(--text);">整體損益</span>
+        <span class="val ${cls(p.total)}" style="font-weight:800;">${sign(p.total)}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>投入的錢</h3>
+      <div class="row"><span class="label">自有資金(薪水 / 獎金)</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
+      <div class="row"><span class="label">房貸借款</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">合計投入</span><span class="val" style="font-weight:800;">NT$ ${fmt(p.invested)}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${p.invested ? (p.buyCash / p.invested * 100).toFixed(1) : 0}%"></div></div>
+      <div class="muted">藍色是自有資金佔比 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</div>
+      <div class="row" style="margin-top:10px;"><span class="label">對自有資金報酬率</span><span class="val ${cls(p.total)}">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
+      <div class="row"><span class="label">對總投入報酬率</span><span class="val ${cls(p.total)}">${p.invested > 0 ? fmtPct(p.returnOnAll) : '—'}</span></div>
+      ${p.annualized !== null ? `<div class="row"><span class="label">粗估年化(${p.years.toFixed(1)} 年)</span><span class="val ${cls(p.annualized)}">${fmtPct(p.annualized)}</span></div>` : ''}
+      <div class="notice">槓桿的意義就在這兩個報酬率的差距:借來的錢放大了自有資金的成敗,漲的時候好看,跌的時候一樣被放大。</div>
+    </div>`;
+}
+
+function renderTrades(){
+  const trades = state.trades.slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  const d = tradeDraft;
+  const gross = num(d.shares) * num(d.price);
+  return `
+    <div class="card">
+      <h3>記一筆買賣</h3>
+      <div class="seg">
+        ${SYMBOLS.map(sy => `<button class="seg-btn ${d.symbol === sy.id ? 'on' : ''}" data-act="draft-symbol" data-v="${sy.id}">${sy.id}</button>`).join('')}
+      </div>
+      <div class="seg" style="margin-top:8px;">
+        <button class="seg-btn ${d.action === 'buy' ? 'on' : ''}" data-act="draft-action" data-v="buy">買進</button>
+        <button class="seg-btn ${d.action === 'sell' ? 'on' : ''}" data-act="draft-action" data-v="sell">賣出</button>
+      </div>
+      ${d.action === 'buy' ? `
+      <div class="seg" style="margin-top:8px;">
+        <button class="seg-btn ${d.source === 'cash' ? 'on' : ''}" data-act="draft-source" data-v="cash">自有資金</button>
+        <button class="seg-btn ${d.source === 'loan' ? 'on' : ''}" data-act="draft-source" data-v="loan">房貸借款</button>
+      </div>` : ''}
+      <div class="grid2" style="margin-top:9px;">
+        <div class="field"><label>日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
+        <div class="field"><label>股數</label><input type="number" inputmode="decimal" data-k="pd-shares" value="${esc(d.shares)}" placeholder="0"></div>
+        <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pd-price" value="${esc(d.price)}" placeholder="${symbolPrice(d.symbol) || '0'}"></div>
+        <div class="field"><label>手續費(可空)</label><input type="number" inputmode="decimal" data-k="pd-fee" value="${esc(d.fee)}" placeholder="${gross ? fmt(defaultFee(d.action, gross)) : '自動'}"></div>
+      </div>
+      <div class="field"><label>備註(可空)</label><input data-k="pd-note" value="${esc(d.note)}" placeholder="例如:年終獎金加碼"></div>
+      ${gross ? `<div class="muted" style="margin-bottom:8px;">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>` : ''}
+      <button class="btn solid" data-act="add-trade">新增紀錄</button>
+      ${tradeError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(tradeError)}</div>` : ''}
+    </div>
+
+    <div class="card">
+      <h3>買賣紀錄</h3>
+      ${trades.length ? trades.map(t => t.id === editingTrade ? `
+        <div class="tx-edit">
+          <div class="grid2">
+            <div class="field"><label>日期</label><input type="date" data-k="pt-date-${t.id}" value="${esc(t.date)}"></div>
+            <div class="field"><label>股數</label><input type="number" inputmode="decimal" data-k="pt-shares-${t.id}" value="${t.shares || ''}"></div>
+            <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pt-price-${t.id}" value="${t.price || ''}"></div>
+            <div class="field"><label>手續費</label><input type="number" inputmode="decimal" data-k="pt-fee-${t.id}" value="${t.fee || ''}"></div>
+          </div>
+          <div class="field"><label>備註</label><input data-k="pt-note-${t.id}" value="${esc(t.note)}"></div>
+          <div class="btn-row">
+            <button class="btn quiet" data-act="close-trade">完成</button>
+            <button class="btn danger" data-act="del-trade" data-id="${t.id}">${pendingConfirm === 'del-trade:' + t.id ? '⚠️ 再按一次刪除' : '刪除這筆'}</button>
+          </div>
+        </div>` : `
+        <div class="tx" data-act="edit-trade" data-id="${t.id}">
+          <div>
+            <div class="tx-cat">${t.action === 'sell' ? '賣出' : '買進'} ${esc(t.symbol)}
+              ${t.action === 'buy' ? `<span class="badge ${t.source === 'loan' ? 'amber' : 'gray'}" style="margin-left:4px;">${t.source === 'loan' ? '房貸' : '自有'}</span>` : ''}</div>
+            <div class="tx-desc">${esc(t.date)} · ${fmt(t.shares)} 股 @ ${t.price}${t.note ? ' · ' + esc(t.note) : ''}</div>
+          </div>
+          <div class="tx-amt ${t.action === 'sell' ? 'income' : ''}">${t.action === 'sell' ? '+' : '−'}${fmt(t.shares * t.price + (t.action === 'sell' ? -t.fee : t.fee))}</div>
+        </div>`).join('') : `<div class="empty">還沒有紀錄。<br>每次用薪水、獎金或房貸進場都記一筆,損益就會自動算。</div>`}
+      ${trades.length ? `<div class="notice">點任一筆可以修改或刪除。持股股數會由這些紀錄自動加總。</div>` : ''}
+    </div>`;
+}
+
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
   const usedPct = L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0;
   return `
+    ${renderPnL()}
+    ${renderTrades()}
     <div class="card">
       <h3>持股市值</h3>
       <div class="grid2">
-        <div class="field"><label>00675L 股數</label><input type="number" inputmode="decimal" data-k="lev-shares675L" value="${L.shares675L || ''}"></div>
+        <div class="field"><label>00675L 股數${hasTrades() ? '(自動)' : ''}</label>
+          <input type="number" inputmode="decimal" data-k="lev-shares675L" value="${hasTrades() ? r.sh675 : (L.shares675L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
         <div class="field"><label>00675L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price675L" value="${L.price675L || ''}"></div>
-        <div class="field"><label>00631L 股數</label><input type="number" inputmode="decimal" data-k="lev-shares631L" value="${L.shares631L || ''}"></div>
+        <div class="field"><label>00631L 股數${hasTrades() ? '(自動)' : ''}</label>
+          <input type="number" inputmode="decimal" data-k="lev-shares631L" value="${hasTrades() ? r.sh631 : (L.shares631L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
         <div class="field"><label>00631L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price631L" value="${L.price631L || ''}"></div>
       </div>
+      ${hasTrades() ? `<div class="muted" style="margin-bottom:4px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
       <div class="row"><span class="label">00675L 市值</span><span class="val" id="out-value675L">NT$ ${fmt(r.value675L)}</span></div>
       <div class="row"><span class="label">00631L 市值</span><span class="val" id="out-value631L">NT$ ${fmt(r.value631L)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
@@ -1252,7 +1468,23 @@ function onField(key, el){
     if (rest === 'amt') state.leverage.core.amount = num(el.value);
     else state.leverage.core.useDate = el.value;
   }
-  else if (kind === 'd'){ draft[rest] = el.value; return; }   // 草稿不入庫
+  else if (kind === 'd'){ draft[rest] = el.value; return; }        // 草稿不入庫
+  else if (kind === 'pd'){                                          // 買賣草稿
+    tradeDraft[rest] = el.value;
+    if (rest === 'shares' || rest === 'price') renderAll();          // 更新成交金額預估
+    return;
+  }
+  else if (kind === 'pt'){                                          // 修改既有買賣紀錄
+    const cut = rest.indexOf('-');
+    const what = rest.slice(0, cut), tid = rest.slice(cut + 1);
+    const t = findById(state.trades, tid);
+    if (t){
+      if (what === 'date') t.date = el.value || todayISO();
+      else if (what === 'note') t.note = el.value;
+      else t[what] = num(el.value);
+    }
+    structural = true;
+  }
   else if (kind === 'tdate' || kind === 'tamt' || kind === 'tcat' || kind === 'tdesc'){
     const t = findById(state.transactions, rest);
     if (t){
@@ -1315,6 +1547,12 @@ function sampleData(){
   s.leverage.shares675L = 20000; s.leverage.price675L = 42.5;
   s.leverage.shares631L = 15000; s.leverage.price631L = 128.6;
   s.leverage.historicalHighValue = 2950000;
+  const back = n => shiftMonth(m, -n) + '-05';
+  s.trades = [
+    { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  fee:445, source:'cash', note:'定期投入' },
+    { id:uid(), date:back(3), symbol:'00675L', action:'buy', shares:600,   price:268.5, fee:230, source:'cash', note:'年終獎金加碼' },
+    { id:uid(), date:back(1), symbol:'00631L', action:'buy', shares:10000, price:34.8,  fee:496, source:'loan', note:'第一桶金動用' }
+  ];
   return s;
 }
 
@@ -1386,7 +1624,7 @@ function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
   let rerender = true;
-  if (!['load-sample', 'clear-all', 'del-tx', 'restore'].includes(act)) pendingConfirm = null;
+  if (!['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore'].includes(act)) pendingConfirm = null;
   if (act !== 'export' && act !== 'import' && act !== 'copy-json') dataMsg = '';
 
   switch (act){
@@ -1412,6 +1650,36 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'draft-symbol': tradeDraft.symbol = el.dataset.v; break;
+    case 'draft-action': tradeDraft.action = el.dataset.v; break;
+    case 'draft-source': tradeDraft.source = el.dataset.v; break;
+    case 'add-trade': {
+      const shares = Math.abs(num(tradeDraft.shares));
+      const price = Math.abs(num(tradeDraft.price));
+      if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
+      const gross = shares * price;
+      state.trades.push({
+        id: uid(),
+        date: tradeDraft.date || todayISO(),
+        symbol: tradeDraft.symbol,
+        action: tradeDraft.action,
+        shares, price,
+        fee: tradeDraft.fee === '' ? defaultFee(tradeDraft.action, gross) : Math.abs(num(tradeDraft.fee)),
+        source: tradeDraft.action === 'sell' ? 'cash' : tradeDraft.source,
+        note: tradeDraft.note.trim()
+      });
+      tradeError = '';
+      tradeDraft = { date: tradeDraft.date, symbol: tradeDraft.symbol, action: tradeDraft.action,
+                     source: tradeDraft.source, shares:'', price:'', fee:'', note:'' };
+      break;
+    }
+    case 'edit-trade': editingTrade = id; break;
+    case 'close-trade': editingTrade = null; break;
+    case 'del-trade':
+      if (needsConfirm('del-trade:' + id)) return;
+      state.trades = state.trades.filter(t => t.id !== id);
+      editingTrade = null;
+      break;
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'show-backups':
       if (backupOpen){ backupOpen = false; break; }
@@ -1466,7 +1734,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (act !== 'month' && act !== 'edit-tx' && act !== 'close-tx') scheduleSave();
+  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 
@@ -1493,6 +1761,8 @@ function init(){
     if (e.target.dataset && e.target.dataset.k && currentTab === 'leverage'){
       if (maybeUpdateHigh()) syncHighInput();
       refreshLeverage();
+      // 損益卡不是靠 id 局部更新的,沒有游標停在欄位上時整頁重畫一次
+      if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
     }
   });
   content.addEventListener('click', e => {
@@ -1503,7 +1773,7 @@ function init(){
     setTimeout(() => {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
       if (pendingRemote){ const d2 = pendingRemote; pendingRemote = null; applyRemote(d2); }
-      else if (editingTx) renderAll();
+      else if (editingTx || editingTrade) renderAll();
     }, 60);
   });
   document.querySelectorAll('.tab-btn').forEach(btn => {
