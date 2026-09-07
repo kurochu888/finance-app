@@ -187,6 +187,12 @@
     border:1px solid currentColor; background:none; color:inherit;
     font-size:12px; font-weight:700; font-family:inherit;
   }
+  .sect{
+    font-size:11px; font-weight:700; letter-spacing:.08em; color:var(--sub);
+    margin:20px 4px 8px; display:flex; align-items:center; gap:8px;
+  }
+  .sect::after{content:''; flex:1; height:1px; background:var(--line);}
+  .sect:first-child{margin-top:2px;}
   .legend-dot{width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:-1px;}
   .empty{font-size:13px; color:var(--sub); text-align:center; padding:14px 6px; line-height:1.7;}
 
@@ -1348,37 +1354,38 @@ function renderRisk(){
       <div class="big-sub">實質市場曝險 ÷(部位淨值 + 房貸總額度)</div>
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
       <div class="row" style="margin-top:10px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
-      <div class="row"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
+      <div class="row"><span class="label">實質市場曝險(正2 ×2)</span><span class="val" style="font-weight:700;">NT$ ${fmt(k.exposure)}</span></div>
       <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
         <span class="label">部位淨值(自己的錢)</span><span class="val">NT$ ${fmt(k.equity)}</span></div>
       <div class="row"><span class="label">＋ 房貸總額度</span><span class="val">NT$ ${fmt(k.creditLimit)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">分母合計</span><span class="val" style="font-weight:800;">NT$ ${fmt(k.capacity)}</span></div>
       <div class="muted">分母用部位淨值,不用部位市值 — 已借出的錢同時在部位裡也在額度裡,算兩次會讓比例看起來比實際安全。</div>
       <div class="muted" style="margin-top:4px;">大盤每動 1%,部位市值大約跟著動 2%。額度用得越多,分母越接近你自己的錢,比例會誠實地升高。</div>
-    </div>
-
-    <div class="card">
-      <h3>部位組成</h3>
-      <div class="big-num">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</div>
-      <div class="big-sub">部位槓桿倍數(部位市值 ÷ 自己的錢)</div>
-      <div class="row"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
+      <div class="row" style="border-top:1px solid var(--line); padding-top:10px; margin-top:12px;">
+        <span class="label">槓桿倍數(市值 ÷ 自己的錢)</span>
+        <span class="val" style="font-weight:700;">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">部位淨值(自己的錢)</span><span class="val ${k.equity >= 0 ? '' : 'neg'}" style="font-weight:800;">NT$ ${fmt(k.equity)}</span></div>
-    </div>
-
-    ${pnlChart ? `
-    <div class="card">
-      <h3>整體損益走勢</h3>
-      ${pnlChart}
-      <div class="muted">每月第一次開啟 app 時自動記錄。虛線是損益兩平。</div>
-    </div>` : ''}
-
     ${posChart ? `
-    <div class="card">
-      <h3>部位市值與借款</h3>
-      ${posChart}
-      <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。</div>
-    </div>` : ''}`;
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <h3 style="margin-bottom:6px;">部位市值與借款</h3>
+        ${posChart}
+        <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。</div>
+      </div>` : ''}
+    </div>`;
+}
+
+/* 損益走勢圖給部位損益卡用 */
+function pnlChartBlock(){
+  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
+  const chart = lineChart(hist.map(h => shortMonth(h.m)), [
+    { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
+  ], { zero:true, label:'整體損益走勢', height:120,
+       fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
+  return chart ? `
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      ${chart}
+      <div class="muted">每月第一次開啟時自動記錄。虛線是損益兩平。</div>
+    </div>` : '';
 }
 
 function renderPnL(){
@@ -1406,6 +1413,7 @@ function renderPnL(){
         <span class="label" style="font-weight:700; color:var(--text);">整體損益</span>
         <span class="val ${cls(p.total)}" style="font-weight:800;">${sign(p.total)}</span>
       </div>
+      ${pnlChartBlock()}
     </div>
 
     <div class="card">
@@ -1486,32 +1494,27 @@ function renderLeverage(){
   const r = computeLeverage();
   const usedPct = L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0;
   return `
+    <div class="sect">現在賺賠多少</div>
+
     ${renderPnL()}
+
+    <div class="sect">承擔多少風險</div>
+
     ${renderRisk()}
-    ${renderTrades()}
-    <div class="card">
-      <h3>持股市值</h3>
-      <div class="grid2">
-        <div class="field"><label>00675L 股數${hasTrades() ? '(自動)' : ''}</label>
-          <input type="number" inputmode="decimal" data-k="lev-shares675L" value="${hasTrades() ? r.sh675 : (L.shares675L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
-        <div class="field"><label>00675L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price675L" value="${L.price675L || ''}"></div>
-        <div class="field"><label>00631L 股數${hasTrades() ? '(自動)' : ''}</label>
-          <input type="number" inputmode="decimal" data-k="lev-shares631L" value="${hasTrades() ? r.sh631 : (L.shares631L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
-        <div class="field"><label>00631L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price631L" value="${L.price631L || ''}"></div>
-      </div>
-      ${hasTrades() ? `<div class="muted" style="margin-bottom:4px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
-      <div class="row"><span class="label">00675L 市值</span><span class="val" id="out-value675L">NT$ ${fmt(r.value675L)}</span></div>
-      <div class="row"><span class="label">00631L 市值</span><span class="val" id="out-value631L">NT$ ${fmt(r.value631L)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
-      ${QUOTES_ENABLED ? `
-        <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
-        <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
-          : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。股數請自己填。'
-          : '可自動帶入 00631L、00675L 收盤價與大盤點位。股數請自己填。'}</div>` : ''}
-    </div>
 
     <div class="card">
-      <h3>房貸動用觸發點</h3>
+      <h3>壓力測試</h3>
+      <div class="field"><label>大盤跌幅(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
+      <div class="row"><span class="label">正2部位跌幅</span><span class="val" id="out-positionDeclinePct">${fmtPct(-r.positionDeclinePct)}</span></div>
+      <div class="row"><span class="label">虧損金額</span><span class="val neg" id="out-lossAmount">NT$ ${fmt(r.lossAmount)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">剩餘淨資產</span><span class="val" id="out-remainingNetWorth" style="font-weight:800;">NT$ ${fmt(r.remainingNetWorth)}</span></div>
+      <div class="notice">剩餘淨資產用「資產」分頁的淨資產減去虧損。此為簡化估算,未計入正2 ETF 的波動耗損與追蹤誤差。</div>
+    </div>
+
+    <div class="sect">加碼與減碼訊號</div>
+
+    <div class="card">
+      <h3>加碼訊號:動用觸發點</h3>
       <div class="grid2">
         <div class="field"><label>大盤歷史最高點</label><input type="number" inputmode="decimal" data-k="lev-marketHigh" value="${L.marketHigh || ''}"></div>
         <div class="field"><label>大盤即時點位</label><input type="number" inputmode="decimal" data-k="lev-marketCurrent" value="${L.marketCurrent || ''}"></div>
@@ -1542,7 +1545,7 @@ function renderLeverage(){
     </div>
 
     <div class="card">
-      <h3>已動用金額與利息</h3>
+      <h3>借款與利息</h3>
       <div class="row"><span class="label">已動用金額</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
       <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
       <div class="grid2" style="margin-top:8px;">
@@ -1558,7 +1561,7 @@ function renderLeverage(){
     </div>
 
     <div class="card">
-      <h3>撤退門檻</h3>
+      <h3>減碼訊號:撤退門檻</h3>
       <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
       <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
       <div class="muted" style="margin-top:6px;">${!L.autoHigh
@@ -1572,20 +1575,36 @@ function renderLeverage(){
       <div class="notice">要有桶金填了「動用日期」才會判斷撤退 —— 沒借錢就沒有槓桿要撤。門檻 = 歷史最高市值 + 已動用金額每年 8% 累加;${esc(L.core.label)}視為長期持有,不列入。</div>
     </div>
 
+    <div class="sect">紀錄與設定</div>
+
+    ${renderTrades()}
+
     <div class="card">
-      <h3>壓力測試</h3>
-      <div class="field"><label>大盤跌幅(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
-      <div class="row"><span class="label">正2部位跌幅</span><span class="val" id="out-positionDeclinePct">${fmtPct(-r.positionDeclinePct)}</span></div>
-      <div class="row"><span class="label">虧損金額</span><span class="val neg" id="out-lossAmount">NT$ ${fmt(r.lossAmount)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">剩餘淨資產</span><span class="val" id="out-remainingNetWorth" style="font-weight:800;">NT$ ${fmt(r.remainingNetWorth)}</span></div>
-      <div class="notice">剩餘淨資產用「資產」分頁的淨資產減去虧損。此為簡化估算,未計入正2 ETF 的波動耗損與追蹤誤差。</div>
+      <h3>持股與報價</h3>
+      <div class="grid2">
+        <div class="field"><label>00675L 股數${hasTrades() ? '(自動)' : ''}</label>
+          <input type="number" inputmode="decimal" data-k="lev-shares675L" value="${hasTrades() ? r.sh675 : (L.shares675L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
+        <div class="field"><label>00675L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price675L" value="${L.price675L || ''}"></div>
+        <div class="field"><label>00631L 股數${hasTrades() ? '(自動)' : ''}</label>
+          <input type="number" inputmode="decimal" data-k="lev-shares631L" value="${hasTrades() ? r.sh631 : (L.shares631L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
+        <div class="field"><label>00631L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price631L" value="${L.price631L || ''}"></div>
+      </div>
+      ${hasTrades() ? `<div class="muted" style="margin-bottom:4px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
+      <div class="row"><span class="label">00675L 市值</span><span class="val" id="out-value675L">NT$ ${fmt(r.value675L)}</span></div>
+      <div class="row"><span class="label">00631L 市值</span><span class="val" id="out-value631L">NT$ ${fmt(r.value631L)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
+      ${QUOTES_ENABLED ? `
+        <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
+        <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
+          : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。股數請自己填。'
+          : '可自動帶入 00631L、00675L 收盤價與大盤點位。股數請自己填。'}</div>` : ''}
     </div>
 
     <div class="notice">
       用房屋擔保額度做槓桿投資,會把投資虧損直接連到房子與每月現金流。以上都是簡化試算,不構成投資或貸款建議,實際動用前請與銀行確認條件。
-    </div>`;
+    </div>
+  `;
 }
-
 function refreshLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
