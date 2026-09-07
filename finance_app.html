@@ -220,7 +220,6 @@
   <header class="topbar">
     <nav class="toptabs">
       <button class="top-tab active" data-tab="overview">總覽</button>
-      <button class="top-tab" data-tab="budget">預算</button>
       <button class="top-tab" data-tab="assets">資產</button>
       <button class="top-tab" data-tab="leverage">槓桿</button>
       <button class="top-tab" data-tab="ledger">記帳</button>
@@ -231,7 +230,6 @@
   <div class="storage-status" id="storageStatus"></div>
   <nav class="tabbar">
     <button class="tab-btn active" data-tab="overview"><span class="ic">📊</span><span>總覽</span></button>
-    <button class="tab-btn" data-tab="budget"><span class="ic">💰</span><span>預算</span></button>
     <button class="tab-btn" data-tab="assets"><span class="ic">🏦</span><span>資產</span></button>
     <button class="tab-btn" data-tab="leverage"><span class="ic">⚡</span><span>槓桿</span></button>
     <button class="tab-btn" data-tab="ledger"><span class="ic">📒</span><span>記帳</span></button>
@@ -282,7 +280,8 @@ const DEFAULT_LEVERAGE = {
   ],
   core:{ label:'長期投資部位', amount:2000000, useDate:'' }
 };
-const DEFAULT_BUDGETS = ['房貸 / 房租','餐飲','交通','娛樂','其他'];
+/* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
+const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
 const DEFAULT_INSTRUMENTS = [
   { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true },
   { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true }
@@ -293,7 +292,7 @@ function emptyState(){
     version:2,
     assets:[], liabilities:[], trades:[],
     instruments: JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS)),
-    budgets: DEFAULT_BUDGETS.map(n => ({ id:uid(), name:n, budget:0 })),
+    budgets: DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 })),   // 類別清單
     transactions:[], netWorthHistory:[],
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
   };
@@ -305,6 +304,7 @@ function normalize(raw){
   const arr = v => Array.isArray(v) ? v : [];
   s.assets = arr(raw.assets).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
   s.liabilities = arr(raw.liabilities).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
+  // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
   if (Array.isArray(raw.instruments) && raw.instruments.length){
     s.instruments = raw.instruments.map(x => ({
@@ -671,7 +671,7 @@ function spentByCat(m){
   txOfMonth(m).filter(t => t.amount < 0).forEach(t => { map[t.cat] = (map[t.cat] || 0) + (-t.amount); });
   return map;
 }
-/* 預算類別排前面 —— 選這些,預算頁的「已花費」才對得上 */
+/* 預設類別排前面,再接上交易紀錄裡用過的 */
 function knownCats(){
   const list = [];
   const seen = new Set();
@@ -979,7 +979,6 @@ function renderAll(){
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
-  else if (currentTab === 'budget') c.innerHTML = renderBudget();
   else if (currentTab === 'assets') c.innerHTML = renderAssets();
   else if (currentTab === 'ledger') c.innerHTML = renderLedger();
   else c.innerHTML = renderLeverage();
@@ -1069,8 +1068,8 @@ function renderOverview(){
     <div class="card">
       <h3>開始使用</h3>
       <div class="muted" style="line-height:1.8;">
-        到「資產」填入你的資產與負債、「預算」設定每月上限、「記帳」記錄每一筆收支,
-        這一頁就會自動算出淨資產與本月收支。想先看看長什麼樣子,可以載入一份範例資料再清掉。
+        到「資產」填入你的資產與負債、「記帳」記錄每一筆收支、「槓桿」記下買賣與動用房貸,
+        這一頁就會自動算出淨資產、本月收支與投資損益。想先看看長什麼樣子,可以載入一份範例資料再清掉。
       </div>
       <button class="btn" data-act="load-sample">${pendingConfirm === 'load-sample' ? '⚠️ 再按一次:覆蓋成範例資料' : '載入範例資料試用'}</button>
     </div>` : ''}
@@ -1156,57 +1155,6 @@ function renderOverview(){
       ${dataMsg ? `<div class="muted" style="text-align:center; margin-top:10px;">${esc(dataMsg)}</div>` : ''}
       <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,保留 30 天,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 則可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去。</div>
     </div>`;
-}
-
-/* ===================== 預算 ===================== */
-function renderBudget(){
-  const spent = spentByCat(viewMonth);
-  const totalB = sum(state.budgets, b => b.budget);
-  const totalS = sum(state.budgets, b => spent[b.name] || 0);
-  return `
-    ${monthNav()}
-    <div class="card">
-      <h3>本月預算</h3>
-      <div class="big-num ${totalS > totalB && totalB ? 'neg' : ''}">NT$ ${fmt(totalS)}</div>
-      <div class="big-sub">預算 NT$ ${fmt(totalB)} · 剩餘 NT$ ${fmt(Math.max(0, totalB - totalS))}</div>
-      <div class="bar-track"><div class="bar-fill ${totalS > totalB ? 'over' : ''}" style="width:${totalB ? Math.min(100, totalS/totalB*100).toFixed(1) : 0}%"></div></div>
-    </div>
-
-    <div class="card">
-      <h3>各類別</h3>
-      ${state.budgets.length ? state.budgets.map(b => {
-        const s = spent[b.name] || 0;
-        const over = b.budget > 0 && s > b.budget;
-        const pct = b.budget > 0 ? Math.min(100, s / b.budget * 100) : 0;
-        return `
-        <div style="margin-bottom:14px;">
-          <div class="erow">
-            <input class="f-name" data-k="bn-${b.id}" value="${esc(b.name)}" placeholder="類別名稱">
-            <input class="f-amt" type="number" inputmode="decimal" data-k="ba-${b.id}" value="${b.budget || ''}" placeholder="每月預算">
-            <button class="xbtn" data-act="del-budget" data-id="${b.id}" aria-label="刪除">✕</button>
-          </div>
-          <div class="row"><span class="label">已花費</span>
-            <span class="val ${over ? 'neg' : ''}" id="b-val-${b.id}">NT$ ${fmt(s)} / ${fmt(b.budget)}</span></div>
-          <div class="bar-track"><div class="bar-fill ${over ? 'over' : ''}" id="b-bar-${b.id}" style="width:${pct.toFixed(1)}%"></div></div>
-          <div class="muted neg" id="b-over-${b.id}">${over ? '超支 NT$ ' + fmt(s - b.budget) : ''}</div>
-        </div>`;
-      }).join('') : `<div class="empty">還沒有預算類別。</div>`}
-      <button class="btn" data-act="add-budget">＋ 新增預算類別</button>
-      <div class="notice">「已花費」是自動加總「記帳」裡同名類別的當月支出,不用自己填。</div>
-    </div>`;
-}
-function refreshBudget(){
-  const spent = spentByCat(viewMonth);
-  state.budgets.forEach(b => {
-    const s = spent[b.name] || 0;
-    const over = b.budget > 0 && s > b.budget;
-    const val = document.getElementById('b-val-' + b.id);
-    const bar = document.getElementById('b-bar-' + b.id);
-    const ov = document.getElementById('b-over-' + b.id);
-    if (val){ val.textContent = 'NT$ ' + fmt(s) + ' / ' + fmt(b.budget); val.classList.toggle('neg', over); }
-    if (bar){ bar.style.width = (b.budget > 0 ? Math.min(100, s / b.budget * 100) : 0).toFixed(1) + '%'; bar.classList.toggle('over', over); }
-    if (ov) ov.textContent = over ? '超支 NT$ ' + fmt(s - b.budget) : '';
-  });
 }
 
 /* ===================== 資產 ===================== */
@@ -1819,9 +1767,7 @@ function onField(key, el){
   const rest = key.slice(dash + 1);
   let structural = false;
 
-  if (kind === 'bn'){ const b = findById(state.budgets, rest); if (b) b.name = el.value; }
-  else if (kind === 'ba'){ const b = findById(state.budgets, rest); if (b) b.budget = num(el.value); }
-  else if (kind === 'an'){ const a = findById(state.assets, rest); if (a) a.name = el.value; }
+  if (kind === 'an'){ const a = findById(state.assets, rest); if (a) a.name = el.value; }
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = num(el.value); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = num(el.value); }
@@ -1910,8 +1856,7 @@ function onField(key, el){
     return;
   }
   if (structural) return;                       // 交易編輯:離開欄位時才重畫
-  if (currentTab === 'budget') refreshBudget();
-  else if (currentTab === 'assets') refreshAssets();
+  if (currentTab === 'assets') refreshAssets();
   else if (currentTab === 'leverage') refreshLeverage();
 }
 
@@ -1928,13 +1873,7 @@ function sampleData(){
     { id:uid(), name:'房貸', amount:4000000 },
     { id:uid(), name:'信用貸款', amount:500000 }
   ];
-  s.budgets = [
-    { id:uid(), name:'房貸 / 房租', budget:25000 },
-    { id:uid(), name:'餐飲', budget:20000 },
-    { id:uid(), name:'交通', budget:10000 },
-    { id:uid(), name:'娛樂', budget:8000 },
-    { id:uid(), name:'其他', budget:15000 }
-  ];
+  s.budgets = DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 }));
   const day = n => m + '-' + pad2(n);
   s.transactions = [
     { id:uid(), date:day(1),  cat:'薪資', desc:'月薪',     amount:120000 },
@@ -2039,8 +1978,6 @@ function onClick(el){
   switch (act){
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
-    case 'add-budget': state.budgets.push({ id:uid(), name:'', budget:0 }); break;
-    case 'del-budget': state.budgets = state.budgets.filter(b => b.id !== id); break;
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
     case 'del-asset': state.assets = state.assets.filter(a => a.id !== id); break;
     case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0 }); break;
