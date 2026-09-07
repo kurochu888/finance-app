@@ -158,6 +158,20 @@
   .tx-amt.income{color:var(--green);}
   .tx-edit{padding:10px 0 14px; border-bottom:1px solid var(--line);}
 
+  .alert{
+    border-radius:14px; padding:13px 14px; margin-bottom:12px;
+    border:1px solid; display:flex; gap:11px; align-items:flex-start;
+  }
+  .alert .ai{font-size:18px; line-height:1.15;}
+  .alert .at{font-size:14px; font-weight:700; margin-bottom:3px;}
+  .alert .ad{font-size:12px; line-height:1.65; opacity:.9;}
+  .alert.red{background:var(--red-soft); border-color:var(--red); color:var(--red);}
+  .alert.amber{background:var(--amber-soft); border-color:var(--amber); color:var(--amber);}
+  .alert .go{
+    margin-top:8px; padding:5px 11px; border-radius:8px; cursor:pointer;
+    border:1px solid currentColor; background:none; color:inherit;
+    font-size:12px; font-weight:700; font-family:inherit;
+  }
   .legend-dot{width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:-1px;}
   .empty{font-size:13px; color:var(--sub); text-align:center; padding:14px 6px; line-height:1.7;}
 
@@ -223,7 +237,7 @@ const seriesColor = i => i < SERIES.length ? SERIES[i] : 'var(--s9)';
 const DEFAULT_LEVERAGE = {
   shares675L:0, price675L:0, shares631L:0, price631L:0,
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
-  stressDeclinePct:20, creditLimit:5000000, annualRate:2.6,
+  stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   tranches:[
     { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'' },
     { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'' },
@@ -272,6 +286,7 @@ function normalize(raw){
       useDate: String(t.useDate || '')
     }));
   }
+  base.autoHigh = L.autoHigh !== false;   // 舊資料沒有這個欄位時預設開啟
   if (L.core && typeof L.core === 'object'){
     base.core = { label:String(L.core.label || '長期投資部位'), amount:num(L.core.amount), useDate:String(L.core.useDate || '') };
   }
@@ -520,6 +535,7 @@ function monthNav(){
 }
 
 function renderAll(){
+  maybeUpdateHigh();
   document.getElementById('pageTitle').textContent = TAB_TITLES[currentTab];
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
@@ -570,12 +586,43 @@ function renderOverview(){
   const catList = Object.keys(cats).map(k => ({ name:k, amount:cats[k] })).sort((a,b) => b.amount - a.amount);
   const isEmpty = !state.assets.length && !state.liabilities.length && !state.transactions.length;
 
+  const lev = computeLeverage();
+  const triggeredUnused = lev.tranches.filter(t => t.triggered && !t.used);
+  const alerts = [];
+  if (lev.exitReached){
+    alerts.push(`
+      <div class="alert red">
+        <span class="ai">⚡</span>
+        <div>
+          <div class="at">已達撤退門檻,可開始慢慢減碼</div>
+          <div class="ad">
+            目前總市值 NT$ ${fmt(lev.totalValue)},已超過門檻 NT$ ${fmt(lev.exitThreshold)}。
+            <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
+          </div>
+        </div>
+      </div>`);
+  }
+  if (triggeredUnused.length){
+    alerts.push(`
+      <div class="alert amber">
+        <span class="ai">📉</span>
+        <div>
+          <div class="at">${triggeredUnused.map(t => esc(t.label)).join('、')}已觸發</div>
+          <div class="ad">
+            大盤跌到觸發點位以下,但這${triggeredUnused.length > 1 ? '幾' : ''}桶還沒填動用日期。
+            <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
+          </div>
+        </div>
+      </div>`);
+  }
+
   const chart = hist.length >= 2
     ? sparkline(hist.slice(-12))
     : `<div class="empty">記錄兩個月以上就會畫出走勢線。<br>先按下面的「記錄本月淨資產」。</div>`;
 
   return `
     ${monthNav()}
+    ${alerts.join('')}
     ${isEmpty ? `
     <div class="card">
       <h3>開始使用</h3>
@@ -838,6 +885,24 @@ function computeLeverage(){
            remainingNetWorth: netWorth() - lossAmount };
 }
 
+/* 自動記錄看過的最高總市值。只在欄位輸入完成(change)或重畫時檢查,
+   避免打字打到一半的中間值被記成新高。 */
+function maybeUpdateHigh(){
+  const L = state.leverage;
+  if (!L.autoHigh) return false;
+  const total = computeLeverage().totalValue;
+  if (total > 0 && total > L.historicalHighValue + 0.5){
+    L.historicalHighValue = Math.round(total);
+    scheduleSave();
+    return true;
+  }
+  return false;
+}
+function syncHighInput(){
+  const el = document.querySelector('[data-k="lev-historicalHighValue"]');
+  if (el && document.activeElement !== el) el.value = state.leverage.historicalHighValue || '';
+}
+
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
@@ -898,6 +963,10 @@ function renderLeverage(){
     <div class="card">
       <h3>撤退門檻</h3>
       <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
+      <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
+      <div class="muted" style="margin-top:6px;">${L.autoHigh
+        ? '總市值超過這個數字時會自動更新,不用自己維護。填錯了可以直接改成正確數字。'
+        : '目前不會自動更新,新高要自己填。'}</div>
       <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
       <div class="row"><span class="label">目前總市值</span><span class="val" id="out-exitCurrent">NT$ ${fmt(r.totalValue)}</span></div>
       <div id="out-exitBadgeWrap">${r.exitReached
@@ -1137,6 +1206,10 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'toggle-autohigh':
+      state.leverage.autoHigh = !state.leverage.autoHigh;
+      if (state.leverage.autoHigh) maybeUpdateHigh();
+      break;
     case 'sign-in': signInCloud(); return;
     case 'sign-out': signOutCloud(); return;
     case 'draft-type': draft.type = el.dataset.v; break;
@@ -1195,6 +1268,12 @@ function init(){
     if (e.target.id === 'importFile' && e.target.files && e.target.files[0]){
       importJSON(e.target.files[0]);
       e.target.value = '';
+      return;
+    }
+    // 欄位輸入結束才檢查新高,避免記到打字中的中間值
+    if (e.target.dataset && e.target.dataset.k && currentTab === 'leverage'){
+      if (maybeUpdateHigh()) syncHighInput();
+      refreshLeverage();
     }
   });
   content.addEventListener('click', e => {
