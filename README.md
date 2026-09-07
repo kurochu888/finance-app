@@ -33,7 +33,7 @@ python3 make_icons.py   # 只有要改圖示時才需要
 | 產出 | 用途 | 資料存哪 |
 |---|---|---|
 | `finance_app.html` | 獨立單檔,雙擊即用 | 該裝置瀏覽器 localStorage |
-| `site/` | GitHub Pages 的 PWA,可安裝、離線可用 | 該裝置瀏覽器 localStorage |
+| `docs/` | GitHub Pages 的 PWA,可安裝、離線可用 | 該裝置瀏覽器 localStorage |
 | `finance_app_artifact.html` | Claude Artifact 版 | Claude 雲端,跨裝置同步 |
 
 三個版本共用同一份程式;差別只在存檔方式與外層包裝。

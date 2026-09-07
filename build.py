@@ -3,7 +3,7 @@
 
   finance_app.html           獨立單檔,雙擊就能用,資料存瀏覽器 localStorage
   finance_app_artifact.html  Claude Artifact 版,資料存雲端、跨裝置同步
-  site/                      GitHub Pages 用的 PWA(可安裝、離線可用)
+  docs/                      GitHub Pages 用的 PWA(可安裝、離線可用)
 
 程式碼只有一份,改 app.template.html 之後跑 python3 build.py 重新產生。
 圖示由 make_icons.py 產生。
@@ -58,7 +58,7 @@ print('finance_app_artifact.html ', len(artifact), 'bytes  (Artifact 版)')
 
 
 # --- GitHub Pages 版:PWA,可安裝、離線可用 ---
-SITE = ROOT / 'site'
+SITE = ROOT / 'docs'   # GitHub Pages 只能從 root 或 /docs 發佈
 SITE.mkdir(exist_ok=True)
 
 APP_NAME = '財務管理'
@@ -162,4 +162,4 @@ self.addEventListener('fetch', e => {{
 (SITE / 'sw.js').write_text(sw, encoding='utf-8')
 (SITE / '.nojekyll').write_text('', encoding='utf-8')
 
-print('site/                     ', len(site_html), 'bytes  (PWA,cache', version + ')')
+print('docs/                     ', len(site_html), 'bytes  (PWA,cache', version + ')')
