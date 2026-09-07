@@ -302,7 +302,15 @@ function normalize(raw){
     cat:String(t.cat||'其他'), desc:String(t.desc||''), amount:num(t.amount)
   }));
   s.netWorthHistory = arr(raw.netWorthHistory)
-    .map(h => ({ id:h.id||uid(), m:String(h.m||'').slice(0,7), v:num(h.v) }))
+    .map(h => ({
+      id: h.id || uid(),
+      m: String(h.m || '').slice(0, 7),
+      v: num(h.v),
+      pv: h.pv === undefined ? null : num(h.pv),      // 部位市值
+      pnl: h.pnl === undefined ? null : num(h.pnl),   // 整體損益
+      loan: h.loan === undefined ? null : num(h.loan),// 借款餘額
+      auto: h.auto !== false                           // 手動改過的不再被自動覆蓋
+    }))
     .filter(h => /^\d{4}-\d{2}$/.test(h.m));
   const L = raw.leverage && typeof raw.leverage === 'object' ? raw.leverage : {};
   const base = s.leverage;
@@ -443,7 +451,7 @@ async function syncFirstTime(){
     }
     cloud.onChange(onRemote);
     updateStorageStatus();
-    if (maybePostInterest()) renderAll();
+    if (maybePostInterest() || maybeSnapshot()) renderAll();
     maybeBackup();
   }catch(e){
     cloud = null;
@@ -782,6 +790,59 @@ function computePosition(){
     returnOnAll: invested > 0 ? total / invested * 100 : 0,
     annualized: (invested > 0 && years > 0.08) ? (total / invested * 100) / years : null
   };
+}
+
+/* ===================== 曝險與風險 =====================
+   00631L / 00675L 是正2 ETF,本身就有 2 倍槓桿;
+   再用房貸借錢買,實際市場曝險是「部位市值 × 2」。 */
+function computeRisk(){
+  const p = computePosition();
+  const r = computeLeverage();
+  const pv = p.hasData ? p.marketValue : r.totalValue;
+  const loan = r.usedAmount;
+  const equity = pv - loan;
+  const nw = netWorth();
+  const exposure = pv * 2;
+  const flow = monthFlow(thisMonth());
+  return {
+    pv, loan, equity, nw, exposure,
+    invested: p.invested, pnl: p.total, hasTrades: p.hasData,
+    leverage: equity > 0 ? pv / equity : 0,
+    exposureToNw: nw > 0 ? exposure / nw * 100 : 0,
+    pvToNw: nw > 0 ? pv / nw * 100 : 0,
+    monthlyInterest: r.monthlyInterest,
+    surplus: flow.balance,
+    interestVsSurplus: flow.balance > 0 ? r.monthlyInterest / flow.balance * 100 : null,
+    // 部位市值跌到等於借款餘額時,自己的錢就全沒了;正2 → 大盤跌幅是它的一半
+    wipeoutDecline: (pv > 0 && loan > 0 && equity > 0) ? (equity / pv) / 2 * 100 : null
+  };
+}
+
+/* 每月快照:第一次開啟該月時自動記一筆,之後每次開啟更新到最新。
+   使用者手動改過的那一筆(auto:false)不會被覆蓋。 */
+function maybeSnapshot(){
+  const p = computePosition();
+  const r = computeLeverage();
+  const nw = netWorth();
+  if (!nw && !p.hasData && !r.totalValue) return false;
+  const m = thisMonth();
+  const found = state.netWorthHistory.find(h => h.m === m);
+  if (found && !found.auto) return false;
+  const snap = {
+    v: Math.round(nw),
+    pv: Math.round(p.hasData ? p.marketValue : r.totalValue),
+    pnl: p.hasData ? Math.round(p.total) : null,
+    loan: Math.round(r.usedAmount),
+    auto: true
+  };
+  if (found){
+    if (found.v === snap.v && found.pv === snap.pv && found.pnl === snap.pnl && found.loan === snap.loan) return false;
+    Object.assign(found, snap);
+  }else{
+    state.netWorthHistory.push(Object.assign({ id: uid(), m }, snap));
+  }
+  scheduleSave();
+  return true;
 }
 
 /* ===================== 分頁 ===================== */
@@ -1218,6 +1279,128 @@ function syncHighInput(){
   if (el && document.activeElement !== el) el.value = state.leverage.historicalHighValue || '';
 }
 
+/* 通用折線圖。series: [{name, color, values}],values 對齊 labels,可含 null。
+   兩條以上一定畫圖例,末端直接標數字,座標文字都用主題色。 */
+function lineChart(labels, series, opts){
+  const o = Object.assign({ height:130, zero:false, fmtVal: v => 'NT$ ' + fmt(v) }, opts || {});
+  const w = 320, h = o.height, padL = 8, padR = 8, padT = 14, padB = 20;
+  const all = [];
+  series.forEach(s2 => s2.values.forEach(v => { if (v !== null && v !== undefined) all.push(v); }));
+  if (all.length < 2) return '';
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (o.zero){ lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if (hi === lo){ hi = lo + Math.abs(lo || 1) * 0.1; lo = lo - Math.abs(lo || 1) * 0.1; }
+  const x = i => padL + i * (w - padL - padR) / Math.max(1, labels.length - 1);
+  const y = v => (h - padB) - (v - lo) / (hi - lo) * (h - padB - padT);
+  const zeroY = y(0);
+
+  const paths = series.map(s2 => {
+    let d = '', started = false;
+    s2.values.forEach((v, i) => {
+      if (v === null || v === undefined){ started = false; return; }
+      d += (started ? ' L ' : ' M ') + x(i).toFixed(1) + ',' + y(v).toFixed(1);
+      started = true;
+    });
+    return d ? `<path d="${d}" fill="none" stroke="${s2.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '';
+  }).join('');
+
+  const ends = series.map(s2 => {
+    let li = -1;
+    s2.values.forEach((v, i) => { if (v !== null && v !== undefined) li = i; });
+    if (li < 0) return '';
+    return `<circle cx="${x(li).toFixed(1)}" cy="${y(s2.values[li]).toFixed(1)}" r="3.5" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;margin-top:4px;" role="img" aria-label="${esc(o.label || '走勢')}">
+      ${o.zero ? `<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${w - padR}" y2="${zeroY.toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>` : ''}
+      ${paths}${ends}
+      <text x="${padL}" y="${h - 5}" fill="var(--sub)" font-size="10">${esc(labels[0])}</text>
+      <text x="${w - padR}" y="${h - 5}" fill="var(--sub)" font-size="10" text-anchor="end">${esc(labels[labels.length - 1])}</text>
+    </svg>
+    <div class="row" style="flex-wrap:wrap; gap:4px 14px;">
+      ${series.map(s2 => {
+        let li = -1;
+        s2.values.forEach((v, i) => { if (v !== null && v !== undefined) li = i; });
+        return `<span class="muted"><span class="legend-dot" style="background:${s2.color}"></span>${esc(s2.name)} ${li >= 0 ? o.fmtVal(s2.values[li]) : '—'}</span>`;
+      }).join('')}
+    </div>`;
+}
+
+function renderRisk(){
+  const k = computeRisk();
+  if (!(k.pv > 0)) return '';
+  const expPct = Math.min(100, k.exposureToNw);
+  const heavy = k.exposureToNw > 100;
+  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
+  const labels = hist.map(h => shortMonth(h.m));
+  const pnlChart = lineChart(labels, [
+    { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
+  ], { zero:true, label:'整體損益走勢', height:120,
+       fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
+  const posChart = lineChart(labels, [
+    { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
+    { name:'借款餘額', color:'var(--s2)', values: hist.map(h => h.loan === null || h.loan === undefined ? null : h.loan) }
+  ], { label:'部位市值與借款', height:120 });
+
+  return `
+    <div class="card">
+      <h3>曝險</h3>
+      <div class="big-num">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</div>
+      <div class="big-sub">部位槓桿倍數(部位市值 ÷ 自己的錢)</div>
+      <div class="row"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
+      <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">部位淨值(自己的錢)</span><span class="val ${k.equity >= 0 ? '' : 'neg'}" style="font-weight:800;">NT$ ${fmt(k.equity)}</span></div>
+      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
+        <span class="label">實質市場曝險</span><span class="val">NT$ ${fmt(k.exposure)}</span>
+      </div>
+      <div class="muted">正2 ETF 本身就是 2 倍,所以真正跟著大盤跑的金額是部位市值的兩倍。</div>
+      <div class="row" style="margin-top:10px;"><span class="label">曝險 ÷ 淨資產</span>
+        <span class="val ${heavy ? 'neg' : ''}">${k.nw > 0 ? k.exposureToNw.toFixed(0) + '%' : '—'}</span></div>
+      <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
+      <div class="muted">${heavy
+        ? '曝險已超過整體淨資產 — 大盤的波動會被放大到你全部身家之上。'
+        : '大盤每動 1%,你的淨資產大約跟著動 ' + (k.nw > 0 ? (k.exposureToNw / 100).toFixed(2) : '0') + '%。'}</div>
+    </div>
+
+    <div class="card">
+      <h3>還能跌多少</h3>
+      ${k.wipeoutDecline !== null ? `
+        <div class="big-num neg">${k.wipeoutDecline.toFixed(1)}%</div>
+        <div class="big-sub">大盤再跌這個幅度,部位淨值就歸零(部位市值 = 借款餘額)</div>
+        <div class="row"><span class="label">屆時部位市值</span><span class="val">NT$ ${fmt(k.loan)}</span></div>
+        <div class="row"><span class="label">你自己的錢</span><span class="val neg">NT$ 0</span></div>
+        <div class="notice">歸零不代表被斷頭 —— 房貸不像融資有維持率,不會被強制平倉。但那時候你等於把借來的錢全賠掉,還要繼續付利息。</div>
+      ` : `<div class="empty">還沒有借款,沒有這個風險。</div>`}
+    </div>
+
+    <div class="card">
+      <h3>利息付得起嗎</h3>
+      <div class="row"><span class="label">每月利息</span><span class="val">NT$ ${fmt(k.monthlyInterest)}</span></div>
+      <div class="row"><span class="label">本月結餘</span><span class="val ${k.surplus >= 0 ? 'pos' : 'neg'}">NT$ ${fmt(k.surplus)}</span></div>
+      ${k.interestVsSurplus !== null ? `
+        <div class="row"><span class="label">利息吃掉結餘</span>
+          <span class="val ${k.interestVsSurplus > 50 ? 'neg' : ''}">${k.interestVsSurplus.toFixed(0)}%</span></div>
+        <div class="bar-track"><div class="bar-fill ${k.interestVsSurplus > 50 ? 'over' : ''}" style="width:${Math.min(100, k.interestVsSurplus).toFixed(1)}%"></div></div>
+      ` : `<div class="muted">本月還沒有結餘可以比較 — 先到記帳記幾筆收支。</div>`}
+      <div class="notice">投資虧損可以等,利息不能等。這一格是看你的現金流撐不撐得住。</div>
+    </div>
+
+    ${pnlChart ? `
+    <div class="card">
+      <h3>整體損益走勢</h3>
+      ${pnlChart}
+      <div class="muted">每月第一次開啟 app 時自動記錄。虛線是損益兩平。</div>
+    </div>` : ''}
+
+    ${posChart ? `
+    <div class="card">
+      <h3>部位市值與借款</h3>
+      ${posChart}
+      <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。</div>
+    </div>` : ''}`;
+}
+
 function renderPnL(){
   const p = computePosition();
   if (!p.hasData){
@@ -1324,6 +1507,7 @@ function renderLeverage(){
   const usedPct = L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0;
   return `
     ${renderPnL()}
+    ${renderRisk()}
     ${renderTrades()}
     <div class="card">
       <h3>持股市值</h3>
@@ -1487,7 +1671,10 @@ function onField(key, el){
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = num(el.value); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = num(el.value); }
-  else if (kind === 'nh'){ const h = findById(state.netWorthHistory, rest); if (h) h.v = num(el.value); }
+  else if (kind === 'nh'){
+    const h = findById(state.netWorthHistory, rest);
+    if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
+  }
   else if (kind === 'lev'){ state.leverage[rest] = num(el.value); }
   else if (kind === 'tr'){
     const p = rest.indexOf('-');
@@ -1675,9 +1862,10 @@ function onClick(el){
     case 'del-liab': state.liabilities = state.liabilities.filter(l => l.id !== id); break;
     case 'del-hist': state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
     case 'snap-networth': {
-      const m = thisMonth(), v = netWorth();
+      const m = thisMonth();
       const found = state.netWorthHistory.find(h => h.m === m);
-      if (found) found.v = v; else state.netWorthHistory.push({ id:uid(), m, v });
+      if (found) found.auto = true;      // 允許這次覆寫成目前數字
+      maybeSnapshot();
       break;
     }
     case 'export': exportJSON(); return;
@@ -1820,6 +2008,7 @@ function init(){
 
   storageMode = 'local';
   maybePostInterest();
+  maybeSnapshot();
   renderAll();
   maybeAutoQuote();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
