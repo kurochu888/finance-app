@@ -80,7 +80,7 @@
   .topbar .date{flex:0 0 auto; font-size:11px; color:var(--sub); padding:0 8px 8px 2px;}
   .content{
     flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
-    padding:14px; padding-bottom:10px; overscroll-behavior:contain;
+    padding:14px; padding-bottom:10px; overscroll-behavior:contain; overflow-x:hidden;
   }
   .tabbar{flex:0 0 auto; display:flex; border-top:1px solid var(--line); background:var(--card);}
   .tab-btn{
@@ -122,12 +122,19 @@
   .field{margin:8px 0;}
   .field label{display:block; font-size:12px; color:var(--sub); margin-bottom:4px;}
   input{
-    width:100%; padding:10px; border-radius:9px; border:1px solid var(--line);
-    background:var(--raised); color:var(--text); font-size:16px; font-family:inherit;
-    font-variant-numeric:tabular-nums;
+    width:100%; min-width:0; max-width:100%; padding:10px; border-radius:9px;
+    border:1px solid var(--line); background:var(--raised); color:var(--text);
+    font-size:16px; font-family:inherit; font-variant-numeric:tabular-nums;
   }
+  /* iOS 的日期欄位自帶最小寬度,不關掉原生外觀就會撐破格子 */
+  input[type="date"]{
+    -webkit-appearance:none; appearance:none;
+    padding-right:8px; text-align:left; display:block;
+  }
+  input[type="date"]::-webkit-date-and-time-value{ text-align:left; margin:0; }
+  input[type="date"]::-webkit-calendar-picker-indicator{ margin-left:auto; padding:0; }
   select{
-    width:100%; padding:10px; border-radius:9px; border:1px solid var(--line);
+    width:100%; min-width:0; max-width:100%; padding:10px; border-radius:9px; border:1px solid var(--line);
     background:var(--raised); color:var(--text); font-size:16px; font-family:inherit;
     appearance:none; -webkit-appearance:none;
     background-image:linear-gradient(45deg,transparent 50%,var(--sub) 50%),linear-gradient(135deg,var(--sub) 50%,transparent 50%);
@@ -136,11 +143,13 @@
   }
   input:focus, select:focus{outline:2px solid var(--accent); outline-offset:-1px;}
   select:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
-  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px;}
+  .grid2{display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px;}
+  .grid2 > *{min-width:0;}
 
   .erow{display:flex; gap:7px; align-items:center; margin-top:10px;}
+  .erow{min-width:0;}
   .erow .f-name{flex:1 1 auto; min-width:0;}
-  .erow .f-amt{flex:0 0 118px; text-align:right;}
+  .erow .f-amt{flex:0 1 118px; min-width:0; text-align:right;}
   .xbtn{
     flex:0 0 34px; height:38px; border-radius:9px; border:1px solid var(--line);
     background:var(--card); color:var(--sub); font-size:15px; cursor:pointer; font-family:inherit;
