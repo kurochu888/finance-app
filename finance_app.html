@@ -461,8 +461,26 @@ function readLocal(){
   }catch(e){ return null; }
 }
 function writeLocal(data){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); return true; }
-  catch(e){ return false; }
+  const json = JSON.stringify(data);
+  try{
+    localStorage.setItem(STORAGE_KEY, json);
+    return true;
+  }catch(e){
+    // 空間不夠時先犧牲最舊的本機備份,主資料一定要存得進去
+    try{
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++){
+        const k = localStorage.key(i);
+        if (k && k.indexOf(BACKUP_PREFIX) === 0) keys.push(k);
+      }
+      keys.sort();
+      while (keys.length){
+        localStorage.removeItem(keys.shift());
+        try{ localStorage.setItem(STORAGE_KEY, json); return true; }catch(e2){ /* 再砍一份 */ }
+      }
+    }catch(e3){ /* 連清都清不了 */ }
+    return false;
+  }
 }
 function scheduleSave(){
   clearTimeout(saveTimer);
@@ -630,7 +648,8 @@ async function signOutCloud(){
 
 /* ===================== 每日備份 =====================
    雲端可用時存在雲端的 backups 集合,否則存本機。每天一份,保留 30 天。 */
-const BACKUP_KEEP = 30;
+const BACKUP_KEEP = 30;        // 雲端
+const LOCAL_BACKUP_KEEP = 7;   // 本機 localStorage 只有幾 MB,備份不能佔太多
 const BACKUP_PREFIX = 'financeBackup_';
 const BACKUP_TS_KEY = 'financeLastBackup';
 
@@ -663,10 +682,12 @@ async function maybeBackup(){
   try{ if (localStorage.getItem(BACKUP_TS_KEY) === today) return; }catch(e){}
   const api = backupApi();
   try{
+    const keep = (cloud && cloud.backups) ? BACKUP_KEEP : LOCAL_BACKUP_KEEP;
+    // 先清舊的再寫新的,免得寫的當下就把空間塞爆
+    const before = await api.list();
+    for (const id of before.slice(Math.max(0, keep - 1))) await api.del(id);
     await api.put(today, JSON.parse(JSON.stringify(state)));
     try{ localStorage.setItem(BACKUP_TS_KEY, today); }catch(e){}
-    const ids = await api.list();
-    for (const id of ids.slice(BACKUP_KEEP)) await api.del(id);
   }catch(e){ /* 備份失敗不影響使用 */ }
 }
 async function loadBackups(){
@@ -1023,6 +1044,23 @@ function computeStress(d){
   };
 }
 
+/* 把快照補成連續的月份 —— 中間沒開過 app 的月份留空,
+   否則兩點之間的間隔會被畫成一樣寬,斜率就騙人了 */
+function monthlyHistory(maxMonths){
+  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1);
+  if (!hist.length) return [];
+  const byMonth = {};
+  hist.forEach(h => { byMonth[h.m] = h; });
+  const last = hist[hist.length - 1].m > thisMonth() ? hist[hist.length - 1].m : thisMonth();
+  const months = [];
+  let cursor = hist[0].m;
+  for (let guard = 0; cursor <= last && guard < 600; guard++){
+    months.push(cursor);
+    cursor = shiftMonth(cursor, 1);
+  }
+  return months.slice(-maxMonths).map(m => byMonth[m] || { m, v:null, pv:null, pnl:null, loan:null });
+}
+
 /* ===================== 分頁 ===================== */
 let currentTab = 'overview';
 let viewMonth = thisMonth();
@@ -1069,29 +1107,8 @@ function switchTab(tab){
 }
 
 /* ===================== 總覽 ===================== */
-function sparkline(hist){
-  const w = 320, h = 96, padX = 10, padT = 12, padB = 18;
-  const vals = hist.map(d => d.v);
-  const maxV = Math.max(...vals), minV = Math.min(...vals);
-  const span = maxV - minV;
-  const y = v => span === 0 ? (h - padB + padT) / 2 : (h - padB) - (v - minV) / span * (h - padB - padT);
-  const x = i => padX + i * (w - 2*padX) / Math.max(1, hist.length - 1);
-  const pts = hist.map((d, i) => x(i).toFixed(1) + ',' + y(d.v).toFixed(1));
-  const area = `M ${x(0).toFixed(1)},${(h - padB).toFixed(1)} L ` + pts.join(' L ') + ` L ${x(hist.length-1).toFixed(1)},${(h - padB).toFixed(1)} Z`;
-  const last = hist[hist.length - 1];
-  return `
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;margin-top:6px;" role="img" aria-label="淨資產走勢">
-      <path d="${area}" fill="var(--accent-soft)" stroke="none"/>
-      <polyline points="${pts.join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      <circle cx="${x(hist.length-1).toFixed(1)}" cy="${y(last.v).toFixed(1)}" r="4" fill="var(--accent)" stroke="var(--card)" stroke-width="2"/>
-      <text x="${padX}" y="${h - 4}" fill="var(--sub)" font-size="11">${esc(shortMonth(hist[0].m))}</text>
-      <text x="${w - padX}" y="${h - 4}" fill="var(--sub)" font-size="11" text-anchor="end">${esc(shortMonth(last.m))}</text>
-    </svg>
-    <div class="row"><span class="muted">區間最低 NT$ ${fmt(minV)}</span><span class="muted">最高 NT$ ${fmt(maxV)}</span></div>`;
-}
-
 function renderOverview(){
-  const hist = state.netWorthHistory.slice().sort((a,b) => a.m < b.m ? -1 : 1);
+  const hist = monthlyHistory(12);
   const nw = netWorth();
   const flow = monthFlow(viewMonth);
   const cats = spentByCat(viewMonth);
@@ -1128,9 +1145,10 @@ function renderOverview(){
       </div>`);
   }
 
-  const chart = hist.length >= 2
-    ? sparkline(hist.slice(-12))
-    : `<div class="empty">記錄兩個月以上就會畫出走勢線。<br>先按下面的「記錄本月淨資產」。</div>`;
+  const chart = lineChart('nw', hist.map(h => shortMonth(h.m)), [
+    { name:'淨資產', color:'var(--accent)', values: hist.map(h => h.v) }
+  ], { label:'淨資產走勢', height:110, area:true })
+    || `<div class="empty">記錄兩個月以上就會畫出走勢線。<br>先按下面的「記錄本月淨資產」。</div>`;
 
   return `
     ${monthNav()}
@@ -1151,7 +1169,7 @@ function renderOverview(){
       <div class="big-sub">資產 ${fmt(totalAssets())} − 負債 ${fmt(totalLiab())}</div>
       ${chart}
       <button class="btn" data-act="snap-networth">📌 記錄 ${monthLabel(thisMonth())} 的淨資產</button>
-      ${hist.length ? `<div style="margin-top:6px;">${hist.slice().reverse().map(h => `
+      ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map(h => `
         <div class="erow">
           <div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}</div>
           <input class="f-amt" type="number" inputmode="decimal" data-k="nh-${h.id}" value="${h.v || ''}">
@@ -1461,6 +1479,16 @@ function lineChart(key, labels, series, opts){
     return d ? `<path d="${d}" fill="none" stroke="${s2.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '';
   }).join('');
 
+  const areaPath = (o.area && series.length === 1) ? (() => {
+    const pts = [];
+    series[0].values.forEach((v, i) => { if (v !== null && v !== undefined) pts.push([x(i), y(v)]); });
+    if (pts.length < 2) return '';
+    const base = (h - padB).toFixed(1);
+    return `<path d="M ${pts[0][0].toFixed(1)},${base} L `
+      + pts.map(pt => pt[0].toFixed(1) + ',' + pt[1].toFixed(1)).join(' L ')
+      + ` L ${pts[pts.length-1][0].toFixed(1)},${base} Z" fill="var(--accent-soft)" stroke="none"/>`;
+  })() : '';
+
   const dots = series.map((s2, si) => s2.values.map((v, i) =>
     (v === null || v === undefined) ? '' :
     `<circle class="pt-${key}-${si}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === labels.length - 1 ? 3.5 : 0}" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`
@@ -1478,7 +1506,7 @@ function lineChart(key, labels, series, opts){
     <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;margin-top:4px;touch-action:manipulation;" role="img" aria-label="${esc(o.label || '走勢')}">
       ${o.zero ? `<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${w - padR}" y2="${zeroY.toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>` : ''}
       <line id="mk-${key}" x1="0" y1="${padT - 6}" x2="0" y2="${h - padB}" stroke="var(--sub)" stroke-width="1" stroke-dasharray="2 2" opacity="0"/>
-      ${paths}${dots}${hits}
+      ${areaPath}${paths}${dots}${hits}
       <text x="${padL}" y="${h - 5}" fill="var(--sub)" font-size="10">${esc(labels[0])}</text>
       <text x="${w - padR}" y="${h - 5}" fill="var(--sub)" font-size="10" text-anchor="end">${esc(labels[labels.length - 1])}</text>
     </svg>
@@ -1521,7 +1549,7 @@ function renderRisk(){
   if (!(k.pv > 0)) return '';
   const expPct = Math.min(100, k.exposureRatio);
   const heavy = k.exposureRatio > 100;
-  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
+  const hist = monthlyHistory(12);
   const labels = hist.map(h => shortMonth(h.m));
   const posChart = lineChart('pos', labels, [
     { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
@@ -1557,7 +1585,7 @@ function renderRisk(){
 
 /* 損益走勢圖給部位損益卡用 */
 function pnlChartBlock(){
-  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
+  const hist = monthlyHistory(12);
   const chart = lineChart('pnl', hist.map(h => shortMonth(h.m)), [
     { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
   ], { zero:true, label:'整體損益走勢', height:120,
@@ -1868,7 +1896,15 @@ function renderLeverage(){
         <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
         <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
           : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。上市櫃代號都查得到。'
-          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。'}</div>` : ''}
+          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。'}</div>
+        ${(L.quoteDate && daysSince(L.quoteDate) > 5) ? `
+          <div class="alert amber" style="margin-top:10px;">
+            <span class="ai">🕘</span>
+            <div>
+              <div class="at">報價已經 ${Math.floor(daysSince(L.quoteDate))} 天沒更新</div>
+              <div class="ad">上面的損益、曝險、撤退門檻都是用這組舊價算的。按「從證交所更新收盤價」抓最新的。</div>
+            </div>
+          </div>` : ''}` : ''}
     </div>
 
     <div class="notice">
