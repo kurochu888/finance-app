@@ -127,6 +127,9 @@
     font-size:16px; font-family:inherit; font-variant-numeric:tabular-nums;
   }
   /* iOS 的日期欄位自帶最小寬度,不關掉原生外觀就會撐破格子 */
+  input[type="number"]{ -moz-appearance:textfield; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
   input[type="date"]{
     -webkit-appearance:none; appearance:none;
     padding-right:8px; text-align:left; display:block;
@@ -151,7 +154,7 @@
   .erow .f-name{flex:1 1 auto; min-width:0;}
   .erow .f-code{flex:0 0 92px; min-width:0;}          /* 股票代號,固定窄欄 */
   .erow .f-title{flex:1 1 auto; min-width:0;}         /* 名稱,吃剩下的寬度 */
-  .erow .f-amt{flex:0 1 118px; min-width:0; text-align:right;}
+  .erow .f-amt{flex:0 0 130px; min-width:0; text-align:right;}
   .xbtn{
     flex:0 0 34px; height:38px; border-radius:9px; border:1px solid var(--line);
     background:var(--card); color:var(--sub); font-size:15px; cursor:pointer; font-family:inherit;
