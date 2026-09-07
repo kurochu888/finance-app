@@ -5,8 +5,8 @@
 
    apiKey 留空時,app 會維持「只存本機」模式,一切功能照常。 */
 export const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  appId: ""
+  apiKey: "AIzaSyBu8hPAr34_u9myqnUoPb-YVHiVDE_TLfg",
+  authDomain: "kuro-finance-09078a32e4.firebaseapp.com",
+  projectId: "kuro-finance-09078a32e4",
+  appId: "1:982740079071:web:b0a3288fd5ce197c04346a"
 };
