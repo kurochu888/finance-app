@@ -818,19 +818,15 @@ function computeRisk(){
   const loan = r.usedAmount;
   const equity = pv - loan;
   const nw = netWorth();
-  const exposure = pv * 2;
-  const flow = monthFlow(thisMonth());
+  const exposure = pv * 2;                       // 正2 → 實質跟著大盤跑的金額
+  const capacity = pv + state.leverage.creditLimit;   // 目前部位 + 理財型房貸總額度
   return {
-    pv, loan, equity, nw, exposure,
+    pv, loan, equity, nw, exposure, capacity,
+    creditLimit: state.leverage.creditLimit,
     invested: p.invested, pnl: p.total, hasTrades: p.hasData,
     leverage: equity > 0 ? pv / equity : 0,
-    exposureToNw: nw > 0 ? exposure / nw * 100 : 0,
-    pvToNw: nw > 0 ? pv / nw * 100 : 0,
-    monthlyInterest: r.monthlyInterest,
-    surplus: flow.balance,
-    interestVsSurplus: flow.balance > 0 ? r.monthlyInterest / flow.balance * 100 : null,
-    // 部位市值跌到等於借款餘額時,自己的錢就全沒了;正2 → 大盤跌幅是它的一半
-    wipeoutDecline: (pv > 0 && loan > 0 && equity > 0) ? (equity / pv) / 2 * 100 : null
+    exposureRatio: capacity > 0 ? exposure / capacity * 100 : 0,
+    monthlyInterest: r.monthlyInterest
   };
 }
 
@@ -1346,8 +1342,8 @@ function lineChart(labels, series, opts){
 function renderRisk(){
   const k = computeRisk();
   if (!(k.pv > 0)) return '';
-  const expPct = Math.min(100, k.exposureToNw);
-  const heavy = k.exposureToNw > 100;
+  const expPct = Math.min(100, k.exposureRatio);
+  const heavy = k.exposureRatio > 100;
   const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
   const labels = hist.map(h => shortMonth(h.m));
   const pnlChart = lineChart(labels, [
@@ -1362,44 +1358,25 @@ function renderRisk(){
   return `
     <div class="card">
       <h3>曝險</h3>
+      <div class="big-num ${heavy ? 'neg' : ''}">${k.capacity > 0 ? k.exposureRatio.toFixed(0) + '%' : '—'}</div>
+      <div class="big-sub">實質市場曝險 ÷(部位市值 + 房貸總額度)</div>
+      <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
+      <div class="row" style="margin-top:10px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
+      <div class="row"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
+      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
+        <span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
+      <div class="row"><span class="label">＋ 房貸總額度</span><span class="val">NT$ ${fmt(k.creditLimit)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">分母合計</span><span class="val" style="font-weight:800;">NT$ ${fmt(k.capacity)}</span></div>
+      <div class="muted">大盤每動 1%,部位市值大約跟著動 2%。</div>
+    </div>
+
+    <div class="card">
+      <h3>部位組成</h3>
       <div class="big-num">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</div>
       <div class="big-sub">部位槓桿倍數(部位市值 ÷ 自己的錢)</div>
       <div class="row"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">部位淨值(自己的錢)</span><span class="val ${k.equity >= 0 ? '' : 'neg'}" style="font-weight:800;">NT$ ${fmt(k.equity)}</span></div>
-      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
-        <span class="label">實質市場曝險</span><span class="val">NT$ ${fmt(k.exposure)}</span>
-      </div>
-      <div class="muted">正2 ETF 本身就是 2 倍,所以真正跟著大盤跑的金額是部位市值的兩倍。</div>
-      <div class="row" style="margin-top:10px;"><span class="label">曝險 ÷ 淨資產</span>
-        <span class="val ${heavy ? 'neg' : ''}">${k.nw > 0 ? k.exposureToNw.toFixed(0) + '%' : '—'}</span></div>
-      <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
-      <div class="muted">${heavy
-        ? '曝險已超過整體淨資產 — 大盤的波動會被放大到你全部身家之上。'
-        : '大盤每動 1%,你的淨資產大約跟著動 ' + (k.nw > 0 ? (k.exposureToNw / 100).toFixed(2) : '0') + '%。'}</div>
-    </div>
-
-    <div class="card">
-      <h3>還能跌多少</h3>
-      ${k.wipeoutDecline !== null ? `
-        <div class="big-num neg">${k.wipeoutDecline.toFixed(1)}%</div>
-        <div class="big-sub">大盤再跌這個幅度,部位淨值就歸零(部位市值 = 借款餘額)</div>
-        <div class="row"><span class="label">屆時部位市值</span><span class="val">NT$ ${fmt(k.loan)}</span></div>
-        <div class="row"><span class="label">你自己的錢</span><span class="val neg">NT$ 0</span></div>
-        <div class="notice">歸零不代表被斷頭 —— 房貸不像融資有維持率,不會被強制平倉。但那時候你等於把借來的錢全賠掉,還要繼續付利息。</div>
-      ` : `<div class="empty">還沒有借款,沒有這個風險。</div>`}
-    </div>
-
-    <div class="card">
-      <h3>利息付得起嗎</h3>
-      <div class="row"><span class="label">每月利息</span><span class="val">NT$ ${fmt(k.monthlyInterest)}</span></div>
-      <div class="row"><span class="label">本月結餘</span><span class="val ${k.surplus >= 0 ? 'pos' : 'neg'}">NT$ ${fmt(k.surplus)}</span></div>
-      ${k.interestVsSurplus !== null ? `
-        <div class="row"><span class="label">利息吃掉結餘</span>
-          <span class="val ${k.interestVsSurplus > 50 ? 'neg' : ''}">${k.interestVsSurplus.toFixed(0)}%</span></div>
-        <div class="bar-track"><div class="bar-fill ${k.interestVsSurplus > 50 ? 'over' : ''}" style="width:${Math.min(100, k.interestVsSurplus).toFixed(1)}%"></div></div>
-      ` : `<div class="muted">本月還沒有結餘可以比較 — 先到記帳記幾筆收支。</div>`}
-      <div class="notice">投資虧損可以等,利息不能等。這一格是看你的現金流撐不撐得住。</div>
     </div>
 
     ${pnlChart ? `
