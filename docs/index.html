@@ -819,7 +819,9 @@ function computeRisk(){
   const equity = pv - loan;
   const nw = netWorth();
   const exposure = pv * 2;                       // 正2 → 實質跟著大盤跑的金額
-  const capacity = pv + state.leverage.creditLimit;   // 目前部位 + 理財型房貸總額度
+  // 分母 = 自己的錢 + 房貸總額度。用部位淨值而非部位市值,
+  // 否則已動用的部分會同時被算進部位與額度裡,比例失真偏樂觀。
+  const capacity = equity + state.leverage.creditLimit;
   return {
     pv, loan, equity, nw, exposure, capacity,
     creditLimit: state.leverage.creditLimit,
@@ -1359,15 +1361,16 @@ function renderRisk(){
     <div class="card">
       <h3>曝險</h3>
       <div class="big-num ${heavy ? 'neg' : ''}">${k.capacity > 0 ? k.exposureRatio.toFixed(0) + '%' : '—'}</div>
-      <div class="big-sub">實質市場曝險 ÷(部位市值 + 房貸總額度)</div>
+      <div class="big-sub">實質市場曝險 ÷(部位淨值 + 房貸總額度)</div>
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
       <div class="row" style="margin-top:10px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
       <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
-        <span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
+        <span class="label">部位淨值(自己的錢)</span><span class="val">NT$ ${fmt(k.equity)}</span></div>
       <div class="row"><span class="label">＋ 房貸總額度</span><span class="val">NT$ ${fmt(k.creditLimit)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">分母合計</span><span class="val" style="font-weight:800;">NT$ ${fmt(k.capacity)}</span></div>
-      <div class="muted">大盤每動 1%,部位市值大約跟著動 2%。</div>
+      <div class="muted">分母用部位淨值,不用部位市值 — 已借出的錢同時在部位裡也在額度裡,算兩次會讓比例看起來比實際安全。</div>
+      <div class="muted" style="margin-top:4px;">大盤每動 1%,部位市值大約跟著動 2%。額度用得越多,分母越接近你自己的錢,比例會誠實地升高。</div>
     </div>
 
     <div class="card">
