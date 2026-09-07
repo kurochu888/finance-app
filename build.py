@@ -17,13 +17,14 @@ NOTE_LOCAL = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地�
 NOTE_CLOUD = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。'
 
 # --- Artifact 版:沒有 <!doctype>/<head>/<body>,由平台包起來 ---
-artifact = tpl.replace('/*STORAGE_NOTE*/', NOTE_CLOUD)
+# Artifact 的 CSP 擋掉對外部網域的請求,證交所報價只在網頁版/單檔版可用
+artifact = tpl.replace('/*STORAGE_NOTE*/', NOTE_CLOUD).replace('/*QUOTES_ENABLED*/', 'false')
 (ROOT / 'finance_app_artifact.html').write_text(artifact, encoding='utf-8')
 
 # --- 獨立版:補回完整文件外殼與離線用的 icon ---
 icon_b64 = base64.b64encode((ROOT / 'icon-180.png').read_bytes()).decode()
 fav_b64 = base64.b64encode((ROOT / 'favicon-32.png').read_bytes()).decode()
-body = tpl.replace('/*STORAGE_NOTE*/', NOTE_LOCAL)
+body = tpl.replace('/*STORAGE_NOTE*/', NOTE_LOCAL).replace('/*QUOTES_ENABLED*/', 'true')
 title = re.search(r'<title>(.*?)</title>', body).group(1)
 # 模板開頭是 <title> + <style>,把這段放進 <head>,其餘放進 <body>
 cut = body.index('</style>') + len('</style>')
