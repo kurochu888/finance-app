@@ -142,7 +142,16 @@ window.FinanceCloud.ready = new Promise(resolve => {
     background:var(--raised); color:var(--text); font-size:16px; font-family:inherit;
     font-variant-numeric:tabular-nums;
   }
-  input:focus{outline:2px solid var(--accent); outline-offset:-1px;}
+  select{
+    width:100%; padding:10px; border-radius:9px; border:1px solid var(--line);
+    background:var(--raised); color:var(--text); font-size:16px; font-family:inherit;
+    appearance:none; -webkit-appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--sub) 50%),linear-gradient(135deg,var(--sub) 50%,transparent 50%);
+    background-position:calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+    background-size:5px 5px, 5px 5px; background-repeat:no-repeat;
+  }
+  input:focus, select:focus{outline:2px solid var(--accent); outline-offset:-1px;}
+  select:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px;}
 
   .erow{display:flex; gap:7px; align-items:center; margin-top:10px;}
@@ -290,11 +299,16 @@ const DEFAULT_LEVERAGE = {
   core:{ label:'長期投資部位', amount:2000000, useDate:'' }
 };
 const DEFAULT_BUDGETS = ['房貸 / 房租','餐飲','交通','娛樂','其他'];
+const DEFAULT_INSTRUMENTS = [
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true }
+];
 
 function emptyState(){
   return {
     version:2,
     assets:[], liabilities:[], trades:[],
+    instruments: JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS)),
     budgets: DEFAULT_BUDGETS.map(n => ({ id:uid(), name:n, budget:0 })),
     transactions:[], netWorthHistory:[],
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
@@ -308,13 +322,24 @@ function normalize(raw){
   s.assets = arr(raw.assets).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
   s.liabilities = arr(raw.liabilities).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
+  if (Array.isArray(raw.instruments) && raw.instruments.length){
+    s.instruments = raw.instruments.map(x => ({
+      id: String(x.id || '').trim() || uid(),
+      name: String(x.name || ''),
+      leverage: x.leverage === undefined ? 1 : num(x.leverage),
+      price: num(x.price),
+      shares: num(x.shares),
+      auto: x.auto !== false
+    }));
+  }
   s.trades = arr(raw.trades).map(t => ({
     id: t.id || uid(),
     date: String(t.date || todayISO()).slice(0, 10),
     symbol: String(t.symbol || '00631L'),
-    action: t.action === 'sell' ? 'sell' : 'buy',
+    action: ['sell', 'dividend'].includes(t.action) ? t.action : 'buy',
     shares: num(t.shares),
     price: num(t.price),
+    amount: num(t.amount),      // 配息領到的金額
     fee: num(t.fee),
     source: t.source === 'loan' ? 'loan' : 'cash',
     note: String(t.note || '')
@@ -355,6 +380,13 @@ function normalize(raw){
   base.autoInterest = L.autoInterest !== false;
   base.interestPosted = Array.isArray(L.interestPosted) ? L.interestPosted.map(String) : [];
   base.quoteDate = String(L.quoteDate || '');
+  // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
+  [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
+    const it = s.instruments.find(x => x.id === id);
+    if (!it) return;
+    if (!it.shares && num(L[sk])) it.shares = num(L[sk]);
+    if (!it.price && num(L[pk])) it.price = num(L[pk]);
+  });
   if (L.core && typeof L.core === 'object'){
     base.core = { label:String(L.core.label || '長期投資部位'), amount:num(L.core.amount), useDate:String(L.core.useDate || '') };
   }
@@ -655,11 +687,15 @@ function spentByCat(m){
   txOfMonth(m).filter(t => t.amount < 0).forEach(t => { map[t.cat] = (map[t.cat] || 0) + (-t.amount); });
   return map;
 }
+/* 預算類別排前面 —— 選這些,預算頁的「已花費」才對得上 */
 function knownCats(){
-  const set = new Set();
-  state.budgets.forEach(b => { if (b.name) set.add(b.name); });
-  state.transactions.forEach(t => { if (t.cat) set.add(t.cat); });
-  return Array.from(set);
+  const list = [];
+  const seen = new Set();
+  const add = c => { const v = String(c || '').trim(); if (v && !seen.has(v)){ seen.add(v); list.push(v); } };
+  state.budgets.forEach(b => add(b.name));
+  state.transactions.forEach(t => add(t.cat));
+  if (!list.length) add('其他');
+  return list;
 }
 
 /* ===================== 證交所報價 =====================
@@ -702,19 +738,32 @@ async function fetchQuotes(manual){
   quoteMsg = '更新報價中…';
   if (manual) renderAll();
   try{
-    const [r631, r675, rIdx] = await Promise.all([
-      twseRows(TWSE_STOCK + '00631L'),
-      twseRows(TWSE_STOCK + '00675L'),
+    const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+    const results = await Promise.all([
+      ...targets.map(it => twseRows(TWSE_STOCK + encodeURIComponent(it.id))),
       twseRows(TWSE_INDEX)
     ]);
-    const L = state.leverage;
-    let date = '';
-    if (r631 && r631.length){ const row = r631[r631.length-1]; L.price631L = cleanNum(row[6]); date = rocToISO(row[0]); }
-    if (r675 && r675.length){ const row = r675[r675.length-1]; L.price675L = cleanNum(row[6]); date = rocToISO(row[0]) || date; }
-    if (rIdx && rIdx.length){ const row = rIdx[rIdx.length-1]; L.marketCurrent = cleanNum(row[4]); date = rocToISO(row[0]) || date; }
-    if (date){
-      L.quoteDate = date;
-      quoteMsg = '';
+    const idxRows = results[results.length - 1];
+    let date = '', got = 0, missed = [];
+    targets.forEach((it, i) => {
+      const rows = results[i];
+      if (rows && rows.length){
+        const row = rows[rows.length - 1];
+        it.price = cleanNum(row[6]);      // 收盤價
+        date = rocToISO(row[0]) || date;
+        got++;
+      }else{
+        missed.push(it.id);
+      }
+    });
+    if (idxRows && idxRows.length){
+      const row = idxRows[idxRows.length - 1];
+      state.leverage.marketCurrent = cleanNum(row[4]);
+      date = rocToISO(row[0]) || date;
+    }
+    if (got || (idxRows && idxRows.length)){
+      if (date) state.leverage.quoteDate = date;
+      quoteMsg = missed.length ? '查不到:' + missed.join('、') + '(代號是否正確?)' : '';
       try{ localStorage.setItem(QUOTE_TS_KEY, String(Date.now())); }catch(e){}
       scheduleSave();
     }else{
@@ -741,19 +790,24 @@ function maybeAutoQuote(){
 /* ===================== 部位損益 =====================
    買賣紀錄用加權平均成本法。整體損益要扣掉借款的累積利息,
    否則槓桿部位看起來永遠比實際好。 */
-const SYMBOLS = [
-  { id:'00631L', name:'元大台灣50正2' },
-  { id:'00675L', name:'富邦臺灣加權正2' }
-];
-const symbolName = id => (SYMBOLS.find(s => s.id === id) || {}).name || id;
+const findInstrument = id => state.instruments.find(x => x.id === id);
+const symbolName = id => (findInstrument(id) || {}).name || id;
 function symbolPrice(sym){
-  const L = state.leverage;
-  return sym === '00631L' ? L.price631L : sym === '00675L' ? L.price675L : 0;
+  const it = findInstrument(sym);
+  return it ? it.price : 0;
+}
+/* 槓桿倍數:正2 填 2,一般股票 1,反1 填 -1。用來算實質市場曝險。 */
+function symbolLeverage(sym){
+  const it = findInstrument(sym);
+  return it && it.leverage !== 0 ? it.leverage : 1;
 }
 const hasTrades = () => state.trades.length > 0;
 function heldShares(sym){
   let n = 0;
-  state.trades.forEach(t => { if (t.symbol === sym) n += (t.action === 'sell' ? -t.shares : t.shares); });
+  state.trades.forEach(t => {
+    if (t.symbol !== sym || t.action === 'dividend') return;
+    n += (t.action === 'sell' ? -t.shares : t.shares);
+  });
   return Math.max(0, n);
 }
 /* 手續費 0.1425%(最低 20 元),賣出另加 0.1% 證交稅 */
@@ -774,13 +828,17 @@ function accruedInterest(){
 }
 function computePosition(){
   const lots = {};
-  let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0;
+  let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0;
   const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   sorted.forEach(t => {
     const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
     const gross = t.shares * t.price;
     fees += t.fee;
-    if (t.action === 'sell'){
+    if (t.action === 'dividend'){
+      // 配息當成已實現收益,不動持股成本
+      realized += t.amount - t.fee;
+      dividends += t.amount - t.fee;
+    }else if (t.action === 'sell'){
       const avg = lot.shares > 0 ? lot.cost / lot.shares : 0;
       const qty = Math.min(t.shares, lot.shares);
       const costOut = avg * qty;
@@ -805,7 +863,7 @@ function computePosition(){
   const invested = buyCash + buyLoan;
   const years = sorted.length ? Math.max(daysSince(sorted[0].date) / 365.25, 0) : 0;
   return {
-    lots, buyCash, buyLoan, invested, sellNet, realized, unrealized, interest, total,
+    lots, buyCash, buyLoan, invested, sellNet, realized, dividends, unrealized, interest, total,
     marketValue, remainCost, fees, years,
     hasData: sorted.length > 0,
     returnOnCash: buyCash > 0 ? total / buyCash * 100 : 0,
@@ -824,7 +882,10 @@ function computeRisk(){
   const loan = r.usedAmount;
   const equity = pv - loan;
   const nw = netWorth();
-  const exposure = pv * 2;                       // 正2 → 實質跟著大盤跑的金額
+  // 實質曝險:每檔各自乘上自己的槓桿倍數(正2 = 2,一般股票 = 1)
+  const exposure = p.hasData
+    ? sum(state.instruments, it => heldShares(it.id) * it.price * (it.leverage || 1))
+    : sum(r.holdings, h => h.value * (h.leverage || 1));
   // 分母 = 自己的錢 + 房貸總額度。用部位淨值而非部位市值,
   // 否則已動用的部分會同時被算進部位與額度裡,比例失真偏樂觀。
   const capacity = equity + state.leverage.creditLimit;
@@ -865,17 +926,60 @@ function maybeSnapshot(){
   return true;
 }
 
+/* 壓力測試:大盤跌 d% 時,各標的照自己的槓桿倍數換算 */
+function computeStress(d){
+  const decline = num(d);
+  const k = computeRisk();
+  const r = computeLeverage();
+  const L = state.leverage;
+  if (!(k.pv > 0) || !decline) return null;
+
+  let newPv = 0;
+  r.holdings.forEach(h => {
+    const shares = hasTrades() ? heldShares(h.id) : h.shares;
+    const drop = decline * (h.leverage || 1) / 100;
+    newPv += shares * h.price * Math.max(0, 1 - drop);
+  });
+  const loss = k.pv - newPv;
+  const newEquity = newPv - k.loan;
+  const newExposure = (() => {
+    let e = 0;
+    r.holdings.forEach(h => {
+      const shares = hasTrades() ? heldShares(h.id) : h.shares;
+      const drop = decline * (h.leverage || 1) / 100;
+      e += shares * h.price * Math.max(0, 1 - drop) * (h.leverage || 1);
+    });
+    return e;
+  })();
+  const newCapacity = newEquity + L.creditLimit;
+
+  const index = L.marketCurrent;
+  const newIndex = index ? index * (1 - decline / 100) : 0;
+  const wouldTrigger = (newIndex && L.marketHigh)
+    ? r.tranches.filter(t => !t.used && newIndex <= t.triggerLevel)
+    : [];
+  const needCash = sum(wouldTrigger, t => t.amount);
+  const newInterest = (k.loan + needCash) * (L.annualRate / 100) / 12;
+
+  return {
+    decline, pv: k.pv, newPv, loss, equity: k.equity, newEquity,
+    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0,
+    nw: k.nw, newNw: k.nw - loss, index, newIndex,
+    wouldTrigger, needCash, interest: k.monthlyInterest, newInterest
+  };
+}
+
 /* ===================== 分頁 ===================== */
 let currentTab = 'overview';
 let viewMonth = thisMonth();
 let editingTx = null;
 let editingTrade = null;
 let tradeError = '';
-let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', fee:'', note:'' };
+let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'' };
 let pendingConfirm = null;   // iframe 內 confirm() 可能被擋,改用頁面內二次確認
 let dataMsg = '';
 let draftError = '';
-let draft = { date: todayISO(), type:'expense', cat:'', desc:'', amount:'' };
+let draft = { date: todayISO(), type:'expense', cat:'', desc:'', amount:'', newCat:false };
 
 function monthNav(){
   return `
@@ -1178,6 +1282,8 @@ function refreshAssets(){
 
 /* ===================== 記帳 ===================== */
 function renderLedger(){
+  const cats0 = knownCats();
+  if (!draft.newCat && !cats0.includes(draft.cat)) draft.cat = cats0[0] || '';
   const tx = txOfMonth(viewMonth).slice().sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   const flow = monthFlow(viewMonth);
   const cats = knownCats();
@@ -1194,8 +1300,15 @@ function renderLedger(){
         <div class="field"><label>金額</label><input type="number" inputmode="decimal" data-k="d-amount" value="${esc(draft.amount)}" placeholder="0"></div>
       </div>
       <div class="field"><label>類別</label>
-        <input data-k="d-cat" value="${esc(draft.cat)}" list="catlist" placeholder="${draft.type === 'income' ? '例如:薪資' : '例如:餐飲'}">
-        <datalist id="catlist">${cats.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+        ${draft.newCat ? `
+          <input data-k="d-cat" value="${esc(draft.cat)}" placeholder="${draft.type === 'income' ? '例如:薪資' : '例如:餐飲'}" autofocus>
+          <button class="btn quiet" data-act="cat-pick">改用現有類別</button>
+        ` : `
+          <select data-k="d-cat">
+            ${cats.map(c => `<option value="${esc(c)}" ${draft.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+            <option value="__new__" ${draft.cat === '__new__' ? 'selected' : ''}>＋ 新增類別…</option>
+          </select>
+        `}
       </div>
       <div class="field"><label>說明(可留空)</label><input data-k="d-desc" value="${esc(draft.desc)}" placeholder="例如:超市採買"></div>
       <button class="btn solid" data-act="add-tx">新增紀錄</button>
@@ -1217,7 +1330,11 @@ function renderLedger(){
             <div class="field"><label>日期</label><input type="date" data-k="tdate-${t.id}" value="${esc(t.date)}"></div>
             <div class="field"><label>金額(支出填負數)</label><input type="number" inputmode="decimal" data-k="tamt-${t.id}" value="${t.amount}"></div>
           </div>
-          <div class="field"><label>類別</label><input data-k="tcat-${t.id}" value="${esc(t.cat)}" list="catlist"></div>
+          <div class="field"><label>類別</label>
+            <select data-k="tcat-${t.id}">
+              ${cats.concat(cats.includes(t.cat) ? [] : [t.cat]).map(c => `<option value="${esc(c)}" ${t.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+            </select>
+          </div>
           <div class="field"><label>說明</label><input data-k="tdesc-${t.id}" value="${esc(t.desc)}"></div>
           <div class="btn-row">
             <button class="btn quiet" data-act="close-tx">完成</button>
@@ -1238,12 +1355,12 @@ function renderLedger(){
 /* ===================== 槓桿 ===================== */
 function computeLeverage(){
   const L = state.leverage;
-  // 有買賣紀錄就以紀錄為準,否則用手填的股數
-  const sh675 = hasTrades() ? heldShares('00675L') : L.shares675L;
-  const sh631 = hasTrades() ? heldShares('00631L') : L.shares631L;
-  const value675L = sh675 * L.price675L;
-  const value631L = sh631 * L.price631L;
-  const totalValue = value675L + value631L;
+  // 有買賣紀錄就以紀錄為準,否則用標的清單裡手填的股數
+  const holdings = state.instruments.map(it => {
+    const shares = hasTrades() ? heldShares(it.id) : it.shares;
+    return { id:it.id, name:it.name, leverage:it.leverage, price:it.price, shares, value: shares * it.price };
+  });
+  const totalValue = sum(holdings, h => h.value);
 
   const tranches = L.tranches.map(t => {
     const triggerLevel = L.marketHigh * (1 + t.thresholdPct/100);
@@ -1266,7 +1383,7 @@ function computeLeverage(){
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
-  return { value675L, value631L, sh675, sh631, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
+  return { holdings, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
            exitThreshold, exitReached, anyUsed, positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
@@ -1423,7 +1540,8 @@ function renderPnL(){
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
       <div class="row"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
       <div class="row"><span class="label">未實現損益</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
-      ${p.realized ? `<div class="row"><span class="label">已實現損益</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
+      ${p.realized ? `<div class="row"><span class="label">已實現損益${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
+      ${p.dividends ? `<div class="row"><span class="label">　其中配息</span><span class="val pos">+NT$ ${fmt(p.dividends)}</span></div>` : ''}
       <div class="row"><span class="label">累積借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
       <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
         <span class="label" style="font-weight:700; color:var(--text);">整體損益</span>
@@ -1453,26 +1571,36 @@ function renderTrades(){
   return `
     <div class="card">
       <h3>記一筆買賣</h3>
-      <div class="seg">
-        ${SYMBOLS.map(sy => `<button class="seg-btn ${d.symbol === sy.id ? 'on' : ''}" data-act="draft-symbol" data-v="${sy.id}">${sy.id}</button>`).join('')}
+      <div class="field"><label>標的</label>
+        <select data-k="pd-symbol">
+          ${state.instruments.map(it => `<option value="${esc(it.id)}" ${d.symbol === it.id ? 'selected' : ''}>${esc(it.id)}${it.name ? ' ' + esc(it.name) : ''}</option>`).join('')}
+        </select>
       </div>
-      <div class="seg" style="margin-top:8px;">
+      <div class="seg">
         <button class="seg-btn ${d.action === 'buy' ? 'on' : ''}" data-act="draft-action" data-v="buy">買進</button>
         <button class="seg-btn ${d.action === 'sell' ? 'on' : ''}" data-act="draft-action" data-v="sell">賣出</button>
+        <button class="seg-btn ${d.action === 'dividend' ? 'on' : ''}" data-act="draft-action" data-v="dividend">配息</button>
       </div>
       ${d.action === 'buy' ? `
       <div class="seg" style="margin-top:8px;">
         <button class="seg-btn ${d.source === 'cash' ? 'on' : ''}" data-act="draft-source" data-v="cash">自有資金</button>
         <button class="seg-btn ${d.source === 'loan' ? 'on' : ''}" data-act="draft-source" data-v="loan">房貸借款</button>
       </div>` : ''}
+      ${d.action === 'dividend' ? `
+      <div class="grid2" style="margin-top:9px;">
+        <div class="field"><label>配息日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
+        <div class="field"><label>領到的金額</label><input type="number" inputmode="decimal" data-k="pd-amount" value="${esc(d.amount)}" placeholder="0"></div>
+      </div>
+      <div class="field"><label>代扣稅費(可空)</label><input type="number" inputmode="decimal" data-k="pd-fee" value="${esc(d.fee)}" placeholder="0"></div>
+      ` : `
       <div class="grid2" style="margin-top:9px;">
         <div class="field"><label>日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
         <div class="field"><label>股數</label><input type="number" inputmode="decimal" data-k="pd-shares" value="${esc(d.shares)}" placeholder="0"></div>
         <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pd-price" value="${esc(d.price)}" placeholder="${symbolPrice(d.symbol) || '0'}"></div>
         <div class="field"><label>手續費(可空)</label><input type="number" inputmode="decimal" data-k="pd-fee" value="${esc(d.fee)}" placeholder="${gross ? fmt(defaultFee(d.action, gross)) : '自動'}"></div>
-      </div>
+      </div>`}
       <div class="field"><label>備註(可空)</label><input data-k="pd-note" value="${esc(d.note)}" placeholder="例如:年終獎金加碼"></div>
-      ${gross ? `<div class="muted" style="margin-bottom:8px;">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>` : ''}
+      ${(gross && d.action !== 'dividend') ? `<div class="muted" style="margin-bottom:8px;">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>` : ''}
       <button class="btn solid" data-act="add-trade">新增紀錄</button>
       ${tradeError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(tradeError)}</div>` : ''}
     </div>
@@ -1495,11 +1623,11 @@ function renderTrades(){
         </div>` : `
         <div class="tx" data-act="edit-trade" data-id="${t.id}">
           <div>
-            <div class="tx-cat">${t.action === 'sell' ? '賣出' : '買進'} ${esc(t.symbol)}
+            <div class="tx-cat">${t.action === 'sell' ? '賣出' : t.action === 'dividend' ? '配息' : '買進'} ${esc(t.symbol)}
               ${t.action === 'buy' ? `<span class="badge ${t.source === 'loan' ? 'amber' : 'gray'}" style="margin-left:4px;">${t.source === 'loan' ? '房貸' : '自有'}</span>` : ''}</div>
-            <div class="tx-desc">${esc(t.date)} · ${fmt(t.shares)} 股 @ ${t.price}${t.note ? ' · ' + esc(t.note) : ''}</div>
+            <div class="tx-desc">${esc(t.date)}${t.action === 'dividend' ? '' : ' · ' + fmt(t.shares) + ' 股 @ ' + t.price}${t.note ? ' · ' + esc(t.note) : ''}</div>
           </div>
-          <div class="tx-amt ${t.action === 'sell' ? 'income' : ''}">${t.action === 'sell' ? '+' : '−'}${fmt(t.shares * t.price + (t.action === 'sell' ? -t.fee : t.fee))}</div>
+          <div class="tx-amt ${t.action === 'buy' ? '' : 'income'}">${t.action === 'buy' ? '−' : '+'}${fmt(t.action === 'dividend' ? t.amount - t.fee : t.shares * t.price + (t.action === 'sell' ? -t.fee : t.fee))}</div>
         </div>`).join('') : `<div class="empty">還沒有紀錄。<br>每次用薪水、獎金或房貸進場都記一筆,損益就會自動算。</div>`}
       ${trades.length ? `<div class="notice">點任一筆可以修改或刪除。持股股數會由這些紀錄自動加總。</div>` : ''}
     </div>`;
@@ -1520,11 +1648,28 @@ function renderLeverage(){
 
     <div class="card">
       <h3>壓力測試</h3>
-      <div class="field"><label>大盤跌幅(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
-      <div class="row"><span class="label">正2部位跌幅</span><span class="val" id="out-positionDeclinePct">${fmtPct(-r.positionDeclinePct)}</span></div>
-      <div class="row"><span class="label">虧損金額</span><span class="val neg" id="out-lossAmount">NT$ ${fmt(r.lossAmount)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">剩餘淨資產</span><span class="val" id="out-remainingNetWorth" style="font-weight:800;">NT$ ${fmt(r.remainingNetWorth)}</span></div>
-      <div class="notice">剩餘淨資產用「資產」分頁的淨資產減去虧損。此為簡化估算,未計入正2 ETF 的波動耗損與追蹤誤差。</div>
+      <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
+      ${(() => {
+        const st = computeStress(L.stressDeclinePct);
+        if (!st) return `<div class="empty">先填入持股與股價,或記幾筆買賣,才算得出來。</div>`;
+        return `
+        <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
+        <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
+        <div class="row"><span class="label">部位淨值(自己的錢)</span>
+          <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
+        <div class="row"><span class="label">曝險比例</span>
+          <span class="val ${st.newRatio > 100 ? 'neg' : ''}">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
+        <div class="row"><span class="label">淨資產</span><span class="val">NT$ ${fmt(st.nw)} → ${fmt(st.newNw)}</span></div>
+        ${st.newIndex ? `<div class="row"><span class="label">大盤點位</span><span class="val">${fmt(st.index)} → ${fmt(st.newIndex)}</span></div>` : ''}
+        ${st.wouldTrigger.length ? `
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
+            <div class="row"><span class="label" style="font-weight:700; color:var(--text);">這個跌幅會觸發</span>
+              <span class="val" style="font-weight:800;">NT$ ${fmt(st.needCash)}</span></div>
+            ${st.wouldTrigger.map(t => `<div class="row"><span class="muted">${esc(t.label)}(${t.thresholdPct}%)</span><span class="muted">NT$ ${fmt(t.amount)}</span></div>`).join('')}
+            <div class="row"><span class="label">屆時每月利息</span><span class="val">NT$ ${fmt(st.newInterest)}(現在 ${fmt(st.interest)})</span></div>
+          </div>` : (st.newIndex ? `<div class="muted" style="margin-top:10px;">這個跌幅還不會觸發任何一桶金。</div>` : '')}
+        <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
+      })()}
     </div>
 
     <div class="sect">加碼與減碼訊號</div>
@@ -1597,23 +1742,34 @@ function renderLeverage(){
 
     <div class="card">
       <h3>持股與報價</h3>
-      <div class="grid2">
-        <div class="field"><label>00675L 股數${hasTrades() ? '(自動)' : ''}</label>
-          <input type="number" inputmode="decimal" data-k="lev-shares675L" value="${hasTrades() ? r.sh675 : (L.shares675L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
-        <div class="field"><label>00675L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price675L" value="${L.price675L || ''}"></div>
-        <div class="field"><label>00631L 股數${hasTrades() ? '(自動)' : ''}</label>
-          <input type="number" inputmode="decimal" data-k="lev-shares631L" value="${hasTrades() ? r.sh631 : (L.shares631L || '')}" ${hasTrades() ? 'readonly' : ''}></div>
-        <div class="field"><label>00631L 股價</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-price631L" value="${L.price631L || ''}"></div>
-      </div>
-      ${hasTrades() ? `<div class="muted" style="margin-bottom:4px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
-      <div class="row"><span class="label">00675L 市值</span><span class="val" id="out-value675L">NT$ ${fmt(r.value675L)}</span></div>
-      <div class="row"><span class="label">00631L 市值</span><span class="val" id="out-value631L">NT$ ${fmt(r.value631L)}</span></div>
+      ${state.instruments.map(it => {
+        const shares = hasTrades() ? heldShares(it.id) : it.shares;
+        return `
+        <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+          <div class="erow" style="margin-top:0;">
+            <input class="f-name" data-k="in-id-${it.id}" value="${esc(it.id)}" placeholder="代號 如 0050">
+            <input class="f-amt" data-k="in-name-${it.id}" value="${esc(it.name)}" placeholder="名稱" style="text-align:left;">
+            <button class="xbtn" data-act="del-instrument" data-id="${esc(it.id)}" aria-label="刪除">✕</button>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>股數${hasTrades() ? '(自動)' : ''}</label>
+              <input type="number" inputmode="decimal" data-k="in-shares-${it.id}" value="${shares || ''}" ${hasTrades() ? 'readonly' : ''}></div>
+            <div class="field"><label>股價</label>
+              <input type="number" inputmode="decimal" step="0.01" data-k="in-price-${it.id}" value="${it.price || ''}"></div>
+          </div>
+          <div class="field"><label>槓桿倍數(正2 填 2,一般股票填 1)</label>
+            <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.id}" value="${it.leverage}"></div>
+          <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.id}">NT$ ${fmt(shares * it.price)}</span></div>
+        </div>`;
+      }).join('')}
       <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
+      <button class="btn" data-act="add-instrument">＋ 新增標的</button>
+      ${hasTrades() ? `<div class="muted" style="margin-top:6px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
       ${QUOTES_ENABLED ? `
         <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
         <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
-          : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。股數請自己填。'
-          : '可自動帶入 00631L、00675L 收盤價與大盤點位。股數請自己填。'}</div>` : ''}
+          : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。上市櫃代號都查得到。'
+          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。'}</div>` : ''}
     </div>
 
     <div class="notice">
@@ -1625,8 +1781,7 @@ function refreshLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-  set('out-value675L', 'NT$ ' + fmt(r.value675L));
-  set('out-value631L', 'NT$ ' + fmt(r.value631L));
+  r.holdings.forEach(h => set('out-val-' + h.id, 'NT$ ' + fmt(h.value)));
   set('out-totalValue', 'NT$ ' + fmt(r.totalValue));
   r.tranches.forEach(t => {
     const badge = document.getElementById('out-status-' + t.id);
@@ -1691,6 +1846,26 @@ function onField(key, el){
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
   }
   else if (kind === 'lev'){ state.leverage[rest] = num(el.value); }
+  else if (kind === 'in'){                       // 標的清單
+    const cut = rest.indexOf('-');
+    const what = rest.slice(0, cut), iid = rest.slice(cut + 1);
+    const it = findInstrument(iid);
+    if (it){
+      if (what === 'id'){
+        const next = el.value.trim();
+        if (next && !findInstrument(next)){
+          state.trades.forEach(t => { if (t.symbol === iid) t.symbol = next; });
+          if (tradeDraft.symbol === iid) tradeDraft.symbol = next;
+          it.id = next;
+          structural = true;
+        }
+      }
+      else if (what === 'name') it.name = el.value;
+      else if (what === 'lev') it.leverage = num(el.value);
+      else if (what === 'price') it.price = num(el.value);
+      else if (what === 'shares') it.shares = num(el.value);
+    }
+  }
   else if (kind === 'tr'){
     const p = rest.indexOf('-');
     const what = rest.slice(0, p), id = rest.slice(p + 1);
@@ -1707,7 +1882,16 @@ function onField(key, el){
     if (rest === 'amt') state.leverage.core.amount = num(el.value);
     else state.leverage.core.useDate = el.value;
   }
-  else if (kind === 'd'){ draft[rest] = el.value; return; }        // 草稿不入庫
+  else if (kind === 'd'){
+    if (rest === 'cat' && el.value === '__new__'){   // 下拉選到「新增類別…」
+      draft.cat = '';
+      draft.newCat = true;
+      renderAll();
+      return;
+    }
+    draft[rest] = el.value;
+    return;                                          // 草稿不入庫
+  }
   else if (kind === 'pd'){                                          // 買賣草稿
     tradeDraft[rest] = el.value;
     if (rest === 'shares' || rest === 'price') renderAll();          // 更新成交金額預估
@@ -1783,8 +1967,10 @@ function sampleData(){
   }));
   s.leverage.marketHigh = 24000;
   s.leverage.marketCurrent = 21500;
-  s.leverage.shares675L = 20000; s.leverage.price675L = 42.5;
-  s.leverage.shares631L = 15000; s.leverage.price631L = 128.6;
+  s.instruments = [
+    { id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true },
+    { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true }
+  ];
   s.leverage.historicalHighValue = 2950000;
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
@@ -1890,27 +2076,42 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
-    case 'draft-symbol': tradeDraft.symbol = el.dataset.v; break;
+    case 'add-instrument':
+      state.instruments.push({ id:'', name:'', leverage:1, price:0, shares:0, auto:true });
+      break;
+    case 'del-instrument':
+      state.instruments = state.instruments.filter(x => x.id !== id);
+      break;
     case 'draft-action': tradeDraft.action = el.dataset.v; break;
+    case 'cat-pick': draft.newCat = false; draft.cat = knownCats()[0] || ''; break;
     case 'draft-source': tradeDraft.source = el.dataset.v; break;
     case 'add-trade': {
-      const shares = Math.abs(num(tradeDraft.shares));
-      const price = Math.abs(num(tradeDraft.price));
-      if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
-      const gross = shares * price;
-      state.trades.push({
+      const d0 = tradeDraft;
+      const base = {
         id: uid(),
-        date: tradeDraft.date || todayISO(),
-        symbol: tradeDraft.symbol,
-        action: tradeDraft.action,
-        shares, price,
-        fee: tradeDraft.fee === '' ? defaultFee(tradeDraft.action, gross) : Math.abs(num(tradeDraft.fee)),
-        source: tradeDraft.action === 'sell' ? 'cash' : tradeDraft.source,
-        note: tradeDraft.note.trim()
-      });
+        date: d0.date || todayISO(),
+        symbol: d0.symbol,
+        action: d0.action,
+        note: d0.note.trim(),
+        source: d0.action === 'buy' ? d0.source : 'cash'
+      };
+      if (d0.action === 'dividend'){
+        const amount = Math.abs(num(d0.amount));
+        if (!amount){ tradeError = '請填領到的金額'; renderAll(); return; }
+        state.trades.push(Object.assign(base, { shares:0, price:0, amount, fee: Math.abs(num(d0.fee)) }));
+      }else{
+        const shares = Math.abs(num(d0.shares));
+        const price = Math.abs(num(d0.price));
+        if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
+        const gross = shares * price;
+        state.trades.push(Object.assign(base, {
+          shares, price, amount: 0,
+          fee: d0.fee === '' ? defaultFee(d0.action, gross) : Math.abs(num(d0.fee))
+        }));
+      }
       tradeError = '';
-      tradeDraft = { date: tradeDraft.date, symbol: tradeDraft.symbol, action: tradeDraft.action,
-                     source: tradeDraft.source, shares:'', price:'', fee:'', note:'' };
+      tradeDraft = { date: d0.date, symbol: d0.symbol, action: d0.action, source: d0.source,
+                     shares:'', price:'', amount:'', fee:'', note:'' };
       break;
     }
     case 'edit-trade': editingTrade = id; break;
@@ -1947,12 +2148,12 @@ function onClick(el){
       state.transactions.push({
         id:uid(),
         date: draft.date || todayISO(),
-        cat: (draft.cat || '').trim() || (draft.type === 'income' ? '收入' : '其他'),
+        cat: (draft.cat || '').trim() || knownCats()[0] || (draft.type === 'income' ? '收入' : '其他'),
         desc: draft.desc.trim(),
         amount: draft.type === 'income' ? amt : -amt
       });
       viewMonth = (draft.date || todayISO()).slice(0,7);
-      draft = { date: draft.date || todayISO(), type: draft.type, cat:'', desc:'', amount:'' };
+      draft = { date: draft.date || todayISO(), type: draft.type, cat: draft.cat, desc:'', amount:'', newCat:false };
       break;
     }
     case 'edit-tx': editingTx = id; break;
