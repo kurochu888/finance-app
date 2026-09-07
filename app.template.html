@@ -269,16 +269,18 @@ const DEFAULT_LEVERAGE = {
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
 const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
+/* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
   { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true },
   { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true }
 ];
+const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: uid() }, x));
 
 function emptyState(){
   return {
     version:2,
     assets:[], liabilities:[], trades:[],
-    instruments: JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS)),
+    instruments: newInstruments(),
     budgets: DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 })),   // 類別清單
     transactions:[], netWorthHistory:[],
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
@@ -295,11 +297,12 @@ function normalize(raw){
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
   if (Array.isArray(raw.instruments) && raw.instruments.length){
     s.instruments = raw.instruments.map(x => ({
-      id: String(x.id || '').trim() || uid(),
+      key: String(x.key || '') || uid(),
+      id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
       name: String(x.name || ''),
       leverage: x.leverage === undefined ? 1 : num(x.leverage),
-      price: num(x.price),
-      shares: num(x.shares),
+      price: Math.max(0, num(x.price)),
+      shares: Math.max(0, num(x.shares)),
       auto: x.auto !== false
     }));
   }
@@ -308,10 +311,10 @@ function normalize(raw){
     date: String(t.date || todayISO()).slice(0, 10),
     symbol: String(t.symbol || '00631L'),
     action: ['sell', 'dividend'].includes(t.action) ? t.action : 'buy',
-    shares: num(t.shares),
-    price: num(t.price),
-    amount: num(t.amount),      // 配息領到的金額
-    fee: num(t.fee),
+    shares: Math.max(0, num(t.shares)),
+    price: Math.max(0, num(t.price)),
+    amount: Math.max(0, num(t.amount)),      // 配息領到的金額
+    fee: Math.max(0, num(t.fee)),
     source: t.source === 'loan' ? 'loan' : 'cash',
     note: String(t.note || '')
   }));
@@ -334,19 +337,19 @@ function normalize(raw){
   const base = s.leverage;
   ['shares675L','price675L','shares631L','price631L','marketHigh','marketCurrent',
    'historicalHighValue','stressDeclinePct','creditLimit','annualRate'].forEach(k => {
-    if (L[k] !== undefined) base[k] = num(L[k]);
+    if (L[k] !== undefined) base[k] = Math.max(0, num(L[k]));   // 這些欄位沒有負值的意義
   });
   if (Array.isArray(L.tranches) && L.tranches.length){
     base.tranches = L.tranches.map((t, i) => ({
       id: t.id || ('t' + (i+1)),
       label: String(t.label || ('第' + (i+1) + '桶金')),
       thresholdPct: num(t.thresholdPct),
-      amount: num(t.amount),
+      amount: Math.max(0, num(t.amount)),
       useDate: String(t.useDate || ''),
       useIndex: num(t.useIndex),
       note: String(t.note || ''),
       repayments: (Array.isArray(t.repayments) ? t.repayments : [])
-        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: num(x.amount) }))
+        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
     }));
   }
   base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
@@ -366,7 +369,7 @@ function normalize(raw){
       amount: num(L.core.amount),
       useDate: String(L.core.useDate || ''),
       repayments: (Array.isArray(L.core.repayments) ? L.core.repayments : [])
-        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: num(x.amount) }))
+        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
     };
   }
   return s;
@@ -687,6 +690,7 @@ const QUOTE_TS_KEY = 'financeQuoteFetchedAt';
 
 let quoteBusy = false;
 let quoteMsg = '';
+let levMsg = '';      // 持股與報價卡的提示
 
 const cleanNum = v => num(String(v).replace(/,/g, ''));
 function rocToISO(s){                       // '115/09/04' → '2026-09-04'
@@ -770,6 +774,7 @@ function maybeAutoQuote(){
    買賣紀錄用加權平均成本法。整體損益要扣掉借款的累積利息,
    否則槓桿部位看起來永遠比實際好。 */
 const findInstrument = id => state.instruments.find(x => x.id === id);
+const findInstrumentByKey = k => state.instruments.find(x => x.key === k);
 const symbolName = id => (findInstrument(id) || {}).name || id;
 function symbolPrice(sym){
   const it = findInstrument(sym);
@@ -800,9 +805,7 @@ function defaultFee(action, gross){
 function accrue(item, annualPct){
   if (!item.useDate) return 0;
   const today = todayISO();
-  const events = (item.repayments || [])
-    .filter(r => r.date && r.date >= item.useDate && r.date <= today)
-    .sort((a, b) => a.date < b.date ? -1 : 1);
+  const events = effectiveRepayments(item);
   let balance = item.amount;
   let cursor = item.useDate;
   let total = 0;
@@ -816,13 +819,20 @@ function accrue(item, annualPct){
   total += balance * (annualPct / 100) * (daysBetweenISO(cursor, today) / 365.25);
   return total;
 }
-/* 這一筆還欠多少 */
+/* 只認動用日之後、今天以前的還款 —— 未來日期的還款不能讓餘額先歸零,
+   否則餘額和利息會對不起來 */
+function effectiveRepayments(item){
+  if (!item || !item.useDate) return [];
+  const today = todayISO();
+  return (item.repayments || [])
+    .filter(r => r.date && r.date >= item.useDate && r.date <= today)
+    .sort((a, b) => a.date < b.date ? -1 : 1);
+}
+const repaidOf = item => Math.min(item.amount, sum(effectiveRepayments(item), r => r.amount));
 function outstanding(item){
   if (!item.useDate) return 0;
-  const repaid = sum(item.repayments || [], r => r.amount);
-  return Math.max(0, item.amount - repaid);
+  return Math.max(0, item.amount - repaidOf(item));
 }
-const repaidOf = item => sum(item.repayments || [], r => r.amount);
 
 /* 已動用的房貸,從動用日算到今天的累積利息 */
 function accruedInterest(){
@@ -831,7 +841,7 @@ function accruedInterest(){
 }
 function computePosition(){
   const lots = {};
-  let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0;
+  let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
   const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   sorted.forEach(t => {
     const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
@@ -843,10 +853,12 @@ function computePosition(){
       dividends += t.amount - t.fee;
     }else if (t.action === 'sell'){
       const avg = lot.shares > 0 ? lot.cost / lot.shares : 0;
-      const qty = Math.min(t.shares, lot.shares);
+      const qty = Math.min(t.shares, lot.shares);      // 賣超過持有的部分不計,否則會憑空變成獲利
+      if (qty < t.shares) oversold = true;
+      const soldGross = qty * t.price;
       const costOut = avg * qty;
-      realized += (gross - t.fee) - costOut;
-      sellNet += gross - t.fee;
+      realized += (soldGross - t.fee) - costOut;
+      sellNet += soldGross - t.fee;
       lot.shares -= qty;
       lot.cost -= costOut;
     }else{
@@ -866,7 +878,7 @@ function computePosition(){
   const invested = buyCash + buyLoan;
   const years = sorted.length ? Math.max(daysSince(sorted[0].date) / 365.25, 0) : 0;
   return {
-    lots, buyCash, buyLoan, invested, sellNet, realized, dividends, unrealized, interest, total,
+    lots, buyCash, buyLoan, invested, sellNet, realized, dividends, unrealized, interest, total, oversold,
     marketValue, remainCost, fees, years,
     hasData: sorted.length > 0,
     returnOnCash: buyCash > 0 ? total / buyCash * 100 : 0,
@@ -886,9 +898,7 @@ function computeRisk(){
   const equity = pv - loan;
   const nw = netWorth();
   // 實質曝險:每檔各自乘上自己的槓桿倍數(正2 = 2,一般股票 = 1)
-  const exposure = p.hasData
-    ? sum(state.instruments, it => heldShares(it.id) * it.price * (it.leverage || 1))
-    : sum(r.holdings, h => h.value * (h.leverage || 1));
+  const exposure = sum(r.holdings, h => h.value * (h.leverage || 1));
   // 分母 = 自己的錢 + 房貸總額度。用部位淨值而非部位市值,
   // 否則已動用的部分會同時被算進部位與額度裡,比例失真偏樂觀。
   const capacity = equity + state.leverage.creditLimit;
@@ -1011,6 +1021,7 @@ function switchTab(tab){
   pendingConfirm = null;
   draftError = '';
   dataMsg = '';
+  levMsg = '';
   backupOpen = false;
   document.getElementById('content').scrollTop = 0;
   renderAll();
@@ -1308,9 +1319,14 @@ function renderLedger(){
 function computeLeverage(){
   const L = state.leverage;
   // 有買賣紀錄就以紀錄為準,否則用標的清單裡手填的股數
+  // 代號重複時只有第一列計入,否則買賣紀錄會被算兩次
+  const seenIds = new Set();
   const holdings = state.instruments.map(it => {
-    const shares = hasTrades() ? heldShares(it.id) : it.shares;
-    return { id:it.id, name:it.name, leverage:it.leverage, price:it.price, shares, value: shares * it.price };
+    const dup = it.id && seenIds.has(it.id);
+    if (it.id) seenIds.add(it.id);
+    const shares = dup ? 0 : (hasTrades() ? heldShares(it.id) : it.shares);
+    return { key:it.key, id:it.id, name:it.name, leverage:it.leverage, price:it.price,
+             shares, value: shares * it.price, dup };
   });
   const totalValue = sum(holdings, h => h.value);
 
@@ -1620,6 +1636,14 @@ function renderTrades(){
           </div>
           <div class="tx-amt ${t.action === 'buy' ? '' : 'income'}">${t.action === 'buy' ? '−' : '+'}${fmt(t.action === 'dividend' ? t.amount - t.fee : t.shares * t.price + (t.action === 'sell' ? -t.fee : t.fee))}</div>
         </div>`).join('') : `<div class="empty">還沒有紀錄。<br>每次用薪水、獎金或房貸進場都記一筆,損益就會自動算。</div>`}
+      ${computePosition().oversold ? `
+        <div class="alert amber" style="margin-top:12px;">
+          <span class="ai">⚠️</span>
+          <div>
+            <div class="at">有一筆賣出超過當時的持股</div>
+            <div class="ad">超出的部分沒有計入損益(不然會憑空多出獲利)。請檢查股數或日期是不是填錯了。</div>
+          </div>
+        </div>` : ''}
       ${trades.length ? `<div class="notice">點任一筆可以修改或刪除。持股股數會由這些紀錄自動加總。</div>` : ''}
     </div>`;
 }
@@ -1774,26 +1798,28 @@ function renderLeverage(){
 
     <div class="card">
       <h3>持股與報價</h3>
-      ${state.instruments.map(it => {
-        const shares = hasTrades() ? heldShares(it.id) : it.shares;
+      ${r.holdings.map(h => {
+        const it = findInstrumentByKey(h.key);
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
           <div class="erow" style="margin-top:0;">
-            <input class="f-name" data-k="in-id-${it.id}" value="${esc(it.id)}" placeholder="代號 如 0050">
-            <input class="f-amt" data-k="in-name-${it.id}" value="${esc(it.name)}" placeholder="名稱" style="text-align:left;">
-            <button class="xbtn" data-act="del-instrument" data-id="${esc(it.id)}" aria-label="刪除">✕</button>
+            <input class="f-name" data-k="in-id-${it.key}" value="${esc(it.id)}" placeholder="代號 如 0050">
+            <input class="f-amt" data-k="in-name-${it.key}" value="${esc(it.name)}" placeholder="名稱" style="text-align:left;">
+            <button class="xbtn" data-act="del-instrument" data-id="${it.key}" aria-label="刪除">✕</button>
           </div>
+          ${h.dup ? `<div class="muted neg">代號和上面某一列重複了,這一列不計入市值。</div>` : ''}
           <div class="grid2">
             <div class="field"><label>股數${hasTrades() ? '(自動)' : ''}</label>
-              <input type="number" inputmode="decimal" data-k="in-shares-${it.id}" value="${shares || ''}" ${hasTrades() ? 'readonly' : ''}></div>
+              <input type="number" inputmode="decimal" data-k="in-shares-${it.key}" value="${h.shares || ''}" ${hasTrades() ? 'readonly' : ''}></div>
             <div class="field"><label>股價</label>
-              <input type="number" inputmode="decimal" step="0.01" data-k="in-price-${it.id}" value="${it.price || ''}"></div>
+              <input type="number" inputmode="decimal" step="0.01" data-k="in-price-${it.key}" value="${it.price || ''}"></div>
           </div>
           <div class="field"><label>槓桿倍數(正2 填 2,一般股票填 1)</label>
-            <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.id}" value="${it.leverage}"></div>
-          <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.id}">NT$ ${fmt(shares * it.price)}</span></div>
+            <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.key}" value="${it.leverage}"></div>
+          <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
         </div>`;
       }).join('')}
+      ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
       <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
       <button class="btn" data-act="add-instrument">＋ 新增標的</button>
       ${hasTrades() ? `<div class="muted" style="margin-top:6px;">股數由買賣紀錄自動加總,不用自己填。</div>` : ''}
@@ -1813,7 +1839,7 @@ function refreshLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-  r.holdings.forEach(h => set('out-val-' + h.id, 'NT$ ' + fmt(h.value)));
+  r.holdings.forEach(h => set('out-val-' + h.key, 'NT$ ' + fmt(h.value)));
   set('out-totalValue', 'NT$ ' + fmt(r.totalValue));
   r.tranches.forEach(t => {
     const badge = document.getElementById('out-status-' + t.id);
@@ -1868,32 +1894,37 @@ function onField(key, el){
   let structural = false;
 
   if (kind === 'an'){ const a = findById(state.assets, rest); if (a) a.name = el.value; }
-  else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = num(el.value); }
+  else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
-  else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = num(el.value); }
+  else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = Math.max(0, num(el.value)); }
   else if (kind === 'nh'){
     const h = findById(state.netWorthHistory, rest);
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
   }
-  else if (kind === 'lev'){ state.leverage[rest] = num(el.value); }
-  else if (kind === 'in'){                       // 標的清單
+  else if (kind === 'lev'){ state.leverage[rest] = Math.max(0, num(el.value)); }
+  else if (kind === 'in'){                       // 標的清單,用內部 key 定位
     const cut = rest.indexOf('-');
-    const what = rest.slice(0, cut), iid = rest.slice(cut + 1);
-    const it = findInstrument(iid);
+    const what = rest.slice(0, cut), ikey = rest.slice(cut + 1);
+    const it = findInstrumentByKey(ikey);
     if (it){
       if (what === 'id'){
         const next = el.value.trim();
-        if (next && !findInstrument(next)){
-          state.trades.forEach(t => { if (t.symbol === iid) t.symbol = next; });
-          if (tradeDraft.symbol === iid) tradeDraft.symbol = next;
+        const taken = state.instruments.some(x => x.key !== it.key && x.id === next);
+        if (next && !taken){
+          const prev = it.id;
+          state.trades.forEach(t => { if (t.symbol === prev) t.symbol = next; });
+          if (tradeDraft.symbol === prev) tradeDraft.symbol = next;
           it.id = next;
+          levMsg = '';
           structural = true;
+        }else if (taken){
+          levMsg = '代號「' + next + '」已經有了。';
         }
       }
       else if (what === 'name') it.name = el.value;
       else if (what === 'lev') it.leverage = num(el.value);
-      else if (what === 'price') it.price = num(el.value);
-      else if (what === 'shares') it.shares = num(el.value);
+      else if (what === 'price') it.price = Math.max(0, num(el.value));
+      else if (what === 'shares') it.shares = Math.max(0, num(el.value));
     }
   }
   else if (kind === 'tr'){
@@ -1901,8 +1932,8 @@ function onField(key, el){
     const what = rest.slice(0, p), id = rest.slice(p + 1);
     const t = findById(state.leverage.tranches, id);
     if (t){
-      if (what === 'pct') t.thresholdPct = num(el.value);
-      else if (what === 'amt') t.amount = num(el.value);
+      if (what === 'pct') t.thresholdPct = num(el.value);      // 跌幅門檻本來就是負數
+      else if (what === 'amt') t.amount = Math.max(0, num(el.value));
       else if (what === 'idx') t.useIndex = num(el.value);
       else if (what === 'note') t.note = el.value;
       else t.useDate = el.value;
@@ -1915,11 +1946,11 @@ function onField(key, el){
     const rp = target && (target.repayments || []).find(x => x.id === rid);
     if (rp){
       if (what === 'date') rp.date = el.value;
-      else rp.amount = num(el.value);
+      else rp.amount = Math.max(0, num(el.value));
     }
   }
   else if (kind === 'core'){
-    if (rest === 'amt') state.leverage.core.amount = num(el.value);
+    if (rest === 'amt') state.leverage.core.amount = Math.max(0, num(el.value));
     else state.leverage.core.useDate = el.value;
   }
   else if (kind === 'd'){
@@ -1944,7 +1975,7 @@ function onField(key, el){
     if (t){
       if (what === 'date') t.date = el.value || todayISO();
       else if (what === 'note') t.note = el.value;
-      else t[what] = num(el.value);
+      else t[what] = Math.max(0, num(el.value));   // 股數、價格、費用都不會是負的
     }
     structural = true;
   }
@@ -2013,8 +2044,8 @@ function sampleData(){
   s.leverage.tranches[0].useIndex = 21500;
   s.leverage.tranches[0].note = '00631L 10,000 股';
   s.instruments = [
-    { id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true },
-    { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true }
+    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true },
+    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true }
   ];
   s.leverage.historicalHighValue = 2950000;
   const back = n => shiftMonth(m, -n) + '-05';
@@ -2213,11 +2244,20 @@ function onClick(el){
       break;
     }
     case 'add-instrument':
-      state.instruments.push({ id:'', name:'', leverage:1, price:0, shares:0, auto:true });
+      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true });
+      levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
-    case 'del-instrument':
-      state.instruments = state.instruments.filter(x => x.id !== id);
+    case 'del-instrument': {
+      const it = findInstrumentByKey(id);
+      if (!it) break;
+      const used = state.trades.filter(t => t.symbol === it.id).length;
+      if (used){
+        levMsg = '「' + (it.id || '未命名') + '」還有 ' + used + ' 筆買賣紀錄,先把那些紀錄刪掉或改成別的代號。';
+        break;
+      }
+      state.instruments = state.instruments.filter(x => x.key !== id);
       break;
+    }
     case 'draft-action': tradeDraft.action = el.dataset.v; break;
     case 'cat-pick': draft.newCat = false; draft.cat = knownCats()[0] || ''; break;
     case 'draft-source': tradeDraft.source = el.dataset.v; break;
