@@ -5,7 +5,9 @@
 
 ## 線上版
 
-GitHub Pages 部署後,用手機瀏覽器打開網址即可。
+**https://kurochu888.github.io/finance-app/**
+
+用手機瀏覽器打開網址即可。
 iPhone:分享 →「加入主畫面」;Android:選單 →「安裝應用程式」。
 安裝後有 app 圖示,離線也能開。
 
@@ -28,7 +30,10 @@ iPhone:分享 →「加入主畫面」;Android:選單 →「安裝應用程式�
 ```sh
 python3 build.py        # 產生下面三個版本
 python3 make_icons.py   # 只有要改圖示時才需要
+git add -A && git commit -m "..." && git push   # 推上去,Pages 會自動更新
 ```
+
+Pages 從 `main` 分支的 `/docs` 目錄發佈。
 
 | 產出 | 用途 | 資料存哪 |
 |---|---|---|
