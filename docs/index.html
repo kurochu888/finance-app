@@ -269,6 +269,11 @@ function shiftMonth(m, delta){
   const d = new Date(y, mo, 1);
   return d.getFullYear() + '-' + pad2(d.getMonth()+1);
 }
+function daysBetweenISO(a, b){
+  const d1 = new Date(a + 'T00:00:00'), d2 = new Date(b + 'T00:00:00');
+  if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 0;
+  return Math.max(0, (d2 - d1) / 86400000);
+}
 function daysSince(dateStr){
   if (!dateStr) return 0;
   const d = new Date(dateStr + 'T00:00:00');
@@ -290,11 +295,11 @@ const DEFAULT_LEVERAGE = {
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
   tranches:[
-    { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'' },
-    { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'' },
-    { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'' }
+    { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'', repayments:[] },
+    { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'', repayments:[] },
+    { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'', repayments:[] }
   ],
-  core:{ label:'長期投資部位', amount:2000000, useDate:'' }
+  core:{ label:'長期投資部位', amount:2000000, useDate:'', repayments:[] }
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
 const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
@@ -373,7 +378,9 @@ function normalize(raw){
       amount: num(t.amount),
       useDate: String(t.useDate || ''),
       useIndex: num(t.useIndex),
-      note: String(t.note || '')
+      note: String(t.note || ''),
+      repayments: (Array.isArray(t.repayments) ? t.repayments : [])
+        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: num(x.amount) }))
     }));
   }
   base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
@@ -388,7 +395,13 @@ function normalize(raw){
     if (!it.price && num(L[pk])) it.price = num(L[pk]);
   });
   if (L.core && typeof L.core === 'object'){
-    base.core = { label:String(L.core.label || '長期投資部位'), amount:num(L.core.amount), useDate:String(L.core.useDate || '') };
+    base.core = {
+      label: String(L.core.label || '長期投資部位'),
+      amount: num(L.core.amount),
+      useDate: String(L.core.useDate || ''),
+      repayments: (Array.isArray(L.core.repayments) ? L.core.repayments : [])
+        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: num(x.amount) }))
+    };
   }
   return s;
 }
@@ -816,15 +829,39 @@ function defaultFee(action, gross){
   const broker = Math.max(20, gross * 0.001425);
   return Math.round(action === 'sell' ? broker + gross * 0.001 : broker);
 }
+/* 一筆借款從動用日到今天,依「實際餘額」分段累積。
+   還款之後只對剩下的餘額繼續算,利息與撤退門檻都用這個。 */
+function accrue(item, annualPct){
+  if (!item.useDate) return 0;
+  const today = todayISO();
+  const events = (item.repayments || [])
+    .filter(r => r.date && r.date >= item.useDate && r.date <= today)
+    .sort((a, b) => a.date < b.date ? -1 : 1);
+  let balance = item.amount;
+  let cursor = item.useDate;
+  let total = 0;
+  events.forEach(r => {
+    if (r.date > cursor){
+      total += balance * (annualPct / 100) * (daysBetweenISO(cursor, r.date) / 365.25);
+      cursor = r.date;
+    }
+    balance = Math.max(0, balance - r.amount);
+  });
+  total += balance * (annualPct / 100) * (daysBetweenISO(cursor, today) / 365.25);
+  return total;
+}
+/* 這一筆還欠多少 */
+function outstanding(item){
+  if (!item.useDate) return 0;
+  const repaid = sum(item.repayments || [], r => r.amount);
+  return Math.max(0, item.amount - repaid);
+}
+const repaidOf = item => sum(item.repayments || [], r => r.amount);
+
 /* 已動用的房貸,從動用日算到今天的累積利息 */
 function accruedInterest(){
   const L = state.leverage;
-  let total = 0;
-  L.tranches.forEach(t => {
-    if (t.useDate) total += t.amount * (L.annualRate / 100) * (daysSince(t.useDate) / 365.25);
-  });
-  if (L.core.useDate) total += L.core.amount * (L.annualRate / 100) * (daysSince(L.core.useDate) / 365.25);
-  return total;
+  return sum(L.tranches, t => accrue(t, L.annualRate)) + accrue(L.core, L.annualRate);
 }
 function computePosition(){
   const lots = {};
@@ -1313,25 +1350,33 @@ function computeLeverage(){
   const tranches = L.tranches.map(t => {
     const triggerLevel = L.marketHigh * (1 + t.thresholdPct/100);
     const triggered = L.marketHigh > 0 && L.marketCurrent > 0 && L.marketCurrent <= triggerLevel;
-    const used = !!t.useDate;
-    return { ...t, triggerLevel, triggered, used, yearsUsed: daysSince(t.useDate)/365.25 };
+    return {
+      ...t,
+      triggerLevel, triggered,
+      used: !!t.useDate,
+      repaid: repaidOf(t),
+      balance: outstanding(t),
+      yearsUsed: daysSince(t.useDate)/365.25
+    };
   });
 
   const usedTranches = tranches.filter(t => t.used);
-  let usedAmount = sum(usedTranches, t => t.amount);
+  const coreBalance = outstanding(L.core);
+  const usedAmount = sum(tranches, t => t.balance) + coreBalance;   // 還欠銀行多少
+  const drawnAmount = sum(usedTranches, t => t.amount) + (L.core.useDate ? L.core.amount : 0);
   const coreUsed = !!L.core.useDate;
-  if (coreUsed) usedAmount += L.core.amount;
 
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
-  const exitThreshold = L.historicalHighValue + sum(usedTranches, t => t.amount * t.yearsUsed * 0.08);
-  // 沒有動用任何一桶就沒有槓桿要撤,不論市值多高都不該亮燈
-  const anyUsed = usedTranches.length > 0;
+  // 撤退門檻的 8% 也依實際餘額累積,還款之後不再照原始金額計算
+  const exitThreshold = L.historicalHighValue + sum(L.tranches, t => accrue(t, 8));
+  // 沒有還在欠的借款就沒有槓桿要撤,不論市值多高都不該亮燈
+  const anyUsed = usedAmount > 0;
   const exitReached = anyUsed && L.historicalHighValue > 0 && totalValue >= exitThreshold;
 
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
-  return { holdings, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
+  return { holdings, totalValue, tranches, usedAmount, drawnAmount, coreBalance, coreUsed, monthlyInterest,
            exitThreshold, exitReached, anyUsed, positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
@@ -1642,19 +1687,40 @@ function renderLeverage(){
           ${t.useDate ? `
             <div class="field"><label>動用時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
             <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="例如:00631L 27,000 股"></div>
-            <div class="muted">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(t.amount * (L.annualRate/100) * t.yearsUsed)}</div>
+            <div class="row"><span class="label">動用 ${fmt(t.amount)}${t.repaid ? ' · 已還 ' + fmt(t.repaid) : ''}</span>
+              <span class="val ${t.balance ? '' : 'pos'}" style="font-weight:700;">${t.balance ? '尚欠 NT$ ' + fmt(t.balance) : '已還清'}</span></div>
+            ${(t.repayments || []).map(rp => `
+              <div class="erow">
+                <input type="date" class="f-name" data-k="rp-date-${t.id}-${rp.id}" value="${esc(rp.date)}">
+                <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${t.id}-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
+                <button class="xbtn" data-act="del-repay" data-id="${t.id}:${rp.id}" aria-label="刪除">✕</button>
+              </div>`).join('')}
+            <button class="btn" data-act="add-repay" data-id="${t.id}">＋ 記一筆還款</button>
+            <div class="muted" style="margin-top:6px;">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(accrue(t, L.annualRate))}</div>
           ` : ''}
         </div>`).join('')}
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span></div>
         <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
         <div class="field"><label>動用日期</label><input type="date" data-k="core-date" value="${esc(L.core.useDate)}"></div>
+        ${L.core.useDate ? `
+          <div class="row"><span class="label">動用 ${fmt(L.core.amount)}${repaidOf(L.core) ? ' · 已還 ' + fmt(repaidOf(L.core)) : ''}</span>
+            <span class="val ${r.coreBalance ? '' : 'pos'}" style="font-weight:700;">${r.coreBalance ? '尚欠 NT$ ' + fmt(r.coreBalance) : '已還清'}</span></div>
+          ${(L.core.repayments || []).map(rp => `
+            <div class="erow">
+              <input type="date" class="f-name" data-k="rp-date-core-${rp.id}" value="${esc(rp.date)}">
+              <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-core-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
+              <button class="xbtn" data-act="del-repay" data-id="core:${rp.id}" aria-label="刪除">✕</button>
+            </div>`).join('')}
+          <button class="btn" data-act="add-repay" data-id="core">＋ 記一筆還款</button>
+        ` : ''}
       </div>
     </div>
 
     <div class="card">
       <h3>借款與利息</h3>
-      <div class="row"><span class="label">已動用金額</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
+      <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
+      ${r.drawnAmount !== r.usedAmount ? `<div class="row"><span class="muted">累計動用 ${fmt(r.drawnAmount)} · 已還 ${fmt(r.drawnAmount - r.usedAmount)}</span><span class="muted"></span></div>` : ''}
       <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
       <div class="grid2" style="margin-top:8px;">
         <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>
@@ -1663,6 +1729,27 @@ function renderLeverage(){
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
       <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
+      ${(() => {
+        const p = computePosition();
+        if (!p.hasData || !r.drawnAmount) return '';
+        const diff = r.drawnAmount - p.buyLoan;
+        const tol = Math.max(10000, r.drawnAmount * 0.02);
+        if (Math.abs(diff) <= tol) return '';
+        return `
+          <div class="alert amber" style="margin-top:12px;">
+            <span class="ai">⚠️</span>
+            <div>
+              <div class="at">兩邊的房貸金額對不起來</div>
+              <div class="ad">
+                動用紀錄合計 NT$ ${fmt(r.drawnAmount)},但買賣紀錄裡標記「房貸借款」的買進只有 NT$ ${fmt(p.buyLoan)},
+                差 NT$ ${fmt(Math.abs(diff))}。${diff > 0
+                  ? '可能是借了還沒買進,或買進時忘了選「房貸借款」。'
+                  : '可能是買進標記成房貸的金額超過實際動用,或動用金額填少了。'}
+                利息與曝險以動用紀錄為準。
+              </div>
+            </div>
+          </div>`;
+      })()}
       <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
         ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
         : ''}</div>
@@ -1680,7 +1767,7 @@ function renderLeverage(){
       <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
       <div class="row"><span class="label">目前總市值</span><span class="val" id="out-exitCurrent">NT$ ${fmt(r.totalValue)}</span></div>
       <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
-      <div class="notice">要有桶金填了「動用日期」才會判斷撤退 —— 沒借錢就沒有槓桿要撤。門檻 = 歷史最高市值 + 已動用金額每年 8% 累加;${esc(L.core.label)}視為長期持有,不列入。</div>
+      <div class="notice">要還有借款餘額才會判斷撤退 —— 全部還清就沒有槓桿要撤。門檻 = 歷史最高市值 + 各桶金依「實際餘額」每年累加 8%(還款後只對剩下的部分算);${esc(L.core.label)}視為長期持有,不列入。</div>
     </div>
 
     <div class="sect">紀錄與設定</div>
@@ -1821,6 +1908,16 @@ function onField(key, el){
       else if (what === 'idx') t.useIndex = num(el.value);
       else if (what === 'note') t.note = el.value;
       else t.useDate = el.value;
+    }
+  }
+  else if (kind === 'rp'){                       // 還款紀錄 rp-<what>-<桶id>-<還款id>
+    const bits = rest.split('-');
+    const what = bits[0], rid = bits[bits.length - 1], tid = bits.slice(1, -1).join('-');
+    const target = tid === 'core' ? state.leverage.core : findById(state.leverage.tranches, tid);
+    const rp = target && (target.repayments || []).find(x => x.id === rid);
+    if (rp){
+      if (what === 'date') rp.date = el.value;
+      else rp.amount = num(el.value);
     }
   }
   else if (kind === 'core'){
@@ -2012,6 +2109,20 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'add-repay': {
+      const target = id === 'core' ? state.leverage.core : findById(state.leverage.tranches, id);
+      if (target){
+        if (!Array.isArray(target.repayments)) target.repayments = [];
+        target.repayments.push({ id: uid(), date: todayISO(), amount: 0 });
+      }
+      break;
+    }
+    case 'del-repay': {
+      const [tid, rid] = String(id).split(':');
+      const target = tid === 'core' ? state.leverage.core : findById(state.leverage.tranches, tid);
+      if (target) target.repayments = (target.repayments || []).filter(x => x.id !== rid);
+      break;
+    }
     case 'add-instrument':
       state.instruments.push({ id:'', name:'', leverage:1, price:0, shares:0, auto:true });
       break;
