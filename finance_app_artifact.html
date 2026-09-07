@@ -1155,6 +1155,7 @@ function renderOverview(){
         <button class="btn quiet" data-act="export">⬇︎ 匯出備份</button>
         <button class="btn quiet" data-act="import">⬆︎ 匯入備份</button>
       </div>
+      <button class="btn quiet" data-act="export-csv">📊 匯出 CSV(給 Excel)</button>
       <div class="btn-row">
         <button class="btn quiet" data-act="copy-json">📋 複製成文字</button>
         <button class="btn quiet" data-act="load-sample">${pendingConfirm === 'load-sample' ? '⚠️ 再按一次覆蓋' : '載入範例'}</button>
@@ -1172,7 +1173,7 @@ function renderOverview(){
       <button class="btn danger" data-act="clear-all">${pendingConfirm === 'clear-all' ? '⚠️ 再按一次清空' : '清空全部'}</button>
       <input type="file" accept="application/json,.json,text/plain" id="importFile" style="display:none">
       ${dataMsg ? `<div class="muted" style="text-align:center; margin-top:10px;">${esc(dataMsg)}</div>` : ''}
-      <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,保留 30 天,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 則可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去。</div>
+      <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,保留 30 天,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去;CSV 是給 Excel 看的,不能匯入。</div>
     </div>`;
 }
 
@@ -1377,7 +1378,9 @@ function syncHighInput(){
 
 /* 通用折線圖。series: [{name, color, values}],values 對齊 labels,可含 null。
    兩條以上一定畫圖例,末端直接標數字,座標文字都用主題色。 */
-function lineChart(labels, series, opts){
+const chartData = {};   // 圖表資料暫存,點擊時查得到數值
+
+function lineChart(key, labels, series, opts){
   const o = Object.assign({ height:130, zero:false, fmtVal: v => 'NT$ ' + fmt(v) }, opts || {});
   const w = 320, h = o.height, padL = 8, padR = 8, padT = 14, padB = 20;
   const all = [];
@@ -1388,7 +1391,8 @@ function lineChart(labels, series, opts){
   if (hi === lo){ hi = lo + Math.abs(lo || 1) * 0.1; lo = lo - Math.abs(lo || 1) * 0.1; }
   const x = i => padL + i * (w - padL - padR) / Math.max(1, labels.length - 1);
   const y = v => (h - padB) - (v - lo) / (hi - lo) * (h - padB - padT);
-  const zeroY = y(0);
+
+  chartData[key] = { labels, series, fmtVal: o.fmtVal, x: labels.map((_, i) => x(i)) };
 
   const paths = series.map(s2 => {
     let d = '', started = false;
@@ -1400,27 +1404,59 @@ function lineChart(labels, series, opts){
     return d ? `<path d="${d}" fill="none" stroke="${s2.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '';
   }).join('');
 
-  const ends = series.map(s2 => {
-    let li = -1;
-    s2.values.forEach((v, i) => { if (v !== null && v !== undefined) li = i; });
-    if (li < 0) return '';
-    return `<circle cx="${x(li).toFixed(1)}" cy="${y(s2.values[li]).toFixed(1)}" r="3.5" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`;
+  const dots = series.map((s2, si) => s2.values.map((v, i) =>
+    (v === null || v === undefined) ? '' :
+    `<circle class="pt-${key}-${si}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === labels.length - 1 ? 3.5 : 0}" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`
+  ).join('')).join('');
+
+  // 整欄都可以點,手指好按
+  const hits = labels.map((_, i) => {
+    const half = (w - padL - padR) / Math.max(1, labels.length - 1) / 2;
+    const x0 = Math.max(0, x(i) - half), x1 = Math.min(w, x(i) + half);
+    return `<rect x="${x0.toFixed(1)}" y="0" width="${(x1 - x0).toFixed(1)}" height="${h}" fill="transparent" style="cursor:pointer" data-act="chart" data-key="${key}" data-i="${i}"></rect>`;
   }).join('');
 
+  const zeroY = y(0);
   return `
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;margin-top:4px;" role="img" aria-label="${esc(o.label || '走勢')}">
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;margin-top:4px;touch-action:manipulation;" role="img" aria-label="${esc(o.label || '走勢')}">
       ${o.zero ? `<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${w - padR}" y2="${zeroY.toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>` : ''}
-      ${paths}${ends}
+      <line id="mk-${key}" x1="0" y1="${padT - 6}" x2="0" y2="${h - padB}" stroke="var(--sub)" stroke-width="1" stroke-dasharray="2 2" opacity="0"/>
+      ${paths}${dots}${hits}
       <text x="${padL}" y="${h - 5}" fill="var(--sub)" font-size="10">${esc(labels[0])}</text>
       <text x="${w - padR}" y="${h - 5}" fill="var(--sub)" font-size="10" text-anchor="end">${esc(labels[labels.length - 1])}</text>
     </svg>
-    <div class="row" style="flex-wrap:wrap; gap:4px 14px;">
-      ${series.map(s2 => {
-        let li = -1;
-        s2.values.forEach((v, i) => { if (v !== null && v !== undefined) li = i; });
-        return `<span class="muted"><span class="legend-dot" style="background:${s2.color}"></span>${esc(s2.name)} ${li >= 0 ? o.fmtVal(s2.values[li]) : '—'}</span>`;
-      }).join('')}
-    </div>`;
+    <div class="row" id="cap-${key}" style="flex-wrap:wrap; gap:4px 14px;">${chartCaption(key, labels.length - 1)}</div>
+    <div class="muted" style="font-size:11px;">點圖上任一處看該月數字</div>`;
+}
+
+/* 說明列:月份 + 每條線在該點的數值 */
+function chartCaption(key, i){
+  const d = chartData[key];
+  if (!d) return '';
+  const parts = d.series.map(s2 => {
+    const v = s2.values[i];
+    return `<span class="muted"><span class="legend-dot" style="background:${s2.color}"></span>${esc(s2.name)} ${(v === null || v === undefined) ? '—' : d.fmtVal(v)}</span>`;
+  }).join('');
+  return `<span class="muted" style="font-weight:700; color:var(--text);">${esc(d.labels[i])}</span>${parts}`;
+}
+
+/* 點圖:只動說明列與游標線,不整頁重畫 */
+function pickChartPoint(key, i){
+  const d = chartData[key];
+  if (!d) return;
+  const cap = document.getElementById('cap-' + key);
+  if (cap) cap.innerHTML = chartCaption(key, i);
+  const mk = document.getElementById('mk-' + key);
+  if (mk){
+    mk.setAttribute('x1', d.x[i].toFixed(1));
+    mk.setAttribute('x2', d.x[i].toFixed(1));
+    mk.setAttribute('opacity', '1');
+  }
+  d.series.forEach((s2, si) => {
+    document.querySelectorAll('.pt-' + key + '-' + si).forEach((el, idx) => {
+      el.setAttribute('r', idx === i ? '4' : '0');
+    });
+  });
 }
 
 function renderRisk(){
@@ -1430,11 +1466,7 @@ function renderRisk(){
   const heavy = k.exposureRatio > 100;
   const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
   const labels = hist.map(h => shortMonth(h.m));
-  const pnlChart = lineChart(labels, [
-    { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
-  ], { zero:true, label:'整體損益走勢', height:120,
-       fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
-  const posChart = lineChart(labels, [
+  const posChart = lineChart('pos', labels, [
     { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
     { name:'借款餘額', color:'var(--s2)', values: hist.map(h => h.loan === null || h.loan === undefined ? null : h.loan) }
   ], { label:'部位市值與借款', height:120 });
@@ -1469,7 +1501,7 @@ function renderRisk(){
 /* 損益走勢圖給部位損益卡用 */
 function pnlChartBlock(){
   const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1).slice(-12);
-  const chart = lineChart(hist.map(h => shortMonth(h.m)), [
+  const chart = lineChart('pnl', hist.map(h => shortMonth(h.m)), [
     { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
   ], { zero:true, label:'整體損益走勢', height:120,
        fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
@@ -1962,12 +1994,24 @@ function sampleData(){
     { id:uid(), date:day(12), cat:'其他', desc:'保險費',   amount:-19000 },
     { id:uid(), date:day(15), cat:'餐飲', desc:'餐廳聚餐', amount:-2200 }
   ];
+  // 快照要含部位市值、借款與損益,兩張走勢圖才畫得出來
   const nw = 9524730;
-  s.netWorthHistory = [5,4,3,2,1,0].map((back, i) => ({
-    id:uid(), m: shiftMonth(m, -back), v: nw - back * 120000 + i * 3000
+  s.netWorthHistory = [
+    { back:5, pv:312000, loan:0,       pnl:-2600 },
+    { back:4, pv:328000, loan:0,       pnl:13400 },
+    { back:3, pv:494000, loan:0,       pnl:18500 },
+    { back:2, pv:520000, loan:0,       pnl:44500 },
+    { back:1, pv:884000, loan:1000000, pnl:56000 },
+    { back:0, pv:926030, loan:1000000, pnl:97000 }
+  ].map(h => ({
+    id: uid(), m: shiftMonth(m, -h.back), v: nw - h.back * 120000,
+    pv: h.pv, loan: h.loan, pnl: h.pnl, auto: true
   }));
   s.leverage.marketHigh = 24000;
   s.leverage.marketCurrent = 21500;
+  s.leverage.tranches[0].useDate = shiftMonth(m, -1) + '-05';
+  s.leverage.tranches[0].useIndex = 21500;
+  s.leverage.tranches[0].note = '00631L 10,000 股';
   s.instruments = [
     { id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true },
     { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true }
@@ -1991,21 +2035,92 @@ function needsConfirm(token){
 
 function stateJSON(){ return JSON.stringify(state, null, 2); }
 
-async function exportJSON(){
-  const filename = 'finance-' + todayISO() + '.json';
-  const text = stateJSON();
+/* 匯出成 CSV 給 Excel。多張表放同一個檔,以空行和標題分隔。
+   開頭加 BOM,Excel 開繁中才不會變亂碼。 */
+function csvCell(v){
+  const t = String(v === null || v === undefined ? '' : v);
+  return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+function csvTable(title, headers, rows){
+  if (!rows.length) return '';
+  return title + '\n' + headers.join(',') + '\n'
+    + rows.map(r => r.map(csvCell).join(',')).join('\n') + '\n\n';
+}
+function stateCSV(){
+  const L = state.leverage;
+  let out = '';
+
+  out += csvTable('# 交易紀錄', ['日期', '類別', '說明', '金額'],
+    state.transactions.slice().sort((a, b) => a.date < b.date ? 1 : -1)
+      .map(t => [t.date, t.cat, t.desc, t.amount]));
+
+  out += csvTable('# 買賣紀錄',
+    ['日期', '標的', '動作', '股數', '成交價', '手續費', '配息金額', '資金來源', '備註'],
+    state.trades.slice().sort((a, b) => a.date < b.date ? 1 : -1)
+      .map(t => [t.date, t.symbol,
+                 t.action === 'sell' ? '賣出' : t.action === 'dividend' ? '配息' : '買進',
+                 t.shares, t.price, t.fee, t.amount,
+                 t.action === 'buy' ? (t.source === 'loan' ? '房貸借款' : '自有資金') : '',
+                 t.note]));
+
+  out += csvTable('# 持股', ['代號', '名稱', '槓桿倍數', '股數', '股價', '市值'],
+    state.instruments.map(it => {
+      const sh = hasTrades() ? heldShares(it.id) : it.shares;
+      return [it.id, it.name, it.leverage, sh, it.price, Math.round(sh * it.price)];
+    }));
+
+  const r = computeLeverage();
+  out += csvTable('# 房貸動用',
+    ['項目', '動用日期', '動用金額', '已還', '餘額', '動用時大盤點位', '備註'],
+    r.tranches.filter(t => t.useDate)
+      .map(t => [t.label, t.useDate, t.amount, t.repaid, t.balance, t.useIndex || '', t.note])
+      .concat(L.core.useDate
+        ? [[L.core.label, L.core.useDate, L.core.amount, repaidOf(L.core), r.coreBalance, '', '']]
+        : []));
+
+  const repays = [];
+  L.tranches.concat([L.core]).forEach(t => {
+    (t.repayments || []).forEach(rp => { if (rp.date) repays.push([t.label, rp.date, rp.amount]); });
+  });
+  out += csvTable('# 還款紀錄', ['項目', '日期', '金額'],
+    repays.sort((a, b) => a[1] < b[1] ? 1 : -1));
+
+  out += csvTable('# 資產', ['名稱', '金額'], state.assets.map(a => [a.name, a.amount]));
+  out += csvTable('# 負債', ['名稱', '金額'], state.liabilities.map(l => [l.name, l.amount]));
+
+  out += csvTable('# 每月快照', ['月份', '淨資產', '部位市值', '借款餘額', '整體損益'],
+    state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1)
+      .map(h => [h.m, h.v, h.pv === null ? '' : h.pv, h.loan === null ? '' : h.loan, h.pnl === null ? '' : h.pnl]));
+
+  const p = computePosition();
+  out += csvTable('# 目前損益', ['項目', '金額'], [
+    ['目前市值', Math.round(p.marketValue)],
+    ['持股成本', Math.round(p.remainCost)],
+    ['未實現損益', Math.round(p.unrealized)],
+    ['已實現損益(含配息)', Math.round(p.realized)],
+    ['其中配息', Math.round(p.dividends)],
+    ['累積借款利息', Math.round(p.interest)],
+    ['整體損益', Math.round(p.total)],
+    ['自有資金投入', Math.round(p.buyCash)],
+    ['房貸投入', Math.round(p.buyLoan)]
+  ]);
+
+  return '\ufeff' + out;
+}
+
+async function saveFile(filename, text, mime){
   if (downloadsNs){
     try{
-      const r = await downloadsNs.save({ filename, data: text });
-      dataMsg = r && r.status === 'delivered' ? '已送出備份' : '已匯出 ' + filename;
+      const res = await downloadsNs.save({ filename, data: text });
+      dataMsg = res && res.status === 'delivered' ? '已送出 ' + filename : '已匯出 ' + filename;
       renderAll();
       return;
     }catch(e){
-      if (e && e.code === 'cancelled'){ return; }
+      if (e && e.code === 'cancelled') return;
     }
   }
   try{
-    const url = URL.createObjectURL(new Blob([text], { type:'application/json' }));
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
     const a = document.createElement('a');
     a.href = url; a.download = filename; a.rel = 'noopener';
     document.body.appendChild(a); a.click(); a.remove();
@@ -2015,6 +2130,13 @@ async function exportJSON(){
     dataMsg = '這個瀏覽器擋下了下載,請改用「複製成文字」';
   }
   renderAll();
+}
+
+async function exportJSON(){
+  await saveFile('finance-' + todayISO() + '.json', stateJSON(), 'application/json');
+}
+async function exportCSV(){
+  await saveFile('finance-' + todayISO() + '.csv', stateCSV(), 'text/csv;charset=utf-8');
 }
 
 function importJSON(file){
@@ -2051,7 +2173,7 @@ function onClick(el){
   const id = el.dataset.id;
   let rerender = true;
   if (!['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore'].includes(act)) pendingConfirm = null;
-  if (act !== 'export' && act !== 'import' && act !== 'copy-json') dataMsg = '';
+  if (!['export', 'export-csv', 'import', 'copy-json'].includes(act)) dataMsg = '';
 
   switch (act){
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
@@ -2075,6 +2197,7 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'export-csv': exportCSV(); return;
     case 'add-repay': {
       const target = id === 'core' ? state.leverage.core : findById(state.leverage.tranches, id);
       if (target){
@@ -2134,6 +2257,7 @@ function onClick(el){
       state.trades = state.trades.filter(t => t.id !== id);
       editingTrade = null;
       break;
+    case 'chart': pickChartPoint(el.dataset.key, Number(el.dataset.i)); return;
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'show-backups':
       if (backupOpen){ backupOpen = false; break; }
