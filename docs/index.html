@@ -1226,7 +1226,7 @@ function renderOverview(){
         <div>
           <div class="at">已達撤退門檻,可開始慢慢減碼</div>
           <div class="ad">
-            目前總市值 NT$ ${fmt(lev.totalValue)},已超過門檻 NT$ ${fmt(lev.exitThreshold)}。
+            自己的錢已值 NT$ ${fmt(lev.equityValue)},超過門檻 NT$ ${fmt(lev.exitThreshold)}。
             <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
           </div>
         </div>
@@ -1513,15 +1513,34 @@ function computeLeverage(){
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
   // 撤退門檻的 8% 也依實際餘額累積,還款之後不再照原始金額計算
   const exitThreshold = L.historicalHighValue + sum(L.tranches, t => accrue(t, 8));
+
+  /* 拿「自己的錢」跟門檻比,不能拿總市值:
+       總市值含借來的錢 → 一借完就假性達標
+       賣掉之後總市值變小 → 訊號永遠不會再亮
+     自己的錢 = 市值 − 借款餘額 + 已取回的現金 − 已還款 − 凍結後新投入的自有資金 */
+  const freezeDate = L.tranches.filter(t => t.useDate).map(t => t.useDate).sort()[0] || '';
+  let cashBack = 0, ownAfter = 0;
+  if (freezeDate){
+    state.trades.forEach(t => {
+      if (t.date < freezeDate) return;
+      if (t.action === 'sell') cashBack += t.shares * t.price - t.fee;
+      else if (t.action === 'dividend') cashBack += t.amount - t.fee;
+      else if (t.source !== 'loan') ownAfter += t.shares * t.price + t.fee;
+    });
+  }
+  const repaidTotal = sum(L.tranches, t => repaidOf(t)) + repaidOf(L.core);
+  const equityValue = totalValue - usedAmount + cashBack - repaidTotal - ownAfter;
+
   // 沒有還在欠的借款就沒有槓桿要撤,不論市值多高都不該亮燈
   const anyUsed = usedAmount > 0;
-  const exitReached = anyUsed && L.historicalHighValue > 0 && totalValue >= exitThreshold;
+  const exitReached = anyUsed && L.historicalHighValue > 0 && equityValue >= exitThreshold;
 
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
   return { holdings, totalValue, tranches, usedAmount, drawnAmount, coreBalance, coreUsed, monthlyInterest,
-           exitThreshold, exitReached, anyUsed, positionDeclinePct, lossAmount,
+           exitThreshold, exitReached, anyUsed, equityValue, cashBack, ownAfter, repaidTotal,
+           positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
 
@@ -1965,9 +1984,15 @@ function renderLeverage(){
           ? '已凍結 — 桶金動用後,這個高點就是要漲回去的目標,不再跟著市值變動。'
           : '總市值創新高時自動更新。等你動用桶金,它會凍結成撤退目標。填錯可直接改成正確數字。'}</div>
       <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
-      <div class="row"><span class="label">目前總市值</span><span class="val" id="out-exitCurrent">NT$ ${fmt(r.totalValue)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">自己的錢(含已取回)</span>
+        <span class="val" id="out-exitCurrent" style="font-weight:800;">NT$ ${fmt(r.equityValue)}</span></div>
+      <div class="row"><span class="muted">　部位市值</span><span class="muted">NT$ ${fmt(r.totalValue)}</span></div>
+      <div class="row"><span class="muted">　減 借款餘額</span><span class="muted">−NT$ ${fmt(r.usedAmount)}</span></div>
+      ${r.cashBack ? `<div class="row"><span class="muted">　加 賣出與配息取回</span><span class="muted">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
+      ${r.repaidTotal ? `<div class="row"><span class="muted">　減 已還款</span><span class="muted">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
+      ${r.ownAfter ? `<div class="row"><span class="muted">　減 動用後新投入的自有資金</span><span class="muted">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
       <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
-      <div class="notice">要還有借款餘額才會判斷撤退 —— 全部還清就沒有槓桿要撤。門檻 = 歷史最高市值 + 各桶金依「實際餘額」每年累加 8%(還款後只對剩下的部分算);${esc(L.core.label)}視為長期持有,不列入。</div>
+      <div class="notice">比的是「自己的錢」而不是總市值 —— 借來的錢不算你的,賣出取回的現金仍然算。這樣借完錢不會假性達標,減碼之後訊號也不會消失。門檻 = 歷史最高市值 + 各桶金依實際餘額每年累加 8%;${esc(L.core.label)}視為長期持有,不列入。</div>
     </div>
 
     <div class="sect">紀錄與設定</div>
@@ -2041,7 +2066,7 @@ function refreshLeverage(){
   set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount)));
   set('out-monthlyInterest', 'NT$ ' + fmt(r.monthlyInterest));
   set('out-exitThreshold', 'NT$ ' + fmt(r.exitThreshold));
-  set('out-exitCurrent', 'NT$ ' + fmt(r.totalValue));
+  set('out-exitCurrent', 'NT$ ' + fmt(r.equityValue));
   const wrap = document.getElementById('out-exitBadgeWrap');
   if (wrap) wrap.innerHTML = exitBadge(r);
   set('out-positionDeclinePct', fmtPct(-r.positionDeclinePct));
