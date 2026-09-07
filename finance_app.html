@@ -948,7 +948,7 @@ function computeStress(d){
   return {
     decline, pv: k.pv, newPv, loss, equity: k.equity, newEquity,
     ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0,
-    nw: k.nw, newNw: k.nw - loss, index, newIndex,
+    index, newIndex,
     wouldTrigger, needCash, interest: k.monthlyInterest, newInterest
   };
 }
@@ -1591,7 +1591,6 @@ function renderLeverage(){
           <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
         <div class="row"><span class="label">曝險比例</span>
           <span class="val ${st.newRatio > 100 ? 'neg' : ''}">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
-        <div class="row"><span class="label">淨資產</span><span class="val">NT$ ${fmt(st.nw)} → ${fmt(st.newNw)}</span></div>
         ${st.newIndex ? `<div class="row"><span class="label">大盤點位</span><span class="val">${fmt(st.index)} → ${fmt(st.newIndex)}</span></div>` : ''}
         ${st.wouldTrigger.length ? `
           <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
