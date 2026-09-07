@@ -1,0 +1,10 @@
+rules_version = '2';
+
+// 每個人只能讀寫自己 uid 底下的資料,其他人(含未登入者)一律拒絕。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

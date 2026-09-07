@@ -42,7 +42,15 @@ Pages 從 `main` 分支的 `/docs` 目錄發佈。
 | `finance_app_artifact.html` | Claude Artifact 版 | Claude 雲端,跨裝置同步 |
 
 三個版本共用同一份程式;差別只在存檔方式與外層包裝。
+雲端存檔是可插拔的:Artifact 版用平台內建 db,網頁版用 Firebase(`firebase-sync.js`),
+兩者都連不上就退回 localStorage,功能不受影響。
 `app.template.html` 裡的 `/*STORAGE_NOTE*/` 由 `build.py` 依版本置換。
+
+## 雲端同步(選用)
+
+預設資料只存在各自的裝置。要跨裝置同步,照 [SETUP-FIREBASE.md](SETUP-FIREBASE.md)
+設定 Firebase + Google 登入:資料存在 Firestore,安全規則限定只有本人讀得到自己的資料。
+`firebase-config.js` 的 `apiKey` 留空時,app 會維持純本機模式。
 
 ## 換裝置
 
