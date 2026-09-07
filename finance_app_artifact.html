@@ -210,6 +210,18 @@
   }
   .sect::after{content:''; flex:1; height:1px; background:var(--line);}
   .sect:first-child{margin-top:2px;}
+  .doc h4{font-size:14px; font-weight:700; margin:18px 0 6px;}
+  .doc h4:first-child{margin-top:0;}
+  .doc p{font-size:13px; line-height:1.85; margin:6px 0;}
+  .doc ul{margin:6px 0; padding-left:19px; font-size:13px; line-height:1.85;}
+  .doc li{margin:3px 0;}
+  .doc .formula{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px; line-height:1.7; background:var(--raised); color:var(--text);
+    border-radius:8px; padding:10px 12px; margin:8px 0;
+    overflow-x:auto; white-space:pre;
+  }
+  .doc em{color:var(--sub); font-style:normal;}
   .legend-dot{width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:-1px;}
   .empty{font-size:13px; color:var(--sub); text-align:center; padding:14px 6px; line-height:1.7;}
 
@@ -228,6 +240,7 @@
       <button class="top-tab" data-tab="assets">資產</button>
       <button class="top-tab" data-tab="leverage">槓桿</button>
       <button class="top-tab" data-tab="ledger">記帳</button>
+      <button class="top-tab" data-tab="help">說明</button>
     </nav>
     <div class="date" id="todayDate"></div>
   </header>
@@ -238,6 +251,7 @@
     <button class="tab-btn" data-tab="assets"><span class="ic">🏦</span><span>資產</span></button>
     <button class="tab-btn" data-tab="leverage"><span class="ic">⚡</span><span>槓桿</span></button>
     <button class="tab-btn" data-tab="ledger"><span class="ic">📒</span><span>記帳</span></button>
+    <button class="tab-btn" data-tab="help"><span class="ic">📖</span><span>說明</span></button>
   </nav>
 </div>
 
@@ -1156,6 +1170,7 @@ function renderAll(){
   if (currentTab === 'overview') c.innerHTML = renderOverview();
   else if (currentTab === 'assets') c.innerHTML = renderAssets();
   else if (currentTab === 'ledger') c.innerHTML = renderLedger();
+  else if (currentTab === 'help') c.innerHTML = renderHelp();
   else c.innerHTML = renderLeverage();
   updateStorageStatus();
 }
@@ -1439,6 +1454,162 @@ function renderLedger(){
           <div class="tx-amt ${t.amount > 0 ? 'income' : ''}">${t.amount > 0 ? '+' : '−'}${fmt(Math.abs(t.amount))}</div>
         </div>`).join('') : `<div class="empty">${esc(monthLabel(viewMonth))}還沒有紀錄。</div>`}
       ${tx.length ? `<div class="notice">點任一筆可以修改或刪除。</div>` : ''}
+    </div>`;
+}
+
+
+/* ===================== 說明 =====================
+   把不直覺的算法寫給使用者看,免得過幾個月自己也忘了數字是怎麼來的。 */
+function renderHelp(){
+  const L = state.leverage;
+  return `
+    <div class="sect">這個 app 在算什麼</div>
+    <div class="card doc">
+      <p>四件事:<strong>記錄</strong>每一筆收支與買賣、<strong>算出</strong>你的損益與曝險、
+      <strong>提醒</strong>什麼時候該加碼或減碼、<strong>保存</strong>資料不會不見。</p>
+      <p>所有數字都是你自己填的,app 只負責算。唯一會自己去外面抓的是股票收盤價。</p>
+    </div>
+
+    <div class="sect">損益怎麼算</div>
+    <div class="card doc">
+      <h4>成本用加權平均</h4>
+      <p>每次買進把金額與手續費加進總成本,賣出時按<em>當下的平均成本</em>扣掉對應的部分。
+      這跟台灣券商對帳單的算法一致。</p>
+      <div class="formula">未實現損益 = 目前市值 − 剩餘持股成本
+已實現損益 = 賣出淨額 − 賣出部分的平均成本
+配息      = 計入已實現損益,不動持股成本與股數
+整體損益  = 未實現 + 已實現 − 累積借款利息</div>
+      <h4>為什麼一定要扣利息</h4>
+      <p>借錢買股,利息每天都在跑。不扣的話,槓桿部位看起來會永遠比實際好看。
+      利息從各桶金的動用日算到今天,而且是<strong>依實際餘額分段計算</strong> ——
+      你記了還款之後,只對剩下的部分繼續算。</p>
+      <h4>手續費</h4>
+      <p>留空的話自動用 0.1425%(最低 20 元)估算,賣出再加 0.1% 證交稅。填了就用你填的。</p>
+    </div>
+
+    <div class="sect">報酬率</div>
+    <div class="card doc">
+      <h4>年化報酬用 XIRR</h4>
+      <p>你是不定期加碼的 —— 有時薪水、有時獎金、有時借房貸。如果用「總報酬率 ÷ 年數」,
+      上個月才投入的錢會被當成放了兩年,數字沒有意義。</p>
+      <p>XIRR 把每一筆進出<strong>按實際日期折現</strong>:</p>
+      <div class="formula">自有資金買進 → 流出
+房貸買進     → 0(錢是銀行出的)
+賣出、配息   → 流入
+還款、每月利息 → 流出
+今天結清     → 流入 市值 − 借款餘額</div>
+      <p>解出讓這些現金流現值歸零的年化報酬率。資料不足時顯示「—」,不會亂給數字。</p>
+      <h4>淨投入 vs 累計投入</h4>
+      <div class="formula">淨投入 = 累計自有投入 − 賣出回收 − 配息</div>
+      <p>買賣來回幾次,「累計投入」會越滾越大,但你實際還放在裡面的錢沒變那麼多。
+      淨投入才是「現在有多少自己的錢在裡面」。</p>
+    </div>
+
+    <div class="sect">曝險</div>
+    <div class="card doc">
+      <h4>正2 ETF 有兩層槓桿</h4>
+      <p>00631L、00675L 這類正2 ETF 本身就是 2 倍;你再用房貸借錢買,等於兩層。
+      每檔標的可以在「持股與報價」設定自己的槓桿倍數(正2 填 2、一般股票填 1)。</p>
+      <div class="formula">實質市場曝險 = Σ(各標的市值 × 該標的槓桿倍數)
+曝險比例     = 實質市場曝險 ÷ (部位淨值 + 房貸總額度)
+部位淨值     = 部位市值 − 借款餘額        自己的錢
+槓桿倍數     = 部位市值 ÷ 部位淨值</div>
+      <h4>分母為什麼是這個</h4>
+      <p>用「自己的錢 + 還能借的火力」當基準,不用淨資產 —— 房子和現金不會拿去接刀,
+      真正的上限是額度。</p>
+      <p>分母用<strong>部位淨值</strong>而不是部位市值:已借出的錢同時存在於部位與額度中,
+      用市值會把它算兩次,比例看起來比實際安全。額度用得越多,分母越接近自有資金,
+      比例會誠實地升高。</p>
+    </div>
+
+    <div class="sect">加碼訊號</div>
+    <div class="card doc">
+      <p>填入大盤的歷史最高點,每桶金設定自己的跌幅門檻(預設 −20% / −32% / −45%):</p>
+      <div class="formula">觸發點位 = 大盤歷史最高點 × (1 + 跌幅門檻)</div>
+      <p>大盤即時點位跌到觸發點位以下,那一桶就顯示「已觸發」,總覽也會跳提示。</p>
+      <p><strong>觸發不等於已動用。</strong>真的去銀行動用了,才填「實際動用日期」——
+      填了才會計入借款餘額、利息與撤退門檻。可以順便記下當時的大盤點位和買了什麼。</p>
+    </div>
+
+    <div class="sect">減碼訊號:撤退門檻</div>
+    <div class="card doc">
+      <div class="formula">撤退門檻 = 歷史最高市值 + Σ(各桶金依實際餘額每年累加 8%)</div>
+      <p>意思是:光是漲回前高還不夠,還要多賺出這段時間借錢的機會成本,才算真的解套。
+      <strong>借越久,門檻自己會越爬越高。</strong>${esc(L.core.label)}視為長期持有,不列入。</p>
+      <h4>拿「自己的錢」去比,不是總市值</h4>
+      <div class="formula">自己的錢 = 部位市值
+           − 借款餘額
+           + 賣出與配息取回
+           − 已還款
+           − 動用後新投入的自有資金</div>
+      <p>如果拿總市值去比,兩個方向都會錯:</p>
+      <ul>
+        <li>借錢買進時總市值立刻跳升一筆借款金額,門檻卻只加了 8% 的成本 ——
+        <strong>借完的當下就假性達標</strong></li>
+        <li>賣出之後總市值被削掉,門檻仍錨在原本的部位規模 ——
+        <strong>減碼之後訊號永遠不會再亮</strong></li>
+      </ul>
+      <p>最後一項「減動用後新投入的自有資金」也是必要的:動用之後再拿薪水加碼,部位會變大,
+      但那是新的錢,不是部位漲回來。</p>
+      <h4>歷史最高市值</h4>
+      <ul>
+        <li><strong>動用桶金之前</strong>:自動記錄新高,不用自己維護</li>
+        <li><strong>動用之後</strong>:凍結,成為要漲回去的目標</li>
+        <li>把動用日期清掉(例如已經出場),又會恢復記錄新高</li>
+        <li>可以改成手動,或直接修正填錯的數字</li>
+      </ul>
+    </div>
+
+    <div class="sect">借款與還款</div>
+    <div class="card doc">
+      <div class="formula">借款餘額 = 各桶動用金額 − 已還款
+每月利息 = 借款餘額 × 年利率 ÷ 12</div>
+      <p>減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也失真。
+      每桶金填了動用日期後,下面就會出現「＋ 記一筆還款」。</p>
+      <p>全部還清後不再計息,撤退訊號也會關閉(沒有槓桿就沒什麼好撤),
+      但動用紀錄與還款歷史都保留。</p>
+      <p>年利率是你填的假設值,實際以銀行核定為準。打開「每月自動記入支出」的話,
+      每月會在記帳自動產生一筆「房貸利息」;你把那筆刪掉,那個月不會被補記。</p>
+    </div>
+
+    <div class="sect">報價</div>
+    <div class="card doc">
+      <p>資料來源是<strong>臺灣證券交易所公開資訊</strong>,抓的是<strong>最近一個交易日的收盤價</strong>,
+      不是盤中即時報價。上市櫃代號都查得到。</p>
+      <p>開啟 app 時自動更新(一小時最多一次),也可以手動按「從證交所更新收盤價」。
+      超過 5 天沒更新會提醒你 —— 因為損益、曝險、撤退門檻全都是用那組價算的。</p>
+      <p><em>股數不會自動抓。</em>有買賣紀錄的話由紀錄自動加總,沒有的話要自己填。</p>
+    </div>
+
+    <div class="sect">壓力測試</div>
+    <div class="card doc">
+      <p>輸入假設的大盤跌幅,各標的<strong>依自己的槓桿倍數</strong>換算(正2 跌兩倍),
+      算出部位市值、部位淨值、曝險比例的前後對照,並列出這個跌幅會觸發哪幾桶金、
+      總共要準備多少錢、屆時月息變多少。</p>
+      <p><em>沒有計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常比這裡算的更差。</em></p>
+    </div>
+
+    <div class="sect">資料存在哪</div>
+    <div class="card doc">
+      <p>${STORAGE_NOTE}</p>
+      <ul>
+        <li><strong>每月快照</strong>:每月第一次開啟自動記一筆(淨資產、部位市值、借款餘額、
+        整體損益),同月內再開會更新到最新,不會累積。走勢圖就是用這個畫的。
+        沒開過 app 的月份會留空,間隔才不會失真。</li>
+        <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照。雲端留 30 份、本機留 7 份
+        (手機的瀏覽器空間有限,備份佔太多會讓主資料存不進去)。可在總覽的「資料」卡還原。</li>
+        <li><strong>匯出備份</strong>:JSON,換裝置時用「匯入備份」讀回來。</li>
+        <li><strong>匯出 CSV</strong>:給 Excel 看的,九張表放同一個檔。單向,不能匯回。</li>
+      </ul>
+      <p>資產分頁的每一筆是<strong>現況</strong>,改了就覆蓋,不會保留舊值;
+      歷史只有「每月一筆」的快照這個層級。</p>
+    </div>
+
+    <div class="sect">免責</div>
+    <div class="card doc">
+      <p>用房屋擔保額度做槓桿投資,會把投資虧損直接連到房子與每月現金流。
+      這個 app 的所有計算都是<strong>簡化試算</strong>,不構成投資或貸款建議。
+      實際動用資金前請與銀行確認正式條件。</p>
     </div>`;
 }
 
