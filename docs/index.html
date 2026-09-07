@@ -917,6 +917,88 @@ function accruedInterest(){
   const L = state.leverage;
   return sum(L.tranches, t => accrue(t, L.annualRate)) + accrue(L.core, L.annualRate);
 }
+/* 某一天當下,這筆借款還欠多少 */
+function balanceAt(item, dateISO){
+  if (!item || !item.useDate || dateISO < item.useDate) return 0;
+  const repaid = sum((item.repayments || [])
+    .filter(r => r.date && r.date >= item.useDate && r.date <= dateISO), r => r.amount);
+  return Math.max(0, item.amount - repaid);
+}
+function monthEndISO(m){
+  const y = Number(m.slice(0, 4)), mo = Number(m.slice(5, 7));
+  const d = new Date(y, mo, 0);          // 該月最後一天
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+/* 以「自己的錢」為視角的現金流,拿來算 XIRR:
+     自有資金買進 → 流出        房貸買進 → 0(錢是銀行出的)
+     賣出、配息   → 流入        還款、利息 → 流出
+     最後加上今天結清的價值:市值 − 借款餘額 */
+function cashFlows(){
+  const L = state.leverage;
+  const today = todayISO();
+  const flows = [];
+  const add = (date, amount) => { if (date && amount) flows.push({ date, amount }); };
+
+  state.trades.forEach(t => {
+    if (t.action === 'dividend') add(t.date, t.amount - t.fee);
+    else if (t.action === 'sell') add(t.date, t.shares * t.price - t.fee);
+    else if (t.source !== 'loan') add(t.date, -(t.shares * t.price + t.fee));
+  });
+
+  const loans = L.tranches.concat([L.core]);
+  loans.forEach(item => {
+    if (!item.useDate) return;
+    (item.repayments || []).forEach(r => {
+      if (r.date && r.date >= item.useDate && r.date <= today) add(r.date, -r.amount);
+    });
+    // 利息按月流出,以當月底的餘額計算
+    let cursor = item.useDate.slice(0, 7);
+    for (let guard = 0; cursor <= thisMonth() && guard < 600; guard++){
+      const end = monthEndISO(cursor);
+      const bal = balanceAt(item, end > today ? today : end);
+      add(end > today ? today : end, -(bal * (L.annualRate / 100) / 12));
+      cursor = shiftMonth(cursor, 1);
+    }
+  });
+
+  const p = positionValueNow();
+  const owed = sum(loans, item => balanceAt(item, today));
+  add(today, p - owed);                  // 今天結清可以拿回的錢
+  return flows.sort((a, b) => a.date < b.date ? -1 : 1);
+}
+function positionValueNow(){
+  const seen = new Set();
+  let v = 0;
+  state.instruments.forEach(it => {
+    if (it.id && seen.has(it.id)) return;   // 代號重複只算一次
+    if (it.id) seen.add(it.id);
+    const shares = hasTrades() ? heldShares(it.id) : it.shares;
+    v += shares * it.price;
+  });
+  return v;
+}
+
+/* XIRR:用二分法解 NPV = 0,比牛頓法慢但不會發散 */
+function xirr(flows){
+  if (!flows || flows.length < 2) return null;
+  if (!flows.some(f => f.amount > 0) || !flows.some(f => f.amount < 0)) return null;
+  const t0 = new Date(flows[0].date + 'T00:00:00').getTime();
+  const yearsOf = f => (new Date(f.date + 'T00:00:00').getTime() - t0) / (365.25 * 86400000);
+  const npv = r => flows.reduce((acc, f) => acc + f.amount / Math.pow(1 + r, yearsOf(f)), 0);
+  let lo = -0.999999, hi = 10;   // 幾乎全賠時答案會逼近 −100%,下界要夠低
+  let flo = npv(lo), fhi = npv(hi);
+  if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
+  for (let i = 0; i < 200; i++){
+    const mid = (lo + hi) / 2;
+    const fm = npv(mid);
+    if (!isFinite(fm)) return null;
+    if (Math.abs(fm) < 1e-6) return mid;
+    if (flo * fm < 0){ hi = mid; fhi = fm; } else { lo = mid; flo = fm; }
+  }
+  return (lo + hi) / 2;
+}
+
 function computePosition(){
   const lots = {};
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
@@ -954,14 +1036,17 @@ function computePosition(){
   const interest = accruedInterest();
   const total = unrealized + realized - interest;
   const invested = buyCash + buyLoan;
+  // 賣出所得與配息是拿回來的錢,要從「還放在裡面的自有資金」扣掉
+  const netCash = buyCash - sellNet - dividends;
   const years = sorted.length ? Math.max(daysSince(sorted[0].date) / 365.25, 0) : 0;
+  const rate = xirr(cashFlows());
   return {
-    lots, buyCash, buyLoan, invested, sellNet, realized, dividends, unrealized, interest, total, oversold,
+    lots, buyCash, buyLoan, invested, netCash, sellNet, realized, dividends, unrealized, interest, total, oversold,
+    xirr: rate === null ? null : rate * 100,
     marketValue, remainCost, fees, years,
     hasData: sorted.length > 0,
     returnOnCash: buyCash > 0 ? total / buyCash * 100 : 0,
-    returnOnAll: invested > 0 ? total / invested * 100 : 0,
-    annualized: (invested > 0 && years > 0.08) ? (total / invested * 100) / years : null
+    returnOnAll: invested > 0 ? total / invested * 100 : 0
   };
 }
 
@@ -1202,9 +1287,10 @@ function renderOverview(){
       <div class="card">
         <h3>投資部位</h3>
         <div class="big-num ${cls}">${sign}</div>
-        <div class="big-sub">整體損益(已扣借款利息)${p.buyCash > 0 ? ' · 自有資金 ' + fmtPct(p.returnOnCash) : ''}</div>
+        <div class="big-sub">整體損益(已扣借款利息)${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
-        <div class="row"><span class="label">投入成本</span><span class="val">NT$ ${fmt(p.invested)}(自有 ${fmt(p.buyCash)} + 房貸 ${fmt(p.buyLoan)})</span></div>
+        <div class="row"><span class="label">淨投入自有資金</span><span class="val">NT$ ${fmt(p.netCash)}</span></div>
+        <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
         <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
       </div>`;
     })()}
@@ -1628,7 +1714,7 @@ function renderPnL(){
     <div class="card">
       <h3>部位損益</h3>
       <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
-      <div class="big-sub">扣掉借款利息後的整體損益${p.buyCash > 0 ? ' · 自有資金報酬率 ' + fmtPct(p.returnOnCash) : ''}</div>
+      <div class="big-sub">扣掉借款利息後的整體損益${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
       <div class="row"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
       <div class="row"><span class="label">未實現損益</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
@@ -1644,15 +1730,22 @@ function renderPnL(){
 
     <div class="card">
       <h3>投入的錢</h3>
-      <div class="row"><span class="label">自有資金(薪水 / 獎金)</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
-      <div class="row"><span class="label">房貸借款</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">合計投入</span><span class="val" style="font-weight:800;">NT$ ${fmt(p.invested)}</span></div>
+      <div class="big-num ${p.xirr === null ? '' : (p.xirr >= 0 ? 'pos' : 'neg')}">${p.xirr === null ? '—' : fmtPct(p.xirr)}</div>
+      <div class="big-sub">年化報酬(XIRR)—— 依每筆進出的實際日期計算</div>
+      <div class="row"><span class="label">自有資金投入(累計)</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
+      ${p.sellNet ? `<div class="row"><span class="label">　減 賣出回收</span><span class="val pos">−NT$ ${fmt(p.sellNet)}</span></div>` : ''}
+      ${p.dividends ? `<div class="row"><span class="label">　減 配息</span><span class="val pos">−NT$ ${fmt(p.dividends)}</span></div>` : ''}
+      <div class="row"><span class="label" style="font-weight:700;">淨投入(還放在裡面的錢)</span>
+        <span class="val" style="font-weight:800;">NT$ ${fmt(p.netCash)}</span></div>
+      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
+        <span class="label">房貸動用(累計)</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${p.invested ? (p.buyCash / p.invested * 100).toFixed(1) : 0}%"></div></div>
-      <div class="muted">藍色是自有資金佔比 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</div>
-      <div class="row" style="margin-top:10px;"><span class="label">對自有資金報酬率</span><span class="val ${cls(p.total)}">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
-      <div class="row"><span class="label">對總投入報酬率</span><span class="val ${cls(p.total)}">${p.invested > 0 ? fmtPct(p.returnOnAll) : '—'}</span></div>
-      ${p.annualized !== null ? `<div class="row"><span class="label">粗估年化(${p.years.toFixed(1)} 年)</span><span class="val ${cls(p.annualized)}">${fmtPct(p.annualized)}</span></div>` : ''}
-      <div class="notice">槓桿的意義就在這兩個報酬率的差距:借來的錢放大了自有資金的成敗,漲的時候好看,跌的時候一樣被放大。</div>
+      <div class="muted">藍色是自有資金佔累計投入的 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</div>
+      <div class="row" style="margin-top:10px;"><span class="label">累計報酬(對累計自有投入)</span>
+        <span class="val ${cls(p.total)}">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
+      <div class="notice">${p.xirr === null
+        ? '要有至少一筆進出才算得出年化報酬。'
+        : 'XIRR 把每一筆買進、賣出、配息、還款與每月利息按實際日期折現,所以上個月才投入的錢不會被當成放了兩年。這是衡量「這樣搞到底划不划算」最公道的數字。'}</div>
     </div>`;
 }
 
