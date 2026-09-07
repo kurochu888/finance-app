@@ -274,14 +274,22 @@ function fromLegacy(old){
 
 let state = emptyState();
 
-/* ===================== 存檔:雲端 + 本機備份 ===================== */
+/* ===================== 存檔:雲端 + 本機備份 =====================
+   兩種雲端來源,誰在就用誰:
+     · Claude Artifact  → 平台內建的 db,開網址即同步
+     · 網頁版           → Firebase Firestore,需用 Google 帳號登入
+   兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
 const LEGACY_KEY = 'financeAppLeverageData_v1';
-let storageMode = 'local';      // 'cloud' | 'local' | 'none'
-let cloudDoc = null;
+
+let storageMode = 'local';   // 'cloud' | 'local' | 'none'
+let cloud = null;            // { get, set, onChange } — 已連上的雲端
+let cloudKind = 'none';      // 'claude' | 'firebase' | 'none'
+let authUser = null;         // Firebase 已登入的帳號
+let authBusy = false;
 let downloadsNs = null;
 let lastPushed = '';
 let pendingRemote = null;
@@ -307,14 +315,14 @@ function scheduleSave(){
 async function save(){
   const data = JSON.parse(JSON.stringify(state));
   const ok = writeLocal(data);
-  if (cloudDoc){
+  if (cloud){
     try{
       lastPushed = canon(data);
-      await cloudDoc.set(data);
+      await cloud.set(data);
       storageMode = 'cloud';
       updateStorageStatus();
       return;
-    }catch(e){ /* 雲端寫入失敗就靠本機 */ }
+    }catch(e){ /* 雲端寫入失敗就靠本機,下次編輯會再試 */ }
   }
   storageMode = ok ? 'local' : 'none';
   updateStorageStatus();
@@ -322,54 +330,131 @@ async function save(){
 function updateStorageStatus(){
   const el = document.getElementById('storageStatus');
   if (!el) return;
-  el.textContent =
-    storageMode === 'cloud' ? '☁️ 已存到雲端 — 手機、電腦開同一個網址都看得到' :
-    storageMode === 'local' ? '💾 只存在這台裝置的瀏覽器 — 換裝置或清資料會消失' :
-    '⚠️ 無法存檔(此瀏覽器不允許儲存)';
-}
-async function connectCloud(){
-  try{
-    if (!(window.claude && typeof window.claude.use === 'function')) return null;
-    const db = await window.claude.use('db');
-    if (!db) return null;
-    cloudDoc = db.doc(DOC_PATH);
-    const snap = await cloudDoc.get();
-    storageMode = 'cloud';
-    if (snap.exists){
-      applyRemote(snap.data());
-    }else{
-      // 第一次上雲:把本機或舊版槓桿存檔帶上去
-      let seed = readLocal();
-      if (!seed){
-        try{
-          const old = await db.doc(LEGACY_DOC_PATH).get();
-          if (old.exists) seed = fromLegacy(old.data());
-        }catch(e){ /* 沒有舊資料 */ }
-      }
-      if (seed){ state = normalize(seed); renderAll(); }
-      await save();
-    }
-    cloudDoc.onSnapshot(snap2 => {
-      if (!snap2.exists) return;
-      const data = snap2.data();
-      if (canon(data) === lastPushed) return;
-      if (document.activeElement && document.activeElement.tagName === 'INPUT'){
-        pendingRemote = data;   // 正在打字,等他離開欄位再套用
-        return;
-      }
-      applyRemote(data);
-    }, () => { /* 訂閱斷線:仍可正常編輯與存檔 */ });
-    updateStorageStatus();
-    return cloudDoc;
-  }catch(e){
-    cloudDoc = null;
-    return null;
+  if (storageMode === 'cloud'){
+    el.textContent = cloudKind === 'firebase' && authUser
+      ? '☁️ 已同步到 ' + authUser.email + ' — 其他裝置登入同一帳號就看得到'
+      : '☁️ 已存到雲端 — 手機、電腦開同一個網址都看得到';
+  }else if (storageMode === 'local'){
+    el.textContent = cloudKind === 'firebase'
+      ? '💾 只存在這台裝置 — 登入 Google 帳號即可同步到其他裝置'
+      : '💾 只存在這台裝置的瀏覽器 — 換裝置或清資料會消失';
+  }else{
+    el.textContent = '⚠️ 無法存檔(此瀏覽器不允許儲存)';
   }
+}
+
+/* 收到雲端資料:正在打字就先擱著,等游標離開欄位再套用 */
+function onRemote(data){
+  if (!data) return;
+  if (canon(data) === lastPushed) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT'){
+    pendingRemote = data;
+    return;
+  }
+  applyRemote(data);
 }
 function applyRemote(data){
   state = normalize(data);
   lastPushed = canon(JSON.parse(JSON.stringify(state)));
   writeLocal(state);
+  renderAll();
+}
+
+/* 第一次連上雲端:雲端有資料就拉下來,沒有就把本機的推上去 */
+async function syncFirstTime(){
+  try{
+    const remote = await cloud.get();
+    storageMode = 'cloud';
+    if (remote){
+      applyRemote(remote);
+    }else{
+      await save();
+    }
+    cloud.onChange(onRemote);
+    updateStorageStatus();
+  }catch(e){
+    cloud = null;
+    storageMode = 'local';
+    updateStorageStatus();
+  }
+}
+
+async function connectCloud(){
+  // 1) Claude Artifact:平台內建的資料庫
+  if (window.claude && typeof window.claude.use === 'function'){
+    try{
+      const db = await window.claude.use('db');
+      if (db){
+        const ref = db.doc(DOC_PATH);
+        cloudKind = 'claude';
+        cloud = {
+          get: async () => {
+            const snap = await ref.get();
+            if (snap.exists) return snap.data();
+            // 第一次上雲時,把舊版只有槓桿頁的存檔帶過來
+            if (!readLocal()){
+              try{
+                const old = await db.doc(LEGACY_DOC_PATH).get();
+                if (old.exists) return fromLegacy(old.data());
+              }catch(e){ /* 沒有舊資料 */ }
+            }
+            return null;
+          },
+          set: d => ref.set(d),
+          onChange: cb => ref.onSnapshot(s => { if (s.exists) cb(s.data()); }, () => {})
+        };
+        await syncFirstTime();
+        return;
+      }
+    }catch(e){ /* 不是在 Artifact 裡,往下試 Firebase */ }
+  }
+
+  // 2) 網頁版:Firebase,登入後才有雲端
+  if (window.FinanceCloud){
+    try{
+      const fb = await window.FinanceCloud.ready;
+      if (!fb) return;               // 還沒設定 Firebase,維持本機模式
+      cloudKind = 'firebase';
+      updateStorageStatus();
+      fb.onAuth(user => {
+        authUser = user;
+        authBusy = false;
+        if (user){
+          cloud = fb.docApi();
+          syncFirstTime();
+        }else{
+          cloud = null;
+          storageMode = 'local';
+          updateStorageStatus();
+        }
+        renderAll();
+      });
+    }catch(e){ /* 載入失敗:維持本機模式 */ }
+  }
+}
+
+async function signInCloud(){
+  if (!window.FinanceCloud) return;
+  authBusy = true;
+  renderAll();
+  try{
+    const fb = await window.FinanceCloud.ready;
+    await fb.signIn();
+  }catch(e){
+    authBusy = false;
+    dataMsg = e && e.message ? '登入失敗:' + e.message : '登入失敗,請再試一次';
+    renderAll();
+  }
+}
+async function signOutCloud(){
+  if (!window.FinanceCloud) return;
+  try{
+    const fb = await window.FinanceCloud.ready;
+    await fb.signOut();
+    dataMsg = '已登出,資料仍留在這台裝置';
+  }catch(e){
+    dataMsg = '登出失敗,請再試一次';
+  }
   renderAll();
 }
 
@@ -518,6 +603,13 @@ function renderOverview(){
 
     <div class="card">
       <h3>資料</h3>
+      ${cloudKind === 'firebase' ? (authUser ? `
+        <div class="row"><span class="label">雲端同步</span><span class="val pos">${esc(authUser.email)}</span></div>
+        <button class="btn quiet" data-act="sign-out">登出 Google 帳號</button>
+      ` : `
+        <button class="btn solid" data-act="sign-in" ${authBusy ? 'disabled' : ''}>${authBusy ? '登入中…' : '☁️ 用 Google 帳號登入以同步'}</button>
+        <div class="muted" style="text-align:center; margin-top:8px;">登入後資料會存到你的私人雲端,其他裝置登入同一個帳號就看得到。</div>
+      `) : ''}
       <div class="btn-row">
         <button class="btn quiet" data-act="export">⬇︎ 匯出備份</button>
         <button class="btn quiet" data-act="import">⬆︎ 匯入備份</button>
@@ -1027,6 +1119,8 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'sign-in': signInCloud(); return;
+    case 'sign-out': signOutCloud(); return;
     case 'draft-type': draft.type = el.dataset.v; break;
     case 'add-tx': {
       const amt = Math.abs(num(draft.amount));

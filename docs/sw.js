@@ -1,6 +1,6 @@
 /* 離線快取:換版時 CACHE 名稱會變,舊快取自動清掉。 */
-const CACHE = 'finance-1c6d06949c';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './favicon-32.png'];
+const CACHE = 'finance-07debdbd6a';
+const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './favicon-32.png', './firebase-sync.js', './firebase-config.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

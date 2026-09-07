@@ -62,6 +62,20 @@ SITE = ROOT / 'docs'   # GitHub Pages 只能從 root 或 /docs 發佈
 SITE.mkdir(exist_ok=True)
 
 APP_NAME = '財務管理'
+cloud_boot = """
+<script>
+/* Firebase 是 module script,一定比 app 晚執行;
+   先放一個 promise 佔位,讓 app 啟動時就有東西可以等。 */
+window.FinanceCloud = {};
+window.FinanceCloud.ready = new Promise(resolve => {
+  let settled = false;
+  window.__financeCloudResolve = v => { if (!settled){ settled = true; resolve(v); } };
+  // 離線或載入失敗時別讓 app 一直等
+  setTimeout(() => window.__financeCloudResolve(null), 15000);
+});
+</script>
+"""
+
 sw_reg = """
 <script>
 if ('serviceWorker' in navigator && location.protocol === 'https:'){
@@ -90,10 +104,12 @@ site_html = f"""<!DOCTYPE html>
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <style>img{{max-width:100%;}} [hidden]{{display:none !important;}}</style>
+{cloud_boot}
 {head_part}
 </head>
 <body>
 {body_part}
+<script type="module" src="firebase-sync.js"></script>
 {sw_reg}
 </body>
 </html>
@@ -120,14 +136,15 @@ manifest = {
 (SITE / 'manifest.webmanifest').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
 
 ASSETS = ['icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'favicon-32.png']
-for name in ASSETS:
+CLOUD_FILES = ['firebase-sync.js', 'firebase-config.js']
+for name in ASSETS + CLOUD_FILES:
     shutil.copy2(ROOT / name, SITE / name)
 
 # 每次 build 內容有變就換 cache 名稱,使用者第二次開啟時自動拿到新版
 version = hashlib.sha256(site_html.encode()).hexdigest()[:10]
 sw = f"""/* 離線快取:換版時 CACHE 名稱會變,舊快取自動清掉。 */
 const CACHE = 'finance-{version}';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', {', '.join(repr('./' + a) for a in ASSETS)}];
+const ASSETS = ['./', './index.html', './manifest.webmanifest', {', '.join(repr('./' + a) for a in ASSETS + CLOUD_FILES)}];
 
 self.addEventListener('install', e => {{
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
