@@ -79,6 +79,11 @@ window.FinanceCloud.ready = new Promise(resolve => {
     border:1px solid var(--line);
   }
   @media (max-height: 560px){ body{padding:0;} .phone{border-radius:0; border:none;} }
+  @media (max-width: 359px){
+    .erow{flex-wrap:wrap;}
+    .erow .f-name, .erow .f-title{flex:1 1 100%;}
+    .erow .f-amt{flex:1 1 auto; max-width:none;}
+  }
   .topbar{
     flex:0 0 auto; padding:10px 6px 0; border-bottom:1px solid var(--line);
     display:flex; align-items:center; gap:6px;
@@ -167,10 +172,14 @@ window.FinanceCloud.ready = new Promise(resolve => {
 
   .erow{display:flex; gap:7px; align-items:center; margin-top:10px;}
   .erow{min-width:0;}
-  .erow .f-name{flex:1 1 auto; min-width:0;}
-  .erow .f-code{flex:0 0 92px; min-width:0;}          /* 股票代號,固定窄欄 */
-  .erow .f-title{flex:1 1 auto; min-width:0;}         /* 名稱,吃剩下的寬度 */
-  .erow .f-amt{flex:0 0 130px; min-width:0; text-align:right;}
+  /* 死寬度在窄螢幕會塞不下金額,改成兩欄一起分配空間,並給金額一個下限 */
+  .erow .f-name{flex:1 1 90px; min-width:0;}
+  .erow .f-code{flex:0 1 88px; min-width:64px;}       /* 股票代號 */
+  .erow .f-title{flex:1 1 90px; min-width:0;}         /* 標的名稱 */
+  .erow .f-amt{
+    flex:1 1 140px; min-width:118px; max-width:190px;
+    padding-left:8px; padding-right:8px; text-align:right;
+  }
   .xbtn{
     flex:0 0 34px; height:38px; border-radius:9px; border:1px solid var(--line);
     background:var(--card); color:var(--sub); font-size:15px; cursor:pointer; font-family:inherit;
