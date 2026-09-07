@@ -6,7 +6,7 @@ import {
   signOut as fbSignOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 import {
-  getFirestore, doc, getDoc, setDoc, onSnapshot
+  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, onSnapshot
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
@@ -47,11 +47,19 @@ if (!firebaseConfig || !firebaseConfig.apiKey){
       },
       signOut(){ return fbSignOut(auth); },
       docApi(){
-        const ref = doc(db, 'users', auth.currentUser.uid, 'data', 'finance');
+        const uid = auth.currentUser.uid;
+        const ref = doc(db, 'users', uid, 'data', 'finance');
+        const backupCol = collection(db, 'users', uid, 'backups');
         return {
           get: async () => { const s = await getDoc(ref); return s.exists() ? s.data() : null; },
           set: d => setDoc(ref, d),
-          onChange: cb => onSnapshot(ref, s => { if (s.exists()) cb(s.data()); }, () => {})
+          onChange: cb => onSnapshot(ref, s => { if (s.exists()) cb(s.data()); }, () => {}),
+          backups: {
+            list: async () => (await getDocs(backupCol)).docs.map(d => d.id).sort().reverse(),
+            get: async id => { const s = await getDoc(doc(backupCol, id)); return s.exists() ? s.data() : null; },
+            put: (id, data) => setDoc(doc(backupCol, id), data),
+            del: id => deleteDoc(doc(backupCol, id))
+          }
         };
       }
     });

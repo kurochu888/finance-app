@@ -220,6 +220,7 @@ const DEFAULT_LEVERAGE = {
   shares675L:0, price675L:0, shares631L:0, price631L:0,
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
+  autoInterest:true, interestPosted:[], quoteDate:'',
   tranches:[
     { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'' },
     { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'' },
@@ -265,10 +266,15 @@ function normalize(raw){
       label: String(t.label || ('第' + (i+1) + '桶金')),
       thresholdPct: num(t.thresholdPct),
       amount: num(t.amount),
-      useDate: String(t.useDate || '')
+      useDate: String(t.useDate || ''),
+      useIndex: num(t.useIndex),
+      note: String(t.note || '')
     }));
   }
-  base.autoHigh = L.autoHigh !== false;   // 舊資料沒有這個欄位時預設開啟
+  base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
+  base.autoInterest = L.autoInterest !== false;
+  base.interestPosted = Array.isArray(L.interestPosted) ? L.interestPosted.map(String) : [];
+  base.quoteDate = String(L.quoteDate || '');
   if (L.core && typeof L.core === 'object'){
     base.core = { label:String(L.core.label || '長期投資部位'), amount:num(L.core.amount), useDate:String(L.core.useDate || '') };
   }
@@ -387,6 +393,8 @@ async function syncFirstTime(){
     }
     cloud.onChange(onRemote);
     updateStorageStatus();
+    if (maybePostInterest()) renderAll();
+    maybeBackup();
   }catch(e){
     cloud = null;
     storageMode = 'local';
@@ -416,7 +424,19 @@ async function connectCloud(){
             return null;
           },
           set: d => ref.set(d),
-          onChange: cb => ref.onSnapshot(s => { if (s.exists) cb(s.data()); }, () => {})
+          onChange: cb => ref.onSnapshot(s => { if (s.exists) cb(s.data()); }, () => {}),
+          backups: {
+            list: async () => {
+              const snap = await db.collection('backups').get();
+              return snap.docs.map(d => d.id).sort().reverse();
+            },
+            get: async id => {
+              const s2 = await db.doc('backups/' + id).get();
+              return s2.exists ? s2.data() : null;
+            },
+            put: (id, data) => db.doc('backups/' + id).set(data),
+            del: id => db.doc('backups/' + id).delete()
+          }
         };
         await syncFirstTime();
         return;
@@ -473,6 +493,71 @@ async function signOutCloud(){
   renderAll();
 }
 
+/* ===================== 每日備份 =====================
+   雲端可用時存在雲端的 backups 集合,否則存本機。每天一份,保留 30 天。 */
+const BACKUP_KEEP = 30;
+const BACKUP_PREFIX = 'financeBackup_';
+const BACKUP_TS_KEY = 'financeLastBackup';
+
+let backupOpen = false;
+let backupList = null;     // null = 還沒讀 / 讀取中
+
+function localBackupApi(){
+  return {
+    list: async () => {
+      const ids = [];
+      for (let i = 0; i < localStorage.length; i++){
+        const k = localStorage.key(i);
+        if (k && k.startsWith(BACKUP_PREFIX)) ids.push(k.slice(BACKUP_PREFIX.length));
+      }
+      return ids.sort().reverse();
+    },
+    get: async id => {
+      const raw = localStorage.getItem(BACKUP_PREFIX + id);
+      return raw ? JSON.parse(raw) : null;
+    },
+    put: async (id, data) => localStorage.setItem(BACKUP_PREFIX + id, JSON.stringify(data)),
+    del: async id => localStorage.removeItem(BACKUP_PREFIX + id)
+  };
+}
+function backupApi(){
+  return (cloud && cloud.backups) ? cloud.backups : localBackupApi();
+}
+async function maybeBackup(){
+  const today = todayISO();
+  try{ if (localStorage.getItem(BACKUP_TS_KEY) === today) return; }catch(e){}
+  const api = backupApi();
+  try{
+    await api.put(today, JSON.parse(JSON.stringify(state)));
+    try{ localStorage.setItem(BACKUP_TS_KEY, today); }catch(e){}
+    const ids = await api.list();
+    for (const id of ids.slice(BACKUP_KEEP)) await api.del(id);
+  }catch(e){ /* 備份失敗不影響使用 */ }
+}
+async function loadBackups(){
+  backupOpen = true;
+  backupList = null;
+  renderAll();
+  try{ backupList = await backupApi().list(); }
+  catch(e){ backupList = []; }
+  renderAll();
+}
+async function restoreBackup(id){
+  try{
+    const data = await backupApi().get(id);
+    if (!data){ dataMsg = '這份備份讀不到'; renderAll(); return; }
+    state = normalize(data);
+    viewMonth = thisMonth();
+    backupOpen = false;
+    dataMsg = '已還原到 ' + id + ' 的版本';
+    await save();
+    renderAll();
+  }catch(e){
+    dataMsg = '還原失敗,請再試一次';
+    renderAll();
+  }
+}
+
 /* ===================== 衍生計算 ===================== */
 const sum = (list, f) => list.reduce((s, x) => s + f(x), 0);
 const totalAssets = () => sum(state.assets, a => a.amount);
@@ -495,6 +580,82 @@ function knownCats(){
   state.budgets.forEach(b => { if (b.name) set.add(b.name); });
   state.transactions.forEach(t => { if (t.cat) set.add(t.cat); });
   return Array.from(set);
+}
+
+/* ===================== 證交所報價 =====================
+   資料來源:臺灣證券交易所公開資訊,取的是「最近一個交易日收盤價」,
+   不是即時報價。Artifact 版的 CSP 擋外部請求,該版本不提供這個功能。 */
+const QUOTES_ENABLED = /*QUOTES_ENABLED*/;
+const TWSE_STOCK = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo=';
+const TWSE_INDEX = 'https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json';
+const QUOTE_TS_KEY = 'financeQuoteFetchedAt';
+
+let quoteBusy = false;
+let quoteMsg = '';
+
+const cleanNum = v => num(String(v).replace(/,/g, ''));
+function rocToISO(s){                       // '115/09/04' → '2026-09-04'
+  const p = String(s).split('/');
+  return p.length === 3 ? (Number(p[0]) + 1911) + '-' + p[1] + '-' + p[2] : '';
+}
+function monthParam(offset){
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset);
+  return d.getFullYear() + pad2(d.getMonth() + 1) + '01';
+}
+async function twseRows(url){
+  // 月初當月可能還沒有資料,退回上個月再試一次
+  for (const m of [monthParam(0), monthParam(-1)]){
+    try{
+      const res = await fetch(url + '&date=' + m);
+      if (!res.ok) continue;
+      const j = await res.json();
+      if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length) return j.data;
+    }catch(e){ /* 換下一個月 */ }
+  }
+  return null;
+}
+async function fetchQuotes(manual){
+  if (!QUOTES_ENABLED || quoteBusy) return;
+  quoteBusy = true;
+  quoteMsg = '更新報價中…';
+  if (manual) renderAll();
+  try{
+    const [r631, r675, rIdx] = await Promise.all([
+      twseRows(TWSE_STOCK + '00631L'),
+      twseRows(TWSE_STOCK + '00675L'),
+      twseRows(TWSE_INDEX)
+    ]);
+    const L = state.leverage;
+    let date = '';
+    if (r631 && r631.length){ const row = r631[r631.length-1]; L.price631L = cleanNum(row[6]); date = rocToISO(row[0]); }
+    if (r675 && r675.length){ const row = r675[r675.length-1]; L.price675L = cleanNum(row[6]); date = rocToISO(row[0]) || date; }
+    if (rIdx && rIdx.length){ const row = rIdx[rIdx.length-1]; L.marketCurrent = cleanNum(row[4]); date = rocToISO(row[0]) || date; }
+    if (date){
+      L.quoteDate = date;
+      quoteMsg = '';
+      try{ localStorage.setItem(QUOTE_TS_KEY, String(Date.now())); }catch(e){}
+      scheduleSave();
+    }else{
+      quoteMsg = '抓不到報價,維持原本的數字';
+    }
+  }catch(e){
+    quoteMsg = '抓不到報價(可能沒有網路),維持原本的數字';
+  }
+  quoteBusy = false;
+  // 自動抓取可能在使用者打字時完成,別把游標和輸入到一半的內容洗掉
+  if (document.activeElement && document.activeElement.tagName === 'INPUT'){
+    if (currentTab === 'leverage') refreshLeverage();
+  }else{
+    renderAll();
+  }
+}
+function maybeAutoQuote(){
+  if (!QUOTES_ENABLED) return;
+  let last = 0;
+  try{ last = Number(localStorage.getItem(QUOTE_TS_KEY)) || 0; }catch(e){}
+  if (Date.now() - last > 3600000) fetchQuotes(false);   // 一小時內不重覆抓
 }
 
 /* ===================== 分頁 ===================== */
@@ -534,6 +695,7 @@ function switchTab(tab){
   pendingConfirm = null;
   draftError = '';
   dataMsg = '';
+  backupOpen = false;
   document.getElementById('content').scrollTop = 0;
   renderAll();
 }
@@ -665,10 +827,20 @@ function renderOverview(){
         <button class="btn quiet" data-act="copy-json">📋 複製成文字</button>
         <button class="btn quiet" data-act="load-sample">${pendingConfirm === 'load-sample' ? '⚠️ 再按一次覆蓋' : '載入範例'}</button>
       </div>
+      <button class="btn quiet" data-act="show-backups">🕘 ${backupOpen ? '收起備份清單' : '還原備份'}</button>
+      ${backupOpen ? (backupList === null
+        ? `<div class="muted" style="text-align:center; padding:10px;">讀取中…</div>`
+        : backupList.length
+          ? backupList.map(id => `
+            <div class="erow">
+              <div class="f-name muted" style="padding-left:2px;">${esc(id)}</div>
+              <button class="btn quiet" style="flex:0 0 auto; width:auto; margin:0; padding:8px 12px;" data-act="restore" data-id="${esc(id)}">${pendingConfirm === 'restore:' + id ? '⚠️ 再按一次' : '還原'}</button>
+            </div>`).join('')
+          : `<div class="muted" style="text-align:center; padding:10px;">還沒有備份 — 每天開啟 app 時會自動存一份。</div>`) : ''}
       <button class="btn danger" data-act="clear-all">${pendingConfirm === 'clear-all' ? '⚠️ 再按一次清空' : '清空全部'}</button>
       <input type="file" accept="application/json,.json,text/plain" id="importFile" style="display:none">
       ${dataMsg ? `<div class="muted" style="text-align:center; margin-top:10px;">${esc(dataMsg)}</div>` : ''}
-      <div class="notice">${STORAGE_NOTE}<br>匯出的 JSON 可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去。</div>
+      <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,保留 30 天,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 則可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去。</div>
     </div>`;
 }
 
@@ -914,6 +1086,11 @@ function renderLeverage(){
       <div class="row"><span class="label">00675L 市值</span><span class="val" id="out-value675L">NT$ ${fmt(r.value675L)}</span></div>
       <div class="row"><span class="label">00631L 市值</span><span class="val" id="out-value631L">NT$ ${fmt(r.value631L)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
+      ${QUOTES_ENABLED ? `
+        <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
+        <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
+          : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。股數請自己填。'
+          : '可自動帶入 00631L、00675L 收盤價與大盤點位。股數請自己填。'}</div>` : ''}
     </div>
 
     <div class="card">
@@ -934,6 +1111,11 @@ function renderLeverage(){
           </div>
           <div class="row"><span class="muted">觸發點位</span><span class="muted" id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></div>
           <div class="field"><label>實際動用日期(填了才算已動用)</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
+          ${t.useDate ? `
+            <div class="field"><label>動用時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
+            <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="例如:00631L 27,000 股"></div>
+            <div class="muted">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(t.amount * (L.annualRate/100) * t.yearsUsed)}</div>
+          ` : ''}
         </div>`).join('')}
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span></div>
@@ -952,7 +1134,10 @@ function renderLeverage(){
       </div>
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
-      <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。</div>
+      <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
+      <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
+        ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
+        : ''}</div>
     </div>
 
     <div class="card">
@@ -1013,6 +1198,27 @@ function refreshLeverage(){
   set('out-remainingNetWorth', 'NT$ ' + fmt(r.remainingNetWorth));
 }
 
+/* 每月把槓桿利息記成一筆支出。已記過的月份會留在 interestPosted,
+   所以你把那筆刪掉之後不會又被加回來。 */
+function maybePostInterest(){
+  const L = state.leverage;
+  if (!L.autoInterest) return false;
+  const r = computeLeverage();
+  if (!(r.monthlyInterest > 0)) return false;
+  const m = thisMonth();
+  if (L.interestPosted.includes(m)) return false;
+  state.transactions.push({
+    id: uid(),
+    date: m + '-01',
+    cat: '房貸利息',
+    desc: '槓桿借款利息(自動記入)',
+    amount: -Math.round(r.monthlyInterest)
+  });
+  L.interestPosted.push(m);
+  scheduleSave();
+  return true;
+}
+
 /* ===================== 輸入處理 ===================== */
 const findById = (list, id) => list.find(x => x.id === id);
 
@@ -1037,6 +1243,8 @@ function onField(key, el){
     if (t){
       if (what === 'pct') t.thresholdPct = num(el.value);
       else if (what === 'amt') t.amount = num(el.value);
+      else if (what === 'idx') t.useIndex = num(el.value);
+      else if (what === 'note') t.note = el.value;
       else t.useDate = el.value;
     }
   }
@@ -1057,6 +1265,11 @@ function onField(key, el){
   }
 
   scheduleSave();
+  if (kind === 'tr' && rest.startsWith('date-')){
+    maybePostInterest();
+    renderAll();                                // 動用日期會長出/收起動用紀錄欄位
+    return;
+  }
   if (structural) return;                       // 交易編輯:離開欄位時才重畫
   if (currentTab === 'budget') refreshBudget();
   else if (currentTab === 'assets') refreshAssets();
@@ -1173,7 +1386,7 @@ function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
   let rerender = true;
-  if (act !== 'load-sample' && act !== 'clear-all' && act !== 'del-tx') pendingConfirm = null;
+  if (!['load-sample', 'clear-all', 'del-tx', 'restore'].includes(act)) pendingConfirm = null;
   if (act !== 'export' && act !== 'import' && act !== 'copy-json') dataMsg = '';
 
   switch (act){
@@ -1199,6 +1412,19 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'fetch-quotes': fetchQuotes(true); return;
+    case 'show-backups':
+      if (backupOpen){ backupOpen = false; break; }
+      loadBackups();
+      return;
+    case 'restore':
+      if (needsConfirm('restore:' + id)) return;
+      restoreBackup(id);
+      return;
+    case 'toggle-autointerest':
+      state.leverage.autoInterest = !state.leverage.autoInterest;
+      if (state.leverage.autoInterest) maybePostInterest();
+      break;
     case 'toggle-autohigh':
       state.leverage.autoHigh = !state.leverage.autoHigh;
       if (state.leverage.autoHigh) maybeUpdateHigh();
@@ -1285,8 +1511,11 @@ function init(){
   });
 
   storageMode = 'local';
+  maybePostInterest();
   renderAll();
+  maybeAutoQuote();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
+  setTimeout(maybeBackup, 4000);   // 讓畫面與雲端先就緒
   if (window.claude && typeof window.claude.use === 'function'){
     window.claude.use('downloads').then(ns => { downloadsNs = ns; }).catch(() => {});
   }
