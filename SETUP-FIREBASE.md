@@ -1,9 +1,31 @@
 # 開啟雲端同步(Firebase + Google 登入)
 
-做完這幾步,手機和電腦登入同一個 Google 帳號就會即時同步。
-沒做完之前 app 一切照常,只是資料留在各自的裝置。
+專案已經建好並接上,`firebase-config.js` 也填好了。
 
-全部在 https://console.firebase.google.com 完成,約 5 分鐘。
+- 專案 ID:`kuro-finance-09078a32e4`
+- Firestore:asia-east1(台灣),安全規則已部署
+- 網頁應用程式:已註冊
+
+**只剩一步需要人工在主控台完成**(Firebase 免費版的 Authentication 無法用 API 首次啟用,
+API 端點 `identityPlatform:initializeAuth` 會回 `BILLING_NOT_ENABLED`):
+
+## 啟用 Google 登入
+
+1. 開 https://console.firebase.google.com/project/kuro-finance-09078a32e4/authentication/providers
+2. 按「開始使用 / Get started」
+3. 選 **Google** → 右上角開關切成**啟用**
+4. 填「專案的公開名稱」(隨意)與「專案支援電子郵件」(選你的信箱)
+5. 儲存
+
+完成後跑這行把 GitHub Pages 的網域加進白名單:
+
+```sh
+./add-auth-domain.sh
+```
+
+---
+
+以下是從零開始的完整步驟,供日後重建參考。
 
 ## 1. 建立專案
 
