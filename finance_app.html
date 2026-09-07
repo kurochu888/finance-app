@@ -869,30 +869,43 @@ function computeLeverage(){
     return { ...t, triggerLevel, triggered, used, yearsUsed: daysSince(t.useDate)/365.25 };
   });
 
-  let usedAmount = sum(tranches.filter(t => t.used), t => t.amount);
+  const usedTranches = tranches.filter(t => t.used);
+  let usedAmount = sum(usedTranches, t => t.amount);
   const coreUsed = !!L.core.useDate;
   if (coreUsed) usedAmount += L.core.amount;
 
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
-  const exitThreshold = L.historicalHighValue + sum(tranches.filter(t => t.used), t => t.amount * t.yearsUsed * 0.08);
-  const exitReached = L.historicalHighValue > 0 && totalValue >= exitThreshold;
+  const exitThreshold = L.historicalHighValue + sum(usedTranches, t => t.amount * t.yearsUsed * 0.08);
+  // 沒有動用任何一桶就沒有槓桿要撤,不論市值多高都不該亮燈
+  const anyUsed = usedTranches.length > 0;
+  const exitReached = anyUsed && L.historicalHighValue > 0 && totalValue >= exitThreshold;
 
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
   return { value675L, value631L, totalValue, tranches, usedAmount, coreUsed, monthlyInterest,
-           exitThreshold, exitReached, positionDeclinePct, lossAmount,
+           exitThreshold, exitReached, anyUsed, positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
 
 /* 自動記錄看過的最高總市值。只在欄位輸入完成(change)或重畫時檢查,
    避免打字打到一半的中間值被記成新高。 */
+function exitBadge(r){
+  if (!r.anyUsed) return `<div class="badge gray">尚未動用桶金,暫不適用</div>`;
+  return r.exitReached
+    ? `<div class="badge red">已達撤退門檻,可開始慢慢減碼</div>`
+    : `<div class="badge gray">尚未達撤退門檻</div>`;
+}
+
+/* 動用桶金之前持續記錄新高;一旦動用就凍結 —— 撤退要比的是「下跌前的高點」,
+   高點若跟著現價跑,門檻永遠追不上,訊號就永遠不會亮。 */
 function maybeUpdateHigh(){
   const L = state.leverage;
   if (!L.autoHigh) return false;
-  const total = computeLeverage().totalValue;
-  if (total > 0 && total > L.historicalHighValue + 0.5){
-    L.historicalHighValue = Math.round(total);
+  const r = computeLeverage();
+  if (r.anyUsed) return false;          // 已動用:凍結為撤退目標
+  if (r.totalValue > 0 && r.totalValue > L.historicalHighValue + 0.5){
+    L.historicalHighValue = Math.round(r.totalValue);
     scheduleSave();
     return true;
   }
@@ -964,15 +977,15 @@ function renderLeverage(){
       <h3>撤退門檻</h3>
       <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
       <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
-      <div class="muted" style="margin-top:6px;">${L.autoHigh
-        ? '總市值超過這個數字時會自動更新,不用自己維護。填錯了可以直接改成正確數字。'
-        : '目前不會自動更新,新高要自己填。'}</div>
+      <div class="muted" style="margin-top:6px;">${!L.autoHigh
+        ? '目前不會自動更新,新高要自己填。'
+        : r.anyUsed
+          ? '已凍結 — 桶金動用後,這個高點就是要漲回去的目標,不再跟著市值變動。'
+          : '總市值創新高時自動更新。等你動用桶金,它會凍結成撤退目標。填錯可直接改成正確數字。'}</div>
       <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
       <div class="row"><span class="label">目前總市值</span><span class="val" id="out-exitCurrent">NT$ ${fmt(r.totalValue)}</span></div>
-      <div id="out-exitBadgeWrap">${r.exitReached
-        ? `<div class="badge red">已達撤退門檻,可開始慢慢減碼</div>`
-        : `<div class="badge gray">尚未達撤退門檻</div>`}</div>
-      <div class="notice">只有填了「動用日期」的桶金會計入門檻(每年 8% 累加);${esc(L.core.label)}視為長期持有,不列入。</div>
+      <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
+      <div class="notice">要有桶金填了「動用日期」才會判斷撤退 —— 沒借錢就沒有槓桿要撤。門檻 = 歷史最高市值 + 已動用金額每年 8% 累加;${esc(L.core.label)}視為長期持有,不列入。</div>
     </div>
 
     <div class="card">
@@ -1012,9 +1025,7 @@ function refreshLeverage(){
   set('out-exitThreshold', 'NT$ ' + fmt(r.exitThreshold));
   set('out-exitCurrent', 'NT$ ' + fmt(r.totalValue));
   const wrap = document.getElementById('out-exitBadgeWrap');
-  if (wrap) wrap.innerHTML = r.exitReached
-    ? `<div class="badge red">已達撤退門檻,可開始慢慢減碼</div>`
-    : `<div class="badge gray">尚未達撤退門檻</div>`;
+  if (wrap) wrap.innerHTML = exitBadge(r);
   set('out-positionDeclinePct', fmtPct(-r.positionDeclinePct));
   set('out-lossAmount', 'NT$ ' + fmt(r.lossAmount));
   set('out-remainingNetWorth', 'NT$ ' + fmt(r.remainingNetWorth));
