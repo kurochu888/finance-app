@@ -451,6 +451,26 @@ console.log('  清掉', freed, '份最舊備份後存檔成功:', ok);
 if (!ok) throw new Error('空間不足時沒有靠清備份救回存檔');
 console.log('  主資料存得進去,不會靜靜失敗 ✓');
 
+console.log('只有一天資料時不該畫出空白圖');
+A.state = A.emptyState();
+const oneI = A.state.instruments.find(x => x.id === '00631L');
+oneI.shares = 10000; oneI.price = 36.64;
+A.maybeSnapshot(); A.maybeDailySnapshot();
+A.currentTab = 'leverage';
+A.renderAll();
+const oneHtml = store.content.innerHTML;
+console.log('  一天紀錄 →', (oneHtml.match(/<svg/g)||[]).length, '張圖 |',
+            oneHtml.includes('累積兩天就會出現') ? '有說明在等什麼' : '沒有說明');
+if ((oneHtml.match(/<svg/g)||[]).length !== 0) throw new Error('一個時間點卻畫出圖');
+if (!oneHtml.includes('累積兩天就會出現')) throw new Error('沒有告訴使用者在等什麼');
+// 兩天就要畫得出來
+A.state.dailyHistory.push({ d:'2026-09-09', pv:400000, loan:0, eq:400000, pnl:null });
+A.renderAll();
+const twoHtml = store.content.innerHTML;
+console.log('  兩天紀錄 →', (twoHtml.match(/<svg/g)||[]).length, '張圖');
+if ((twoHtml.match(/<svg/g)||[]).length < 1) throw new Error('兩個時間點卻畫不出圖');
+console.log('  一天不畫、兩天就畫 ✓');
+
 console.log('每日走勢');
 A.state = A.emptyState();
 const dI = A.state.instruments.find(x => x.id === '00631L');
