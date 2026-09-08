@@ -692,6 +692,9 @@ const LOCAL_BACKUP_KEEP = 7;   // 本機 localStorage 只有幾 MB,備份不能�
 const BACKUP_PREFIX = 'financeBackup_';
 const BACKUP_TS_KEY = 'financeLastBackup';
 
+let levTab = 'overview';      // 槓桿頁的小分頁
+let repayDraft = { target:'', date: todayISO(), amount:'' };
+let repayError = '';
 let chartRange = 90;          // 每日走勢圖顯示最近幾個交易日,0 = 全部
 let backupOpen = false;
 let backupList = null;     // null = 還沒讀 / 讀取中
@@ -1299,6 +1302,7 @@ function switchTab(tab){
   editingTx = null;
   editingTrade = null;
   tradeError = '';
+  repayError = '';
   pendingConfirm = null;
   draftError = '';
   dataMsg = '';
@@ -1649,6 +1653,17 @@ function renderHelp(){
       <p>分母用<strong>部位淨值</strong>而不是部位市值:已借出的錢同時存在於部位與額度中,
       用市值會把它算兩次,比例看起來比實際安全。額度用得越多,分母越接近自有資金,
       比例會誠實地升高。</p>
+    </div>
+
+    <div class="sect">槓桿頁怎麼逛</div>
+    <div class="card doc">
+      <p>槓桿頁分成四個小分頁,上方可以切換:</p>
+      <ul>
+        <li><strong>概況</strong> — 每天看這頁就好:整體損益、年化報酬、曝險,以及兩張走勢圖</li>
+        <li><strong>訊號</strong> — 該加碼還是減碼:桶金觸發狀態、撤退門檻、壓力測試</li>
+        <li><strong>紀錄</strong> — 買賣與還款,記完就走</li>
+        <li><strong>設定</strong> — 很少要動的:持股代號與報價、房貸額度與利率、桶金門檻、歷史最高市值</li>
+      </ul>
     </div>
 
     <div class="sect">加碼訊號</div>
@@ -2157,18 +2172,156 @@ function renderTrades(){
     </div>`;
 }
 
+function levTabs(){
+  const t = [['overview','概況'], ['signal','訊號'], ['log','紀錄'], ['setup','設定']];
+  return `<div class="seg" style="margin-bottom:12px;">
+    ${t.map(([v, label]) => `<button class="seg-btn ${levTab === v ? 'on' : ''}" data-act="lev-tab" data-v="${v}">${label}</button>`).join('')}
+  </div>`;
+}
+
+/* 還款紀錄:原本夾在各桶金裡,搬成獨立的一張卡 */
+function renderRepayments(){
+  const L = state.leverage;
+  const items = L.tranches.concat([L.core]).filter(x => x.useDate);
+  const ids = items.map(it => it === L.core ? 'core' : it.id);
+  if (!ids.includes(repayDraft.target)) repayDraft.target = ids[0] || '';
+  const rows = [];
+  items.forEach(it => (it.repayments || []).forEach(r => rows.push({ it, r })));
+  rows.sort((a, b) => a.r.date < b.r.date ? 1 : -1);
+  return `
+    <div class="card">
+      <h3>記一筆還款</h3>
+      ${items.length ? `
+        <div class="field"><label>還哪一筆</label>
+          <select data-k="rd-target">
+            ${items.map(it => `<option value="${it === L.core ? 'core' : it.id}" ${repayDraft.target === (it === L.core ? 'core' : it.id) ? 'selected' : ''}>${esc(it.label)}(尚欠 ${fmt(outstanding(it))})</option>`).join('')}
+          </select>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>日期</label><input type="date" data-k="rd-date" value="${esc(repayDraft.date)}"></div>
+          <div class="field"><label>金額</label><input type="number" inputmode="decimal" data-k="rd-amount" value="${esc(repayDraft.amount)}" placeholder="0"></div>
+        </div>
+        <button class="btn solid" data-act="add-repay2">新增還款</button>
+        ${repayError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(repayError)}</div>` : ''}
+      ` : `<div class="empty">還沒有動用中的桶金。<br>到「訊號」填了動用日期之後,這裡才能記還款。</div>`}
+    </div>
+
+    <div class="card">
+      <h3>還款紀錄</h3>
+      ${items.map(it => `
+        <div class="row"><span class="label">${esc(it.label)}</span>
+          <span class="val ${outstanding(it) ? '' : 'pos'}">${outstanding(it) ? '尚欠 NT$ ' + fmt(outstanding(it)) : '已還清'}</span></div>
+        <div class="row"><span class="muted">動用 ${fmt(it.amount)} · 已還 ${fmt(repaidOf(it))}</span><span class="muted"></span></div>
+      `).join('')}
+      ${rows.length ? `<div style="margin-top:10px;">${rows.map(({ it, r }) => `
+        <div class="erow">
+          <input type="date" class="f-name" data-k="rp-date-${it === L.core ? 'core' : it.id}-${r.id}" value="${esc(r.date)}">
+          <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it === L.core ? 'core' : it.id}-${r.id}" value="${r.amount || ''}">
+          <button class="xbtn" data-act="del-repay" data-id="${it === L.core ? 'core' : it.id}:${r.id}" aria-label="刪除">✕</button>
+        </div>
+        <div class="muted" style="margin-top:2px;">${esc(it.label)}</div>`).join('')}</div>`
+        : (items.length ? `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '')}
+    </div>`;
+}
+
+function renderTrancheSetup(){
+  const L = state.leverage;
+  return `
+    <div class="card">
+      <h3>桶金設定</h3>
+      ${L.tranches.map(t => `
+        <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
+          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span><span class="val"></span></div>
+          <div class="grid2">
+            <div class="field"><label>跌幅門檻(%)</label><input type="number" inputmode="decimal" data-k="tr-pct-${t.id}" value="${t.thresholdPct}"></div>
+            <div class="field"><label>可動用金額</label><input type="number" inputmode="decimal" data-k="tr-amt-${t.id}" value="${t.amount || ''}"></div>
+          </div>
+        </div>`).join('')}
+      <div class="field"><label>${esc(L.core.label)}金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
+      <div class="notice">跌幅門檻是相對大盤歷史最高點。動用日期在「訊號」分頁填。</div>
+    </div>
+
+    <div class="card">
+      <h3>撤退門檻設定</h3>
+      <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
+      <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
+      <div class="muted" style="margin-top:6px;">${!L.autoHigh
+        ? '目前不會自動更新,新高要自己填。'
+        : computeLeverage().anyUsed
+          ? '已凍結 — 桶金動用後,這個高點就是要漲回去的目標,不再跟著市值變動。'
+          : '總市值創新高時自動更新。等你動用桶金,它會凍結成撤退目標。填錯可直接改成正確數字。'}</div>
+    </div>`;
+}
+
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
   const usedPct = L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0;
   return `
-    <div class="sect">現在賺賠多少</div>
+    ${levTabs()}
+    ${levTab === 'overview' ? `
+      ${renderPnL()}
+      ${renderRisk()}
+    ` : levTab === 'signal' ? `
+    <div class="card">
+      <h3>加碼訊號:動用觸發點</h3>
+      <div class="grid2">
+        <div class="field"><label>大盤歷史最高點</label><input type="number" inputmode="decimal" data-k="lev-marketHigh" value="${L.marketHigh || ''}"></div>
+        <div class="field"><label>大盤即時點位</label><input type="number" inputmode="decimal" data-k="lev-marketCurrent" value="${L.marketCurrent || ''}"></div>
+      </div>
+      ${r.tranches.map(t => `
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+          <div class="row">
+            <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
+            <span class="badge ${t.triggered ? 'red' : 'gray'}" id="out-status-${t.id}">${t.triggered ? '已觸發' : '未觸發'}</span>
+          </div>
+          <div class="row"><span class="muted">門檻 ${t.thresholdPct}% · 可動用 NT$ ${fmt(t.amount)}</span><span class="muted"></span></div>
+          <div class="row"><span class="muted">觸發點位</span><span class="muted" id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></div>
+          <div class="field"><label>實際動用日期(填了才算已動用)</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
+          ${t.useDate ? `
+            <div class="field"><label>動用時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
+            <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="例如:00631L 27,000 股"></div>
+            <div class="row"><span class="label">動用 ${fmt(t.amount)}${t.repaid ? ' · 已還 ' + fmt(t.repaid) : ''}</span>
+              <span class="val ${t.balance ? '' : 'pos'}" style="font-weight:700;">${t.balance ? '尚欠 NT$ ' + fmt(t.balance) : '已還清'}</span></div>
+            <div class="muted" style="margin-top:6px;">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(accrue(t, L.annualRate))}</div>
+          ` : ''}
+        </div>`).join('')}
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span></div>
+        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
+        <div class="field"><label>動用日期</label><input type="date" data-k="core-date" value="${esc(L.core.useDate)}"></div>
+        ${L.core.useDate ? `
+          <div class="row"><span class="label">動用 ${fmt(L.core.amount)}${repaidOf(L.core) ? ' · 已還 ' + fmt(repaidOf(L.core)) : ''}</span>
+            <span class="val ${r.coreBalance ? '' : 'pos'}" style="font-weight:700;">${r.coreBalance ? '尚欠 NT$ ' + fmt(r.coreBalance) : '已還清'}</span></div>
+          ${(L.core.repayments || []).map(rp => `
+            <div class="erow">
+              <input type="date" class="f-name" data-k="rp-date-core-${rp.id}" value="${esc(rp.date)}">
+              <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-core-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
+              <button class="xbtn" data-act="del-repay" data-id="core:${rp.id}" aria-label="刪除">✕</button>
+            </div>`).join('')}
+          <button class="btn" data-act="add-repay" data-id="core">＋ 記一筆還款</button>
+        ` : ''}
+      </div>
+    </div>
 
-    ${renderPnL()}
+    <div class="card">
+      <h3>減碼訊號:撤退門檻</h3>
+      <div class="row"><span class="muted">歷史最高市值 NT$ ${fmt(L.historicalHighValue)}${L.autoHigh ? (r.anyUsed ? '(已凍結)' : '(自動記錄中)') : '(手動)'}</span><span class="muted"></span></div>
+      <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">自己的錢(含已取回)</span>
+        <span class="val" id="out-exitCurrent" style="font-weight:800;">NT$ ${fmt(r.equityValue)}</span></div>
+      <div class="row"><span class="muted">　部位市值</span><span class="muted">NT$ ${fmt(r.totalValue)}</span></div>
+      <div class="row"><span class="muted">　減 借款餘額</span><span class="muted">−NT$ ${fmt(r.usedAmount)}</span></div>
+      ${r.cashBack ? `<div class="row"><span class="muted">　加 賣出與配息取回</span><span class="muted">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
+      ${r.repaidTotal ? `<div class="row"><span class="muted">　減 已還款</span><span class="muted">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
+      ${r.ownAfter ? `<div class="row"><span class="muted">　減 動用後新投入的自有資金</span><span class="muted">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
+      <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
+      <div class="notice">比的是「自己的錢」而不是總市值 —— 借來的錢不算你的,賣出取回的現金仍然算。這樣借完錢不會假性達標,減碼之後訊號也不會消失。門檻 = 歷史最高市值 + 各桶金依實際餘額每年累加 8%;${esc(L.core.label)}視為長期持有,不列入。</div>
+    </div>
 
-    <div class="sect">承擔多少風險</div>
+    <div class="sect">紀錄與設定</div>
 
-    ${renderRisk()}
+    ${renderTrades()}
 
     <div class="card">
       <h3>壓力測試</h3>
@@ -2196,121 +2349,10 @@ function renderLeverage(){
     </div>
 
     <div class="sect">加碼與減碼訊號</div>
-
-    <div class="card">
-      <h3>加碼訊號:動用觸發點</h3>
-      <div class="grid2">
-        <div class="field"><label>大盤歷史最高點</label><input type="number" inputmode="decimal" data-k="lev-marketHigh" value="${L.marketHigh || ''}"></div>
-        <div class="field"><label>大盤即時點位</label><input type="number" inputmode="decimal" data-k="lev-marketCurrent" value="${L.marketCurrent || ''}"></div>
-      </div>
-      ${r.tranches.map(t => `
-        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-          <div class="row">
-            <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
-            <span class="badge ${t.triggered ? 'red' : 'gray'}" id="out-status-${t.id}">${t.triggered ? '已觸發' : '未觸發'}</span>
-          </div>
-          <div class="grid2">
-            <div class="field"><label>跌幅門檻(%)</label><input type="number" inputmode="decimal" data-k="tr-pct-${t.id}" value="${t.thresholdPct}"></div>
-            <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="tr-amt-${t.id}" value="${t.amount || ''}"></div>
-          </div>
-          <div class="row"><span class="muted">觸發點位</span><span class="muted" id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></div>
-          <div class="field"><label>實際動用日期(填了才算已動用)</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
-          ${t.useDate ? `
-            <div class="field"><label>動用時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
-            <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="例如:00631L 27,000 股"></div>
-            <div class="row"><span class="label">動用 ${fmt(t.amount)}${t.repaid ? ' · 已還 ' + fmt(t.repaid) : ''}</span>
-              <span class="val ${t.balance ? '' : 'pos'}" style="font-weight:700;">${t.balance ? '尚欠 NT$ ' + fmt(t.balance) : '已還清'}</span></div>
-            ${(t.repayments || []).map(rp => `
-              <div class="erow">
-                <input type="date" class="f-name" data-k="rp-date-${t.id}-${rp.id}" value="${esc(rp.date)}">
-                <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${t.id}-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
-                <button class="xbtn" data-act="del-repay" data-id="${t.id}:${rp.id}" aria-label="刪除">✕</button>
-              </div>`).join('')}
-            <button class="btn" data-act="add-repay" data-id="${t.id}">＋ 記一筆還款</button>
-            <div class="muted" style="margin-top:6px;">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(accrue(t, L.annualRate))}</div>
-          ` : ''}
-        </div>`).join('')}
-      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-        <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span></div>
-        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
-        <div class="field"><label>動用日期</label><input type="date" data-k="core-date" value="${esc(L.core.useDate)}"></div>
-        ${L.core.useDate ? `
-          <div class="row"><span class="label">動用 ${fmt(L.core.amount)}${repaidOf(L.core) ? ' · 已還 ' + fmt(repaidOf(L.core)) : ''}</span>
-            <span class="val ${r.coreBalance ? '' : 'pos'}" style="font-weight:700;">${r.coreBalance ? '尚欠 NT$ ' + fmt(r.coreBalance) : '已還清'}</span></div>
-          ${(L.core.repayments || []).map(rp => `
-            <div class="erow">
-              <input type="date" class="f-name" data-k="rp-date-core-${rp.id}" value="${esc(rp.date)}">
-              <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-core-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
-              <button class="xbtn" data-act="del-repay" data-id="core:${rp.id}" aria-label="刪除">✕</button>
-            </div>`).join('')}
-          <button class="btn" data-act="add-repay" data-id="core">＋ 記一筆還款</button>
-        ` : ''}
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>借款與利息</h3>
-      <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
-      ${r.drawnAmount !== r.usedAmount ? `<div class="row"><span class="muted">累計動用 ${fmt(r.drawnAmount)} · 已還 ${fmt(r.drawnAmount - r.usedAmount)}</span><span class="muted"></span></div>` : ''}
-      <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
-      <div class="grid2" style="margin-top:8px;">
-        <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>
-        <div class="field"><label>年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-annualRate" value="${L.annualRate || ''}"></div>
-      </div>
-      <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
-      <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
-      ${(() => {
-        const p = computePosition();
-        if (!p.hasData || !r.drawnAmount) return '';
-        const diff = r.drawnAmount - p.buyLoan;
-        const tol = Math.max(10000, r.drawnAmount * 0.02);
-        if (Math.abs(diff) <= tol) return '';
-        return `
-          <div class="alert amber" style="margin-top:12px;">
-            <span class="ai">⚠️</span>
-            <div>
-              <div class="at">兩邊的房貸金額對不起來</div>
-              <div class="ad">
-                動用紀錄合計 NT$ ${fmt(r.drawnAmount)},但買賣紀錄裡標記「房貸借款」的買進只有 NT$ ${fmt(p.buyLoan)},
-                差 NT$ ${fmt(Math.abs(diff))}。${diff > 0
-                  ? '可能是借了還沒買進,或買進時忘了選「房貸借款」。'
-                  : '可能是買進標記成房貸的金額超過實際動用,或動用金額填少了。'}
-                利息與曝險以動用紀錄為準。
-              </div>
-            </div>
-          </div>`;
-      })()}
-      <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
-        ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
-        : ''}</div>
-    </div>
-
-    <div class="card">
-      <h3>減碼訊號:撤退門檻</h3>
-      <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
-      <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
-      <div class="muted" style="margin-top:6px;">${!L.autoHigh
-        ? '目前不會自動更新,新高要自己填。'
-        : r.anyUsed
-          ? '已凍結 — 桶金動用後,這個高點就是要漲回去的目標,不再跟著市值變動。'
-          : '總市值創新高時自動更新。等你動用桶金,它會凍結成撤退目標。填錯可直接改成正確數字。'}</div>
-      <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">自己的錢(含已取回)</span>
-        <span class="val" id="out-exitCurrent" style="font-weight:800;">NT$ ${fmt(r.equityValue)}</span></div>
-      <div class="row"><span class="muted">　部位市值</span><span class="muted">NT$ ${fmt(r.totalValue)}</span></div>
-      <div class="row"><span class="muted">　減 借款餘額</span><span class="muted">−NT$ ${fmt(r.usedAmount)}</span></div>
-      ${r.cashBack ? `<div class="row"><span class="muted">　加 賣出與配息取回</span><span class="muted">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
-      ${r.repaidTotal ? `<div class="row"><span class="muted">　減 已還款</span><span class="muted">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
-      ${r.ownAfter ? `<div class="row"><span class="muted">　減 動用後新投入的自有資金</span><span class="muted">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
-      <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
-      <div class="notice">比的是「自己的錢」而不是總市值 —— 借來的錢不算你的,賣出取回的現金仍然算。這樣借完錢不會假性達標,減碼之後訊號也不會消失。門檻 = 歷史最高市值 + 各桶金依實際餘額每年累加 8%;${esc(L.core.label)}視為長期持有,不列入。</div>
-    </div>
-
-    <div class="sect">紀錄與設定</div>
-
-    ${renderTrades()}
-
+    ` : levTab === 'log' ? `
+      ${renderTrades()}
+      ${renderRepayments()}
+    ` : `
     <div class="card">
       <h3>持股與報價</h3>
       ${r.holdings.map(h => {
@@ -2353,11 +2395,53 @@ function renderLeverage(){
           </div>` : ''}` : ''}
     </div>
 
+    <div class="card">
+      <h3>借款與利息</h3>
+      <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
+      ${r.drawnAmount !== r.usedAmount ? `<div class="row"><span class="muted">累計動用 ${fmt(r.drawnAmount)} · 已還 ${fmt(r.drawnAmount - r.usedAmount)}</span><span class="muted"></span></div>` : ''}
+      <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
+      <div class="grid2" style="margin-top:8px;">
+        <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>
+        <div class="field"><label>年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-annualRate" value="${L.annualRate || ''}"></div>
+      </div>
+      <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
+      <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
+      ${(() => {
+        const p = computePosition();
+        if (!p.hasData || !r.drawnAmount) return '';
+        const diff = r.drawnAmount - p.buyLoan;
+        const tol = Math.max(10000, r.drawnAmount * 0.02);
+        if (Math.abs(diff) <= tol) return '';
+        return `
+          <div class="alert amber" style="margin-top:12px;">
+            <span class="ai">⚠️</span>
+            <div>
+              <div class="at">兩邊的房貸金額對不起來</div>
+              <div class="ad">
+                動用紀錄合計 NT$ ${fmt(r.drawnAmount)},但買賣紀錄裡標記「房貸借款」的買進只有 NT$ ${fmt(p.buyLoan)},
+                差 NT$ ${fmt(Math.abs(diff))}。${diff > 0
+                  ? '可能是借了還沒買進,或買進時忘了選「房貸借款」。'
+                  : '可能是買進標記成房貸的金額超過實際動用,或動用金額填少了。'}
+                利息與曝險以動用紀錄為準。
+              </div>
+            </div>
+          </div>`;
+      })()}
+      <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
+        ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
+        : ''}</div>
+    </div>
+
+      ${renderTrancheSetup()}
+    `}
+
     <div class="notice">
       用房屋擔保額度做槓桿投資,會把投資虧損直接連到房子與每月現金流。以上都是簡化試算,不構成投資或貸款建議,實際動用前請與銀行確認條件。
     </div>
   `;
 }
+
 function refreshLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
@@ -2485,6 +2569,11 @@ function onField(key, el){
     }
     draft[rest] = el.value;
     return;                                          // 草稿不入庫
+  }
+  else if (kind === 'rd'){                                          // 還款草稿
+    repayDraft[rest] = el.value;
+    if (rest === 'target') renderAll();
+    return;
   }
   else if (kind === 'pd'){                                          // 買賣草稿
     tradeDraft[rest] = el.value;
@@ -2838,6 +2927,23 @@ function onClick(el){
       break;
     case 'chart': pickChartPoint(el.dataset.key, Number(el.dataset.i)); return;
     case 'range': chartRange = Number(el.dataset.v); break;
+    case 'lev-tab':
+      levTab = el.dataset.v;
+      document.getElementById('content').scrollTop = 0;
+      break;
+    case 'add-repay2': {
+      const L2 = state.leverage;
+      const tid = repayDraft.target || (L2.tranches.find(t => t.useDate) || {}).id || '';
+      const target = tid === 'core' ? L2.core : findById(L2.tranches, tid);
+      const amt = Math.abs(num(repayDraft.amount));
+      if (!target || !target.useDate){ repayError = '請先選一筆動用中的桶金'; renderAll(); return; }
+      if (!amt){ repayError = '請填還款金額'; renderAll(); return; }
+      if (!Array.isArray(target.repayments)) target.repayments = [];
+      target.repayments.push({ id: uid(), date: repayDraft.date || todayISO(), amount: amt });
+      repayError = '';
+      repayDraft = { target: tid, date: repayDraft.date, amount:'' };
+      break;
+    }
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'show-backups':
       if (backupOpen){ backupOpen = false; break; }

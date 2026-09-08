@@ -47,6 +47,7 @@ globalThis.A = {
   computeStress, knownCats, accrue, outstanding, stateCSV, chartCaption, pickChartPoint,
   monthlyHistory, writeLocal, maybeBackup, shiftMonth, xirr, cashFlows, balanceAt,
   maybeDailySnapshot, dailySlice, set chartRange(v){chartRange=v},
+  set levTab(v){levTab=v}, get levTab(){return levTab},
   get chartData(){return chartData},
   get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v},
   txOfMonth, computeLeverage2: null,
@@ -60,11 +61,16 @@ const tabs = ['overview','assets','ledger','leverage','help'];
 function pass(label){
   for (const t of tabs){
     A.currentTab = t;
-    A.renderAll();
-    const html = store.content.innerHTML;
-    if (!html || html.length < 50) throw new Error(label+'/'+t+' 產出過短');
-    const i = Math.max(html.indexOf('undefined'), html.indexOf('NaN'));
-    if (i >= 0) throw new Error(label+'/'+t+' 出現 undefined/NaN: '+html.slice(Math.max(0,i-90), i+40));
+    for (const lt of (t === 'leverage' ? ['overview','signal','log','setup'] : [null])){
+      if (lt) A.levTab = lt;
+      A.renderAll();
+      const html = store.content.innerHTML;
+      const tag = t + (lt ? '/' + lt : '');
+      if (!html || html.length < 50) throw new Error(label+'/'+tag+' 產出過短');
+      const i = Math.max(html.indexOf('undefined'), html.indexOf('NaN'));
+      if (i >= 0) throw new Error(label+'/'+tag+' 出現 undefined/NaN: '+html.slice(Math.max(0,i-90), i+40));
+    }
+    A.levTab = 'overview';
   }
   console.log('  ok:', label);
 }
@@ -156,8 +162,10 @@ A.renderAll();
 if (store.content.innerHTML.includes('已達撤退門檻')) throw new Error('未動用卻在總覽顯示撤退提示');
 console.log('  總覽沒有撤退提示 ✓');
 A.currentTab = 'leverage';
+A.levTab = 'signal';
 A.renderAll();
 if (!store.content.innerHTML.includes('尚未動用桶金')) throw new Error('槓桿頁徽章沒顯示「尚未動用」');
+A.levTab = 'overview';
 console.log('  槓桿頁顯示「尚未動用桶金,暫不適用」 ✓');
 
 console.log('動用之後:高點凍結,並開始判斷撤退');
@@ -457,6 +465,7 @@ const oneI = A.state.instruments.find(x => x.id === '00631L');
 oneI.shares = 10000; oneI.price = 36.64;
 A.maybeSnapshot(); A.maybeDailySnapshot();
 A.currentTab = 'leverage';
+A.levTab = 'overview';
 A.renderAll();
 const oneHtml = store.content.innerHTML;
 console.log('  一天紀錄 →', (oneHtml.match(/<svg/g)||[]).length, '張圖 |',
@@ -470,6 +479,23 @@ const twoHtml = store.content.innerHTML;
 console.log('  兩天紀錄 →', (twoHtml.match(/<svg/g)||[]).length, '張圖');
 if ((twoHtml.match(/<svg/g)||[]).length < 1) throw new Error('兩個時間點卻畫不出圖');
 console.log('  一天不畫、兩天就畫 ✓');
+
+console.log('從紀錄分頁記還款');
+A.state = A.emptyState();
+A.state.leverage.tranches[0].useDate = '2026-01-01';
+A.state.leverage.tranches[0].amount = 1000000;
+A.currentTab = 'leverage'; A.levTab = 'log';
+A.renderAll();
+const logHtml = store.content.innerHTML;
+if (!logHtml.includes('記一筆還款')) throw new Error('紀錄分頁沒有還款表單');
+A.onField('rd-amount', { value:'250000' });
+A.onClick({ dataset:{ act:'add-repay2' } });
+const rp = A.state.leverage.tranches[0].repayments;
+console.log('  記了', rp.length, '筆還款,金額', rp[0] && rp[0].amount, '| 餘額', A.outstanding(A.state.leverage.tranches[0]));
+if (!rp.length || rp[0].amount !== 250000) throw new Error('還款沒有記進去');
+if (A.outstanding(A.state.leverage.tranches[0]) !== 750000) throw new Error('餘額沒有跟著減');
+console.log('  餘額跟著減 ✓');
+A.levTab = 'overview';
 
 console.log('每日走勢');
 A.state = A.emptyState();
@@ -504,6 +530,7 @@ if (A.dailySlice().length !== 30) throw new Error('範圍選擇沒生效');
 A.chartRange = 90;
 
 A.currentTab = 'leverage';
+A.levTab = 'overview';
 A.renderAll();
 const dhtml = store.content.innerHTML;
 if (!dhtml.includes('data-act="range"')) throw new Error('沒有出現範圍切換');
@@ -512,6 +539,7 @@ console.log('  槓桿頁出現範圍切換鈕 ✓');
 console.log('圖表互動');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
+A.levTab = 'overview';
 A.renderAll();
 const cd = A.chartData['pos'];
 if (!cd) throw new Error('圖表資料沒有登記');
