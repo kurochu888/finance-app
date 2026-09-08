@@ -480,6 +480,19 @@ console.log('  兩天紀錄 →', (twoHtml.match(/<svg/g)||[]).length, '張圖')
 if ((twoHtml.match(/<svg/g)||[]).length < 1) throw new Error('兩個時間點卻畫不出圖');
 console.log('  一天不畫、兩天就畫 ✓');
 
+console.log('槓桿頁小分頁固定');
+A.state = A.sampleData();
+A.currentTab = 'leverage';
+['overview','signal','log','setup'].forEach(t => {
+  A.levTab = t;
+  A.renderAll();
+  const h = store.content.innerHTML;
+  if (!h.includes('class="subtabs"')) throw new Error(t + ' 分頁沒有固定式切換列');
+  if (h.indexOf('class="subtabs"') > 200) throw new Error(t + ' 的切換列不在最前面');
+});
+console.log('  四個小分頁都有固定式切換列,且位於內容最上方 ✓');
+A.levTab = 'overview';
+
 console.log('從紀錄分頁記還款');
 A.state = A.emptyState();
 A.state.leverage.tranches[0].useDate = '2026-01-01';

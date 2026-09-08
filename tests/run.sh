@@ -15,6 +15,9 @@ echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo
+echo "=== 圖表(各種資料形狀與點擊) ==="
+node charts.js | tail -3
+echo
 echo "=== 雲端同步(假後端) ==="
 node cloud.js | tail -3
 echo

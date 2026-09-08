@@ -199,6 +199,13 @@ window.FinanceCloud.ready = new Promise(resolve => {
   .btn-row{display:flex; gap:8px;}
   .btn-row .btn{margin-top:8px;}
 
+  /* 槓桿頁的小分頁固定在內容區頂端,滑動時不會跑掉 */
+  .subtabs{
+    position:sticky; top:0; z-index:3; background:var(--card);
+    margin:-14px -14px 10px; padding:12px 14px 10px;
+    box-shadow:0 6px 12px -10px rgba(0,0,0,.5);
+  }
+  .subtabs .seg{margin:0;}
   .seg{display:flex; background:var(--bar-track); border-radius:9px; padding:3px; gap:3px;}
   .seg-btn{
     flex:1; padding:8px; border:none; border-radius:7px; background:none;
@@ -2190,9 +2197,9 @@ function renderTrades(){
 
 function levTabs(){
   const t = [['overview','概況'], ['signal','訊號'], ['log','紀錄'], ['setup','設定']];
-  return `<div class="seg" style="margin-bottom:12px;">
+  return `<div class="subtabs"><div class="seg">
     ${t.map(([v, label]) => `<button class="seg-btn ${levTab === v ? 'on' : ''}" data-act="lev-tab" data-v="${v}">${label}</button>`).join('')}
-  </div>`;
+  </div></div>`;
 }
 
 /* 還款紀錄:原本夾在各桶金裡,搬成獨立的一張卡 */
