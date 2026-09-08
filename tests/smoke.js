@@ -46,6 +46,7 @@ globalThis.A = {
   computePosition, heldShares, defaultFee, accruedInterest, computeRisk, maybeSnapshot, lineChart,
   computeStress, knownCats, accrue, outstanding, stateCSV, chartCaption, pickChartPoint,
   monthlyHistory, writeLocal, maybeBackup, shiftMonth, xirr, cashFlows, balanceAt,
+  maybeDailySnapshot, dailySlice, set chartRange(v){chartRange=v},
   get chartData(){return chartData},
   get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v},
   txOfMonth, computeLeverage2: null,
@@ -449,6 +450,44 @@ localStorage.removeItem = realRemove;
 console.log('  清掉', freed, '份最舊備份後存檔成功:', ok);
 if (!ok) throw new Error('空間不足時沒有靠清備份救回存檔');
 console.log('  主資料存得進去,不會靜靜失敗 ✓');
+
+console.log('每日走勢');
+A.state = A.emptyState();
+const dI = A.state.instruments.find(x => x.id === '00631L');
+dI.price = 40; dI.shares = 10000;
+if (!A.maybeDailySnapshot()) throw new Error('第一次沒有記錄');
+console.log('  今天記一筆:市值', A.state.dailyHistory[0].pv);
+if (A.state.dailyHistory.length !== 1) throw new Error('筆數不對');
+if (A.maybeDailySnapshot()) throw new Error('數值沒變卻重複寫入');
+console.log('  數值沒變不重複寫 ✓');
+dI.price = 44;
+if (!A.maybeDailySnapshot()) throw new Error('股價變了卻沒更新');
+if (A.state.dailyHistory.length !== 1) throw new Error('同一天應該更新不是新增');
+console.log('  同一天更新到最新:', A.state.dailyHistory[0].pv, '(仍是 1 筆)✓');
+
+// 塞 1200 天,檢查上限
+A.state.dailyHistory = [];
+for (let i = 0; i < 1200; i++){
+  const d = new Date(2023, 0, 1 + i);
+  A.state.dailyHistory.push({ d: d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' +
+    String(d.getDate()).padStart(2,'0'), pv: 100000 + i, loan: 0, eq: 100000 + i, pnl: i });
+}
+dI.price = 99;
+A.maybeDailySnapshot();
+console.log('  塞 1200 筆後保留', A.state.dailyHistory.length, '筆(上限 1000)');
+if (A.state.dailyHistory.length > 1000) throw new Error('沒有裁掉過舊的每日紀錄');
+
+A.chartRange = 30;
+console.log('  範圍 1 個月 →', A.dailySlice().length, '筆 | 全部 →', (A.chartRange = 0, A.dailySlice().length), '筆');
+A.chartRange = 30;
+if (A.dailySlice().length !== 30) throw new Error('範圍選擇沒生效');
+A.chartRange = 90;
+
+A.currentTab = 'leverage';
+A.renderAll();
+const dhtml = store.content.innerHTML;
+if (!dhtml.includes('data-act="range"')) throw new Error('沒有出現範圍切換');
+console.log('  槓桿頁出現範圍切換鈕 ✓');
 
 console.log('圖表互動');
 A.state = A.sampleData();
