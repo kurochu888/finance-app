@@ -2257,6 +2257,30 @@ function renderTrancheSetup(){
     </div>`;
 }
 
+
+/* 壓力測試的內容獨立成函式,輸入跌幅時可以只更新這一塊 */
+function stressBody(){
+  const L = state.leverage;
+  const st = computeStress(L.stressDeclinePct);
+  if (!st) return `<div class="empty">先填入持股與股價,或記幾筆買賣,才算得出來。</div>`;
+  return `
+  <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
+  <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
+  <div class="row"><span class="label">部位淨值(自己的錢)</span>
+    <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
+  <div class="row"><span class="label">曝險比例</span>
+    <span class="val ${st.newRatio > 100 ? 'neg' : ''}">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
+  ${st.newIndex ? `<div class="row"><span class="label">大盤點位</span><span class="val">${fmt(st.index)} → ${fmt(st.newIndex)}</span></div>` : ''}
+  ${st.wouldTrigger.length ? `
+    <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
+      <div class="row"><span class="label" style="font-weight:700; color:var(--text);">這個跌幅會觸發</span>
+        <span class="val" style="font-weight:800;">NT$ ${fmt(st.needCash)}</span></div>
+      ${st.wouldTrigger.map(t => `<div class="row"><span class="muted">${esc(t.label)}(${t.thresholdPct}%)</span><span class="muted">NT$ ${fmt(t.amount)}</span></div>`).join('')}
+      <div class="row"><span class="label">屆時每月利息</span><span class="val">NT$ ${fmt(st.newInterest)}(現在 ${fmt(st.interest)})</span></div>
+    </div>` : (st.newIndex ? `<div class="muted" style="margin-top:10px;">這個跌幅還不會觸發任何一桶金。</div>` : '')}
+  <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
+}
+
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
@@ -2338,26 +2362,7 @@ function renderLeverage(){
     <div class="card">
       <h3>壓力測試</h3>
       <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
-      ${(() => {
-        const st = computeStress(L.stressDeclinePct);
-        if (!st) return `<div class="empty">先填入持股與股價,或記幾筆買賣,才算得出來。</div>`;
-        return `
-        <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
-        <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
-        <div class="row"><span class="label">部位淨值(自己的錢)</span>
-          <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
-        <div class="row"><span class="label">曝險比例</span>
-          <span class="val ${st.newRatio > 100 ? 'neg' : ''}">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
-        ${st.newIndex ? `<div class="row"><span class="label">大盤點位</span><span class="val">${fmt(st.index)} → ${fmt(st.newIndex)}</span></div>` : ''}
-        ${st.wouldTrigger.length ? `
-          <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
-            <div class="row"><span class="label" style="font-weight:700; color:var(--text);">這個跌幅會觸發</span>
-              <span class="val" style="font-weight:800;">NT$ ${fmt(st.needCash)}</span></div>
-            ${st.wouldTrigger.map(t => `<div class="row"><span class="muted">${esc(t.label)}(${t.thresholdPct}%)</span><span class="muted">NT$ ${fmt(t.amount)}</span></div>`).join('')}
-            <div class="row"><span class="label">屆時每月利息</span><span class="val">NT$ ${fmt(st.newInterest)}(現在 ${fmt(st.interest)})</span></div>
-          </div>` : (st.newIndex ? `<div class="muted" style="margin-top:10px;">這個跌幅還不會觸發任何一桶金。</div>` : '')}
-        <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
-      })()}
+      <div id="stress-body">${stressBody()}</div>
     </div>
 
     <div class="sect">加碼與減碼訊號</div>
@@ -2477,9 +2482,8 @@ function refreshLeverage(){
   set('out-exitCurrent', 'NT$ ' + fmt(r.equityValue));
   const wrap = document.getElementById('out-exitBadgeWrap');
   if (wrap) wrap.innerHTML = exitBadge(r);
-  set('out-positionDeclinePct', fmtPct(-r.positionDeclinePct));
-  set('out-lossAmount', 'NT$ ' + fmt(r.lossAmount));
-  set('out-remainingNetWorth', 'NT$ ' + fmt(r.remainingNetWorth));
+  const stress = document.getElementById('stress-body');
+  if (stress) stress.innerHTML = stressBody();
 }
 
 /* 每月把槓桿利息記成一筆支出。已記過的月份會留在 interestPosted,
