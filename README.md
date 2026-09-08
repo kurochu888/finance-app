@@ -25,6 +25,15 @@ iPhone:分享 →「加入主畫面」;Android:選單 →「安裝應用程式�
 
 算法的細節寫在 app 的「說明」分頁裡,不用回來翻這份 README。
 
+## 測試
+
+```sh
+tests/run.sh
+```
+
+四組測試:功能與計算、邊界情況、雲端同步(假後端)、15 年長期使用模擬。
+細節見 [tests/README.md](tests/README.md)。
+
 ## 開發
 
 程式碼只有一份:`app.template.html`。改完之後跑:
