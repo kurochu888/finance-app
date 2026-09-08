@@ -1,5 +1,5 @@
 /* 離線快取:換版時 CACHE 名稱會變,舊快取自動清掉。 */
-const CACHE = 'finance-1e7c994d20';
+const CACHE = 'finance-41b4f7a73b';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './favicon-32.png', './firebase-sync.js', './firebase-config.js'];
 
 self.addEventListener('install', e => {

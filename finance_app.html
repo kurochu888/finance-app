@@ -497,6 +497,7 @@ function writeLocal(data){
   }
 }
 function scheduleSave(){
+  clearPosMemo();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 400);
 }
@@ -515,6 +516,18 @@ async function save(){
   storageMode = ok ? 'local' : 'none';
   updateStorageStatus();
 }
+/* 本機空間用了多少(粗估,UTF-16 一個字兩個位元組) */
+function localUsageRatio(){
+  try{
+    let chars = 0;
+    for (let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      chars += k.length + (localStorage.getItem(k) || '').length;
+    }
+    return chars * 2 / (5 * 1024 * 1024);
+  }catch(e){ return 0; }
+}
+
 function updateStorageStatus(){
   const el = document.getElementById('storageStatus');
   if (!el) return;
@@ -542,6 +555,7 @@ function onRemote(data){
   applyRemote(data);
 }
 function applyRemote(data){
+  clearPosMemo();
   state = normalize(data);
   lastPushed = canon(JSON.parse(JSON.stringify(state)));
   writeLocal(state);
@@ -698,7 +712,10 @@ async function maybeBackup(){
   try{ if (localStorage.getItem(BACKUP_TS_KEY) === today) return; }catch(e){}
   const api = backupApi();
   try{
-    const keep = (cloud && cloud.backups) ? BACKUP_KEEP : LOCAL_BACKUP_KEEP;
+    // 本機空間有限,資料越大留越少份,免得把主資料的位子吃掉
+    const sizeKB = JSON.stringify(state).length / 1024;
+    const keep = (cloud && cloud.backups) ? BACKUP_KEEP
+               : (sizeKB > 300 ? 3 : sizeKB > 150 ? 5 : LOCAL_BACKUP_KEEP);
     // 先清舊的再寫新的,免得寫的當下就把空間塞爆
     const before = await api.list();
     for (const id of before.slice(Math.max(0, keep - 1))) await api.del(id);
@@ -999,7 +1016,44 @@ function xirr(flows){
   return (lo + hi) / 2;
 }
 
+/* 一次重畫會呼叫 computePosition 三到四次(損益卡、曝險、買賣紀錄、壓力測試),
+   每次都要跑一遍 XIRR 的二分法。資料多了以後很有感,所以記住上一次的結果,
+   任何會改到狀態的動作都會清掉。 */
+let posMemo = null, posMemoKey = '';
+const clearPosMemo = () => { posMemo = null; };
+
+/* 只要影響損益的東西有變,簽章就會變 —— 不必仰賴每個呼叫端記得清快取 */
+function posSignature(){
+  const L = state.leverage;
+  // 任何一項是 undefined/NaN 都會讓整個簽章變成 NaN,兩組不同的資料就會被當成一樣
+  const n = v => (typeof v === 'number' && isFinite(v)) ? v : 0;
+  const dc = (str, i) => { const c = String(str || '').charCodeAt(i); return isFinite(c) ? c : 0; };
+  let h = state.trades.length * 31;
+  state.trades.forEach(t => {
+    h += n(t.shares) + n(t.price) * 7 + n(t.fee) + n(t.amount)
+       + (t.action === 'sell' ? 1 : t.action === 'dividend' ? 2 : 3)
+       + (t.source === 'loan' ? 11 : 0) + dc(t.date, 8) + dc(t.date, 9) + String(t.symbol || '').length;
+  });
+  state.instruments.forEach(it => {
+    h += n(it.price) * 13 + n(it.shares) + n(it.leverage) + String(it.id || '').length;
+  });
+  L.tranches.concat([L.core]).forEach(t => {
+    h += n(t.amount) / 7 + (t.useDate ? dc(t.useDate, 9) + String(t.useDate).length : 0);
+    (t.repayments || []).forEach(r => { h += n(r.amount) / 3 + dc(r.date, 9); });
+  });
+  if (!isFinite(h)) return 'nocache:' + Math.random();   // 保險:算不出簽章就不要用快取
+  return h + '|' + n(L.annualRate) + '|' + state.trades.length + '|' + todayISO();
+}
+
 function computePosition(){
+  const key = posSignature();
+  if (posMemo && posMemoKey === key) return posMemo;
+  posMemo = computePositionUncached();
+  posMemoKey = key;
+  return posMemo;
+}
+
+function computePositionUncached(){
   const lots = {};
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
   const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
@@ -1184,6 +1238,7 @@ function monthNav(){
 }
 
 function renderAll(){
+  clearPosMemo();
   maybeUpdateHigh();
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
@@ -1346,7 +1401,16 @@ function renderOverview(){
       <button class="btn danger" data-act="clear-all">${pendingConfirm === 'clear-all' ? '⚠️ 再按一次清空' : '清空全部'}</button>
       <input type="file" accept="application/json,.json,text/plain" id="importFile" style="display:none">
       ${dataMsg ? `<div class="muted" style="text-align:center; margin-top:10px;">${esc(dataMsg)}</div>` : ''}
-      <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,保留 30 天,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去;CSV 是給 Excel 看的,不能匯入。</div>
+      ${(storageMode !== 'cloud' && localUsageRatio() > 0.75) ? `
+        <div class="alert amber">
+          <span class="ai">💾</span>
+          <div>
+            <div class="at">這台裝置的瀏覽器空間快滿了</div>
+            <div class="ad">已用約 ${Math.round(localUsageRatio() * 100)}%。備份份數會自動減少以保住主資料,
+            但建議改用雲端同步(登入 Google 帳號),或先匯出一份備份留底。</div>
+          </div>
+        </div>` : ''}
+      <div class="notice">${STORAGE_NOTE}<br>每天第一次開啟會自動存一份快照,可用上面的「還原備份」回到某一天。<br>匯出的 JSON 可以存到手機檔案或雲端硬碟,換裝置時用「匯入備份」搬過去;CSV 是給 Excel 看的,不能匯入。</div>
     </div>`;
 }
 
