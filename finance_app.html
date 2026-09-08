@@ -1853,7 +1853,10 @@ function lineChart(key, labels, series, opts){
   const w = 320, h = o.height, padL = 8, padR = 8, padT = 14, padB = 20;
   const all = [];
   series.forEach(s2 => s2.values.forEach(v => { if (v !== null && v !== undefined) all.push(v); }));
-  if (all.length < 2) return '';
+  // 要有兩個以上的「時間點」才畫得出線。只看值的個數會誤判:
+  // 一天的資料有市值和借款兩個值,卻只有一個時間點,畫出來是一張空白的圖。
+  const points = labels.filter((_, i) => series.some(s2 => s2.values[i] !== null && s2.values[i] !== undefined)).length;
+  if (points < 2 || all.length < 2) return '';
   let lo = Math.min(...all), hi = Math.max(...all);
   if (o.zero){ lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
   if (hi === lo){ hi = lo + Math.abs(lo || 1) * 0.1; lo = lo - Math.abs(lo || 1) * 0.1; }
@@ -1981,7 +1984,7 @@ function renderRisk(){
         ${posChart}
         <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。${
           useDaily ? '每天開啟或按更新報價時記一筆。' : '目前是每月一筆;每天開啟 app 就會累積出日線。'}</div>
-      </div>` : ''}
+      </div>` : chartPending('部位市值')}
     </div>`;
 }
 
@@ -1991,6 +1994,18 @@ function rangePicker(){
   return `<div class="seg" style="margin:6px 0 8px;">
     ${opts.map(([v, t]) => `<button class="seg-btn ${chartRange === v ? 'on' : ''}" data-act="range" data-v="${v}">${t}</button>`).join('')}
   </div>`;
+}
+
+/* 還畫不出圖時,說清楚在等什麼 —— 不然使用者只會覺得功能不見了 */
+function chartPending(what){
+  const days = state.dailyHistory.length;
+  return `
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      <div class="empty">
+        ${esc(what)}走勢圖還畫不出來(目前只有 ${days} 天的紀錄)。<br>
+        每天開啟 app 或按「🔄 從證交所更新收盤價」會記一筆,<strong>累積兩天就會出現</strong>。
+      </div>
+    </div>`;
 }
 
 function pnlChartBlock(){
@@ -2006,12 +2021,13 @@ function pnlChartBlock(){
         { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
       ], { zero:true, label:'整體損益走勢', height:120,
            fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
-  return chart ? `
+  if (!chart) return computePosition().hasData ? chartPending('整體損益') : '';
+  return `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
       ${useDaily ? rangePicker() : ''}
       ${chart}
       <div class="muted">${useDaily ? '每天開啟或按更新報價時記一筆。' : '每月第一次開啟時自動記錄。'}虛線是損益兩平。</div>
-    </div>` : '';
+    </div>`;
 }
 
 function renderPnL(){
