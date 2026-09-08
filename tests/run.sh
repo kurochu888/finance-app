@@ -21,6 +21,9 @@ echo
 echo "=== 雲端同步(假後端) ==="
 node cloud.js | tail -3
 echo
+echo "=== 說明頁與程式是否一致 ==="
+node help.js | tail -2 || fail=1
+echo
 echo "=== id 與樣板完整性 ==="
 node ids.js | tail -2
 node stress-live.js | tail -1
