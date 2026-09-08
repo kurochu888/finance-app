@@ -549,7 +549,7 @@ function updateStorageStatus(){
 
 /* 收到雲端資料:正在打字就先擱著,等游標離開欄位再套用 */
 function onRemote(data){
-  if (!data) return;
+  if (!data || !looksLikeState(data)) return;   // 壞掉的雲端資料不要拿來蓋本機
   if (canon(data) === lastPushed) return;
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){
     pendingRemote = data;
@@ -569,7 +569,9 @@ async function syncFirstTime(){
   try{
     const remote = await cloud.get();
     storageMode = 'cloud';
-    if (remote){
+    if (remote && !looksLikeState(remote)){
+      await save();                              // 雲端那份不像本 app 的資料,用本機的覆蓋回去
+    }else if (remote){
       applyRemote(remote);
     }else{
       await save();
@@ -1632,7 +1634,9 @@ function renderHelp(){
         沒開過 app 的月份會留空,間隔才不會失真。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照。雲端留 30 份、本機留 7 份
         (手機的瀏覽器空間有限,備份佔太多會讓主資料存不進去)。可在總覽的「資料」卡還原。</li>
-        <li><strong>匯出備份</strong>:JSON,換裝置時用「匯入備份」讀回來。</li>
+        <li><strong>匯出備份</strong>:JSON,換裝置時用「匯入備份」讀回來。
+        匯入前會先確認檔案是本 app 匯出的,不相干的 JSON 會被擋下來,
+        匯入成功則會回報讀進了幾筆。</li>
         <li><strong>匯出 CSV</strong>:給 Excel 看的,九張表放同一個檔。單向,不能匯回。</li>
       </ul>
       <p>資產分頁的每一筆是<strong>現況</strong>,改了就覆蓋,不會保留舊值;
@@ -2552,13 +2556,29 @@ async function exportCSV(){
   await saveFile('finance-' + todayISO() + '.csv', stateCSV(), 'text/csv;charset=utf-8');
 }
 
+/* 匯入前先確認這真的是本 app 的檔案 —— 不然一個不相干的 JSON
+   就會把資料清光,而且還會同步上雲端把雲端那份也蓋掉 */
+function looksLikeState(raw){
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const lists = ['assets', 'liabilities', 'trades', 'transactions', 'netWorthHistory', 'instruments', 'budgets'];
+  if (lists.some(k => Array.isArray(raw[k]))) return true;
+  return !!(raw.leverage && typeof raw.leverage === 'object' && !Array.isArray(raw.leverage));
+}
+
 function importJSON(file){
   const reader = new FileReader();
   reader.onload = () => {
     try{
-      state = normalize(JSON.parse(String(reader.result)));
+      const raw = JSON.parse(String(reader.result));
+      if (!looksLikeState(raw)){
+        dataMsg = '這個檔案不是本 app 匯出的資料,沒有匯入任何東西。';
+        renderAll();
+        return;
+      }
+      state = normalize(raw);
       viewMonth = thisMonth();
-      dataMsg = '已匯入 ' + file.name;
+      dataMsg = '已匯入 ' + file.name + ':交易 ' + state.transactions.length
+              + ' 筆、買賣 ' + state.trades.length + ' 筆、資產 ' + state.assets.length + ' 項';
       save();
       renderAll();
     }catch(e){
