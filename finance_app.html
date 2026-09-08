@@ -105,11 +105,19 @@
     margin:0 0 10px; font-size:12px; color:var(--sub); font-weight:700;
     letter-spacing:.04em;
   }
-  .big-num{font-size:26px; font-weight:800; margin:2px 0; letter-spacing:-.02em;}
-  .big-sub{font-size:12px; color:var(--sub); margin-bottom:6px;}
-  .row{display:flex; justify-content:space-between; align-items:center; gap:10px; margin:6px 0;}
+  /* 三層數字:主答案 → 次要指標 → 明細 */
+  .big-num{font-size:28px; font-weight:800; margin:2px 0; letter-spacing:-.025em; line-height:1.15;}
+  .mid-num{font-size:19px; font-weight:700; margin:2px 0; letter-spacing:-.015em;}
+  .big-sub{font-size:12px; color:var(--sub); margin-bottom:6px; line-height:1.5;}
+  .row{display:flex; justify-content:space-between; align-items:center; gap:10px; margin:7px 0;}
   .row .label{font-size:13px; color:var(--sub);}
   .row .val{font-size:13px; font-weight:600;}
+  /* 次要明細:更小更淡,不跟重點搶 */
+  .row.sub{margin:3px 0;}
+  .row.sub .label, .row.sub .val{font-size:12px; color:var(--sub); font-weight:400;}
+  .row.total{border-top:1px solid var(--line); padding-top:9px; margin-top:9px;}
+  .row.total .label{color:var(--text); font-weight:700;}
+  .row.total .val{font-size:15px; font-weight:800;}
   .muted{color:var(--sub); font-size:12px;}
   .pos{color:var(--green);} .neg{color:var(--red);}
 
@@ -180,6 +188,10 @@
   }
   .btn.quiet{border-style:solid; color:var(--sub);}
   .btn.danger{border-style:solid; color:var(--red);}
+  .why{
+    display:inline-block; margin-top:10px; padding:0; border:none; background:none;
+    color:var(--accent); font-size:12px; font-family:inherit; cursor:pointer;
+  }
   .btn-row{display:flex; gap:8px;}
   .btn-row .btn{margin-top:8px;}
 
@@ -1984,28 +1996,21 @@ function renderRisk(){
   return `
     <div class="card">
       <h3>曝險</h3>
-      <div class="big-num ${heavy ? 'neg' : ''}">${k.capacity > 0 ? k.exposureRatio.toFixed(0) + '%' : '—'}</div>
+      <div class="mid-num ${heavy ? 'neg' : ''}">${k.capacity > 0 ? k.exposureRatio.toFixed(0) + '%' : '—'}</div>
       <div class="big-sub">實質市場曝險 ÷(部位淨值 + 房貸總額度)</div>
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
-      <div class="row" style="margin-top:10px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
-      <div class="row"><span class="label">實質市場曝險(正2 ×2)</span><span class="val" style="font-weight:700;">NT$ ${fmt(k.exposure)}</span></div>
-      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
-        <span class="label">部位淨值(自己的錢)</span><span class="val">NT$ ${fmt(k.equity)}</span></div>
-      <div class="row"><span class="label">＋ 房貸總額度</span><span class="val">NT$ ${fmt(k.creditLimit)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">分母合計</span><span class="val" style="font-weight:800;">NT$ ${fmt(k.capacity)}</span></div>
-      <div class="muted">分母用部位淨值,不用部位市值 — 已借出的錢同時在部位裡也在額度裡,算兩次會讓比例看起來比實際安全。</div>
-      <div class="muted" style="margin-top:4px;">大盤每動 1%,部位市值大約跟著動 2%。額度用得越多,分母越接近你自己的錢,比例會誠實地升高。</div>
-      <div class="row" style="border-top:1px solid var(--line); padding-top:10px; margin-top:12px;">
-        <span class="label">槓桿倍數(市值 ÷ 自己的錢)</span>
-        <span class="val" style="font-weight:700;">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</span></div>
+      <div class="row" style="margin-top:12px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
-    ${posChart ? `
+      <div class="row total"><span class="label">自己的錢</span><span class="val">NT$ ${fmt(k.equity)}</span></div>
+      <div class="row sub"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
+      <div class="row sub"><span class="label">槓桿倍數</span><span class="val">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</span></div>
+      <div class="row sub"><span class="label">分母(自己的錢 + 額度 ${fmt(k.creditLimit)})</span><span class="val">NT$ ${fmt(k.capacity)}</span></div>
+      <button class="why" data-act="go" data-v="help">曝險怎麼算 →</button>
+      ${posChart ? `
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <h3 style="margin-bottom:6px;">部位市值與借款</h3>
-        ${useDaily ? rangePicker() : ''}
         ${posChart}
-        <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。${
-          useDaily ? '每天開啟或按更新報價時記一筆。' : '目前是每月一筆;每天開啟 app 就會累積出日線。'}</div>
+        <div class="muted">兩條線的距離就是自己的錢。</div>
       </div>` : chartPending('部位市值')}
     </div>`;
 }
@@ -2013,7 +2018,7 @@ function renderRisk(){
 /* 損益走勢圖給部位損益卡用 */
 function rangePicker(){
   const opts = [[30,'1 個月'], [90,'3 個月'], [250,'1 年'], [0,'全部']];
-  return `<div class="seg" style="margin:6px 0 8px;">
+  return `<div class="seg" style="margin:0 0 12px;">
     ${opts.map(([v, t]) => `<button class="seg-btn ${chartRange === v ? 'on' : ''}" data-act="range" data-v="${v}">${t}</button>`).join('')}
   </div>`;
 }
@@ -2046,9 +2051,8 @@ function pnlChartBlock(){
   if (!chart) return computePosition().hasData ? chartPending('整體損益') : '';
   return `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-      ${useDaily ? rangePicker() : ''}
       ${chart}
-      <div class="muted">${useDaily ? '每天開啟或按更新報價時記一筆。' : '每月第一次開啟時自動記錄。'}虛線是損益兩平。</div>
+      <div class="muted">虛線是損益兩平。</div>
     </div>`;
 }
 
@@ -2065,40 +2069,33 @@ function renderPnL(){
   const cls = n => n >= 0 ? 'pos' : 'neg';
   return `
     <div class="card">
-      <h3>部位損益</h3>
+      <h3>整體損益</h3>
       <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
-      <div class="big-sub">扣掉借款利息後的整體損益${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
+      <div class="big-sub">已扣掉借款利息${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
-      <div class="row"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
-      <div class="row"><span class="label">未實現損益</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
-      ${p.realized ? `<div class="row"><span class="label">已實現損益${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
-      ${p.dividends ? `<div class="row"><span class="label">　其中配息</span><span class="val pos">+NT$ ${fmt(p.dividends)}</span></div>` : ''}
-      <div class="row"><span class="label">累積借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
-      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
-        <span class="label" style="font-weight:700; color:var(--text);">整體損益</span>
-        <span class="val ${cls(p.total)}" style="font-weight:800;">${sign(p.total)}</span>
-      </div>
+      <div class="row"><span class="label">未實現</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
+      ${p.realized ? `<div class="row"><span class="label">已實現${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
+      <div class="row"><span class="label">借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
+      <div class="row sub"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
+      ${p.dividends ? `<div class="row sub"><span class="label">其中配息</span><span class="val">+NT$ ${fmt(p.dividends)}</span></div>` : ''}
       ${pnlChartBlock()}
     </div>
 
     <div class="card">
       <h3>投入的錢</h3>
-      <div class="big-num ${p.xirr === null ? '' : (p.xirr >= 0 ? 'pos' : 'neg')}">${p.xirr === null ? '—' : fmtPct(p.xirr)}</div>
-      <div class="big-sub">年化報酬(XIRR)—— 依每筆進出的實際日期計算</div>
-      <div class="row"><span class="label">自有資金投入(累計)</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
-      ${p.sellNet ? `<div class="row"><span class="label">　減 賣出回收</span><span class="val pos">−NT$ ${fmt(p.sellNet)}</span></div>` : ''}
-      ${p.dividends ? `<div class="row"><span class="label">　減 配息</span><span class="val pos">−NT$ ${fmt(p.dividends)}</span></div>` : ''}
-      <div class="row"><span class="label" style="font-weight:700;">淨投入(還放在裡面的錢)</span>
-        <span class="val" style="font-weight:800;">NT$ ${fmt(p.netCash)}</span></div>
-      <div class="row" style="border-top:1px solid var(--line); padding-top:8px; margin-top:8px;">
-        <span class="label">房貸動用(累計)</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
+      <div class="mid-num">NT$ ${fmt(p.netCash)}</div>
+      <div class="big-sub">淨投入 —— 還放在裡面的自有資金</div>
+      <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${p.invested ? (p.buyCash / p.invested * 100).toFixed(1) : 0}%"></div></div>
-      <div class="muted">藍色是自有資金佔累計投入的 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</div>
-      <div class="row" style="margin-top:10px;"><span class="label">累計報酬(對累計自有投入)</span>
-        <span class="val ${cls(p.total)}">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
-      <div class="notice">${p.xirr === null
-        ? '要有至少一筆進出才算得出年化報酬。'
-        : 'XIRR 把每一筆買進、賣出、配息、還款與每月利息按實際日期折現,所以上個月才投入的錢不會被當成放了兩年。這是衡量「這樣搞到底划不划算」最公道的數字。'}</div>
+      <div class="row sub"><span class="label">自有資金佔累計投入 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</span><span class="val"></span></div>
+      <div class="row sub"><span class="label">累計自有投入</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
+      ${p.sellNet ? `<div class="row sub"><span class="label">減 賣出回收</span><span class="val">−NT$ ${fmt(p.sellNet)}</span></div>` : ''}
+      ${p.dividends ? `<div class="row sub"><span class="label">減 配息</span><span class="val">−NT$ ${fmt(p.dividends)}</span></div>` : ''}
+      <div class="row total"><span class="label">年化報酬</span>
+        <span class="val ${p.xirr === null ? '' : (p.xirr >= 0 ? 'pos' : 'neg')}">${p.xirr === null ? '—' : fmtPct(p.xirr)}</span></div>
+      <div class="row sub"><span class="label">累計報酬(對累計自有投入)</span>
+        <span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
+      <button class="why" data-act="go" data-v="help">年化報酬怎麼算 →</button>
     </div>`;
 }
 
@@ -2244,7 +2241,7 @@ function renderTrancheSetup(){
             <div class="field"><label>可動用金額</label><input type="number" inputmode="decimal" data-k="tr-amt-${t.id}" value="${t.amount || ''}"></div>
           </div>
         </div>`).join('')}
-      <div class="field"><label>${esc(L.core.label)}金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
+      <div class="field"><label>${esc(L.core.label)}可動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
       <div class="notice">跌幅門檻是相對大盤歷史最高點。動用日期在「訊號」分頁填。</div>
     </div>
 
@@ -2267,6 +2264,7 @@ function renderLeverage(){
   return `
     ${levTabs()}
     ${levTab === 'overview' ? `
+      ${state.dailyHistory.length >= 2 ? rangePicker() : ''}
       ${renderPnL()}
       ${renderRisk()}
     ` : levTab === 'signal' ? `
@@ -2280,22 +2278,33 @@ function renderLeverage(){
         <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
           <div class="row">
             <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
-            <span class="badge ${t.triggered ? 'red' : 'gray'}" id="out-status-${t.id}">${t.triggered ? '已觸發' : '未觸發'}</span>
+            <span class="badge ${t.useDate ? (t.balance ? 'amber' : 'gray') : t.triggered ? 'red' : 'gray'}" id="out-status-${t.id}">${
+              t.useDate ? (t.balance ? '動用中' : '已還清') : t.triggered ? '已觸發' : '未觸發'}</span>
           </div>
-          <div class="row"><span class="muted">門檻 ${t.thresholdPct}% · 可動用 NT$ ${fmt(t.amount)}</span><span class="muted"></span></div>
-          <div class="row"><span class="muted">觸發點位</span><span class="muted" id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></div>
-          <div class="field"><label>實際動用日期(填了才算已動用)</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
+          <div class="row sub">
+            <span class="label">${t.thresholdPct}% · 觸發點位 <span id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></span>
+            <span class="val">可動用 ${fmt(t.amount)}</span>
+          </div>
           ${t.useDate ? `
-            <div class="field"><label>動用時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
-            <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="例如:00631L 27,000 股"></div>
-            <div class="row"><span class="label">動用 ${fmt(t.amount)}${t.repaid ? ' · 已還 ' + fmt(t.repaid) : ''}</span>
-              <span class="val ${t.balance ? '' : 'pos'}" style="font-weight:700;">${t.balance ? '尚欠 NT$ ' + fmt(t.balance) : '已還清'}</span></div>
-            <div class="muted" style="margin-top:6px;">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 累積利息約 NT$ ${fmt(accrue(t, L.annualRate))}</div>
+            <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
+              <span class="val ${t.balance ? '' : 'pos'}">${t.balance ? 'NT$ ' + fmt(t.balance) : '—'}</span></div>
+            <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
+          ` : ''}
+          <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
+          ${t.useDate ? `
+            <div class="grid2">
+              <div class="field"><label>當時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
+              <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="00631L 27,000 股"></div>
+            </div>
           ` : ''}
         </div>`).join('')}
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-        <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span></div>
-        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
+        <div class="row">
+          <span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span>
+          <span class="badge ${L.core.useDate && r.coreBalance ? 'amber' : 'gray'}">${
+            L.core.useDate ? (r.coreBalance ? '動用中' : '已還清') : '未動用'}</span>
+        </div>
+        <div class="row sub"><span class="label">可動用 ${fmt(L.core.amount)} · 長期持有,不列入撤退門檻</span><span class="val"></span></div>
         <div class="field"><label>動用日期</label><input type="date" data-k="core-date" value="${esc(L.core.useDate)}"></div>
         ${L.core.useDate ? `
           <div class="row"><span class="label">動用 ${fmt(L.core.amount)}${repaidOf(L.core) ? ' · 已還 ' + fmt(repaidOf(L.core)) : ''}</span>
@@ -2317,18 +2326,14 @@ function renderLeverage(){
       <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">自己的錢(含已取回)</span>
         <span class="val" id="out-exitCurrent" style="font-weight:800;">NT$ ${fmt(r.equityValue)}</span></div>
-      <div class="row"><span class="muted">　部位市值</span><span class="muted">NT$ ${fmt(r.totalValue)}</span></div>
-      <div class="row"><span class="muted">　減 借款餘額</span><span class="muted">−NT$ ${fmt(r.usedAmount)}</span></div>
-      ${r.cashBack ? `<div class="row"><span class="muted">　加 賣出與配息取回</span><span class="muted">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
-      ${r.repaidTotal ? `<div class="row"><span class="muted">　減 已還款</span><span class="muted">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
-      ${r.ownAfter ? `<div class="row"><span class="muted">　減 動用後新投入的自有資金</span><span class="muted">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
+      <div class="row sub"><span class="label">部位市值</span><span class="val">NT$ ${fmt(r.totalValue)}</span></div>
+      <div class="row sub"><span class="label">減 借款餘額</span><span class="val">−NT$ ${fmt(r.usedAmount)}</span></div>
+      ${r.cashBack ? `<div class="row sub"><span class="label">加 賣出與配息取回</span><span class="val">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
+      ${r.repaidTotal ? `<div class="row sub"><span class="label">減 已還款</span><span class="val">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
+      ${r.ownAfter ? `<div class="row sub"><span class="label">減 動用後新投入的自有資金</span><span class="val">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
       <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
-      <div class="notice">比的是「自己的錢」而不是總市值 —— 借來的錢不算你的,賣出取回的現金仍然算。這樣借完錢不會假性達標,減碼之後訊號也不會消失。門檻 = 歷史最高市值 + 各桶金依實際餘額每年累加 8%;${esc(L.core.label)}視為長期持有,不列入。</div>
+      <button class="why" data-act="go" data-v="help">撤退門檻怎麼算 →</button>
     </div>
-
-    <div class="sect">紀錄與設定</div>
-
-    ${renderTrades()}
 
     <div class="card">
       <h3>壓力測試</h3>

@@ -480,6 +480,27 @@ console.log('  兩天紀錄 →', (twoHtml.match(/<svg/g)||[]).length, '張圖')
 if ((twoHtml.match(/<svg/g)||[]).length < 1) throw new Error('兩個時間點卻畫不出圖');
 console.log('  一天不畫、兩天就畫 ✓');
 
+console.log('小分頁內容不重複');
+A.state = A.sampleData();
+A.currentTab = 'leverage';
+const seenCards = {};
+['overview','signal','log','setup'].forEach(t => {
+  A.levTab = t;
+  A.renderAll();
+  [...store.content.innerHTML.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].forEach(m => {
+    const name = m[1].trim();
+    if (seenCards[name] && seenCards[name] !== t)
+      throw new Error('「' + name + '」同時出現在 ' + seenCards[name] + ' 和 ' + t);
+    seenCards[name] = t;
+  });
+});
+console.log('  每張卡片只屬於一個小分頁 ✓');
+console.log('  概況:', Object.keys(seenCards).filter(k => seenCards[k]==='overview').join('、'));
+console.log('  訊號:', Object.keys(seenCards).filter(k => seenCards[k]==='signal').join('、'));
+console.log('  紀錄:', Object.keys(seenCards).filter(k => seenCards[k]==='log').join('、'));
+console.log('  設定:', Object.keys(seenCards).filter(k => seenCards[k]==='setup').join('、'));
+A.levTab = 'overview';
+
 console.log('槓桿頁小分頁固定');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
