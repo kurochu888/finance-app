@@ -42,7 +42,8 @@ eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   get storageMode(){return storageMode}, renderAll, emptyState, computePosition,
-  computeLeverage, computeRisk, maybeSnapshot, maybeBackup, maybePostInterest,
+  computeLeverage, computeRisk, maybeSnapshot, maybeBackup, maybePostInterest, maybeDailySnapshot,
+  get dailyLen(){return state.dailyHistory.length},
   heldShares, save, todayISO, thisMonth, uid
 };`);
 
@@ -129,6 +130,7 @@ for (let day = 0; day < 365 * YEARS; day++){
   // 每天開 app 會做的事
   A.maybePostInterest();
   A.maybeSnapshot();
+  A.maybeDailySnapshot();      // 使用者每天會按更新報價
   await A.maybeBackup();     // 真的等它做完,才測得到備份與容量
   await A.save();
 
@@ -160,7 +162,7 @@ for (let day = 0; day < 365 * YEARS; day++){
       samples.push({ year: (day/365).toFixed(1), date: today, idx: Math.round(A.state.leverage.marketCurrent),
         loan: Math.round(A.computeLeverage().usedAmount),
         tx: A.state.transactions.length, tr: A.state.trades.length,
-        snap: A.state.netWorthHistory.length, backups,
+        snap: A.state.netWorthHistory.length, daily: A.dailyLen, backups,
         kb: (bytes/1024).toFixed(0), lsKB: (localStorage.usedBytes()/1024).toFixed(0),
         renderMs: ms.toFixed(1), mode: A.storageMode,
         xirr: p.xirr === null ? '—' : p.xirr.toFixed(1) + '%' });
@@ -169,12 +171,12 @@ for (let day = 0; day < 365 * YEARS; day++){
 }
 
 console.log('模擬 ' + YEARS + ' 年,每天開一次 app\n');
-console.log('年份  日期          大盤   借款餘額  交易  買賣 快照 備份  資料KB   localStorage 重畫   年化');
+console.log('年份  日期          大盤   借款餘額  交易  買賣 月快照 日線 備份  資料KB   localStorage 重畫   年化');
 samples.forEach(s => {
   console.log(String(s.year).padStart(3) + '   ' + s.date + String(s.idx).padStart(8) +
     String(s.loan.toLocaleString()).padStart(11) +
-    String(s.tx).padStart(6) + String(s.tr).padStart(6) + String(s.snap).padStart(5) +
-    String(s.backups).padStart(5) + String(s.kb).padStart(8) + 'KB' +
+    String(s.tx).padStart(6) + String(s.tr).padStart(6) + String(s.snap).padStart(6) +
+    String(s.daily).padStart(5) + String(s.backups).padStart(5) + String(s.kb).padStart(8) + 'KB' +
     String(s.lsKB).padStart(10) + 'KB' + String(s.renderMs).padStart(7) + 'ms' + s.xirr.padStart(9));
 });
 console.log('\n最慢一次五頁重畫:' + maxRender.toFixed(1) + 'ms(' + maxRenderDay + ')');

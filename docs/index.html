@@ -350,7 +350,7 @@ const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: u
 function emptyState(){
   return {
     version:2,
-    assets:[], liabilities:[], trades:[],
+    assets:[], liabilities:[], trades:[], dailyHistory:[],
     instruments: newInstruments(),
     budgets: DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 })),   // 類別清單
     transactions:[], netWorthHistory:[],
@@ -393,6 +393,14 @@ function normalize(raw){
     id:t.id||uid(), date:String(t.date||todayISO()).slice(0,10),
     cat:String(t.cat||'其他'), desc:String(t.desc||''), amount:num(t.amount)
   }));
+  s.dailyHistory = arr(raw.dailyHistory)
+    .map(h => ({
+      d: String(h.d || '').slice(0, 10),
+      pv: num(h.pv), loan: num(h.loan), eq: num(h.eq),
+      pnl: h.pnl === undefined || h.pnl === null ? null : num(h.pnl)
+    }))
+    .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d))
+    .sort((a, b) => a.d < b.d ? -1 : 1);
   s.netWorthHistory = arr(raw.netWorthHistory)
     .map(h => ({
       id: h.id || uid(),
@@ -592,6 +600,7 @@ async function syncFirstTime(){
     }
     cloud.onChange(onRemote);
     updateStorageStatus();
+    maybeDailySnapshot();
     if (maybePostInterest() || maybeSnapshot()) renderAll();
     maybeBackup();
   }catch(e){
@@ -699,6 +708,7 @@ const LOCAL_BACKUP_KEEP = 7;   // 本機 localStorage 只有幾 MB,備份不能�
 const BACKUP_PREFIX = 'financeBackup_';
 const BACKUP_TS_KEY = 'financeLastBackup';
 
+let chartRange = 90;          // 每日走勢圖顯示最近幾個交易日,0 = 全部
 let backupOpen = false;
 let backupList = null;     // null = 還沒讀 / 讀取中
 
@@ -857,6 +867,7 @@ async function fetchQuotes(manual){
     }
     if (got || (idxRows && idxRows.length)){
       if (date) state.leverage.quoteDate = date;
+      maybeDailySnapshot();          // 按更新報價就留下今天這一筆
       quoteMsg = missed.length ? '查不到:' + missed.join('、') + '(代號是否正確?)' : '';
       try{ localStorage.setItem(QUOTE_TS_KEY, String(Date.now())); }catch(e){}
       scheduleSave();
@@ -1214,6 +1225,40 @@ function computeStress(d){
     wouldTrigger, needCash, interest: k.monthlyInterest, newInterest
   };
 }
+
+/* 每日快照:每天第一次開啟(或按更新報價)記一筆,同一天會更新到最新。
+   保留最近 1000 個交易日,約四年;更久以前看每月快照。 */
+const DAILY_KEEP = 1000;
+function maybeDailySnapshot(){
+  const p = computePosition();
+  const r = computeLeverage();
+  const pv = p.hasData ? p.marketValue : r.totalValue;
+  if (!pv && !r.usedAmount) return false;
+  const today = todayISO();
+  const rec = {
+    d: today,
+    pv: Math.round(pv),
+    loan: Math.round(r.usedAmount),
+    eq: Math.round(r.equityValue),
+    pnl: p.hasData ? Math.round(p.total) : null
+  };
+  const list = state.dailyHistory;
+  const last = list.length ? list[list.length - 1] : null;
+  if (last && last.d === today){
+    if (last.pv === rec.pv && last.loan === rec.loan && last.eq === rec.eq && last.pnl === rec.pnl) return false;
+    Object.assign(last, rec);
+  }else{
+    list.push(rec);
+    if (list.length > DAILY_KEEP) state.dailyHistory = list.slice(-DAILY_KEEP);
+  }
+  scheduleSave();
+  return true;
+}
+function dailySlice(){
+  const list = state.dailyHistory.slice().sort((a, b) => a.d < b.d ? -1 : 1);
+  return chartRange > 0 ? list.slice(-chartRange) : list;
+}
+const dayLabel = d => Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10));
 
 /* 把快照補成連續的月份 —— 中間沒開過 app 的月份留空,
    否則兩點之間的間隔會被畫成一樣寬,斜率就騙人了 */
@@ -1693,8 +1738,12 @@ function renderHelp(){
     <div class="card doc">
       <p>${STORAGE_NOTE}</p>
       <ul>
+        <li><strong>每日快照</strong>:每天第一次開啟、或按「從證交所更新收盤價」時記一筆
+        (部位市值、借款餘額、自己的錢、整體損益)。同一天會更新到最新,不會累積。
+        槓桿頁的兩張走勢圖就是用這個畫的,可切 1 個月 / 3 個月 / 1 年 / 全部。
+        保留最近 1000 個交易日,約四年。</li>
         <li><strong>每月快照</strong>:每月第一次開啟自動記一筆(淨資產、部位市值、借款餘額、
-        整體損益),同月內再開會更新到最新,不會累積。走勢圖就是用這個畫的。
+        整體損益)。總覽的淨資產走勢用這個畫;每日紀錄還不夠兩筆時,槓桿頁的圖也會退回用它。
         沒開過 app 的月份會留空,間隔才不會失真。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照。雲端留 30 份、本機留 7 份
         (手機的瀏覽器空間有限,備份佔太多會讓主資料存不進去)。可在總覽的「資料」卡還原。</li>
@@ -1911,10 +1960,17 @@ function renderRisk(){
   const heavy = k.exposureRatio > 100;
   const hist = monthlyHistory(12);
   const labels = hist.map(h => shortMonth(h.m));
-  const posChart = lineChart('pos', labels, [
-    { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
-    { name:'借款餘額', color:'var(--s2)', values: hist.map(h => h.loan === null || h.loan === undefined ? null : h.loan) }
-  ], { label:'部位市值與借款', height:120 });
+  const dh = dailySlice();
+  const useDaily = dh.length >= 2;
+  const posChart = useDaily
+    ? lineChart('pos', dh.map(h => dayLabel(h.d)), [
+        { name:'部位市值', color:'var(--s1)', values: dh.map(h => h.pv) },
+        { name:'借款餘額', color:'var(--s2)', values: dh.map(h => h.loan) }
+      ], { label:'部位市值與借款', height:130 })
+    : lineChart('pos', labels, [
+        { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
+        { name:'借款餘額', color:'var(--s2)', values: hist.map(h => h.loan === null || h.loan === undefined ? null : h.loan) }
+      ], { label:'部位市值與借款', height:120 });
 
   return `
     <div class="card">
@@ -1937,23 +1993,40 @@ function renderRisk(){
     ${posChart ? `
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <h3 style="margin-bottom:6px;">部位市值與借款</h3>
+        ${useDaily ? rangePicker() : ''}
         ${posChart}
-        <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。</div>
+        <div class="muted">兩條線的距離就是你自己的錢。距離擴大代表在賺,縮小代表在賠。${
+          useDaily ? '每天開啟或按更新報價時記一筆。' : '目前是每月一筆;每天開啟 app 就會累積出日線。'}</div>
       </div>` : ''}
     </div>`;
 }
 
 /* 損益走勢圖給部位損益卡用 */
+function rangePicker(){
+  const opts = [[30,'1 個月'], [90,'3 個月'], [250,'1 年'], [0,'全部']];
+  return `<div class="seg" style="margin:6px 0 8px;">
+    ${opts.map(([v, t]) => `<button class="seg-btn ${chartRange === v ? 'on' : ''}" data-act="range" data-v="${v}">${t}</button>`).join('')}
+  </div>`;
+}
+
 function pnlChartBlock(){
+  const dh = dailySlice().filter(h => h.pnl !== null);
+  const useDaily = dh.length >= 2;
   const hist = monthlyHistory(12);
-  const chart = lineChart('pnl', hist.map(h => shortMonth(h.m)), [
-    { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
-  ], { zero:true, label:'整體損益走勢', height:120,
-       fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
+  const chart = useDaily
+    ? lineChart('pnl', dh.map(h => dayLabel(h.d)), [
+        { name:'整體損益', color:'var(--s1)', values: dh.map(h => h.pnl) }
+      ], { zero:true, label:'整體損益走勢', height:130,
+           fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) })
+    : lineChart('pnl', hist.map(h => shortMonth(h.m)), [
+        { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
+      ], { zero:true, label:'整體損益走勢', height:120,
+           fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) });
   return chart ? `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      ${useDaily ? rangePicker() : ''}
       ${chart}
-      <div class="muted">每月第一次開啟時自動記錄。虛線是損益兩平。</div>
+      <div class="muted">${useDaily ? '每天開啟或按更新報價時記一筆。' : '每月第一次開啟時自動記錄。'}虛線是損益兩平。</div>
     </div>` : '';
 }
 
@@ -2764,6 +2837,7 @@ function onClick(el){
       editingTrade = null;
       break;
     case 'chart': pickChartPoint(el.dataset.key, Number(el.dataset.i)); return;
+    case 'range': chartRange = Number(el.dataset.v); break;
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'show-backups':
       if (backupOpen){ backupOpen = false; break; }
@@ -2868,6 +2942,7 @@ function init(){
   storageMode = 'local';
   maybePostInterest();
   maybeSnapshot();
+  maybeDailySnapshot();
   renderAll();
   maybeAutoQuote();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
