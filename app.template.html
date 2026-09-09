@@ -283,6 +283,10 @@
 /* ===================== 小工具 ===================== */
 const uid = () => Math.random().toString(36).slice(2,9);
 const num = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+// num() 只擋 NaN,擋不住 Infinity/-Infinity(parseFloat('Infinity') 合法)——
+// 均線參數跟歷史收盤價這些會拿去做除法、比較大小的欄位,混進 Infinity 會讓算式整個壞掉,
+// 用這個在 normalize() 裡多擋一層,不改 num() 本身以免影響其他既有欄位的行為。
+const finiteNum = (v, fallback) => { const n = num(v); return Number.isFinite(n) ? n : fallback; };
 const fmt = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
 const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -384,19 +388,19 @@ function normalize(raw){
         shares: Math.max(0, num(x.shares)),
         auto: x.auto !== false,
         trend: {
-          maFast: Math.max(1, num(t.maFast) || def.maFast),
-          maSlow: Math.max(1, num(t.maSlow) || def.maSlow),
-          exitBuffer: num(t.exitBuffer) > 0 ? num(t.exitBuffer) : def.exitBuffer,
-          recoverSlopeThreshold: num(t.recoverSlopeThreshold) > 0 ? num(t.recoverSlopeThreshold) : def.recoverSlopeThreshold,
-          recoverStrongRebound: num(t.recoverStrongRebound) > 0 ? num(t.recoverStrongRebound) : def.recoverStrongRebound,
-          pyramidGap: num(t.pyramidGap) > 0 ? num(t.pyramidGap) : def.pyramidGap,
-          pyramidLevels: Math.max(1, Math.round(num(t.pyramidLevels) || def.pyramidLevels)),
+          maFast: Math.max(1, finiteNum(t.maFast, 0) || def.maFast),
+          maSlow: Math.max(1, finiteNum(t.maSlow, 0) || def.maSlow),
+          exitBuffer: finiteNum(t.exitBuffer, 0) > 0 ? finiteNum(t.exitBuffer, def.exitBuffer) : def.exitBuffer,
+          recoverSlopeThreshold: finiteNum(t.recoverSlopeThreshold, 0) > 0 ? finiteNum(t.recoverSlopeThreshold, def.recoverSlopeThreshold) : def.recoverSlopeThreshold,
+          recoverStrongRebound: finiteNum(t.recoverStrongRebound, 0) > 0 ? finiteNum(t.recoverStrongRebound, def.recoverStrongRebound) : def.recoverStrongRebound,
+          pyramidGap: finiteNum(t.pyramidGap, 0) > 0 ? finiteNum(t.pyramidGap, def.pyramidGap) : def.pyramidGap,
+          pyramidLevels: Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels)),
           lastSeenStatus: String(t.lastSeenStatus || ''),
           lastSeenDate: String(t.lastSeenDate || '')
         },
         priceHistory: (Array.isArray(x.priceHistory) ? x.priceHistory : [])
-          .map(h => ({ d: String(h.d || '').slice(0, 10), c: Math.max(0, num(h.c)) }))
-          .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
+          .map(h => ({ d: String(h.d || '').slice(0, 10), c: Math.max(0, finiteNum(h.c, 0)) }))
+          .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0 && Number.isFinite(h.c))
           .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
           .filter((h, i, arr) => i === arr.length - 1 || h.d !== arr[i + 1].d)   // 同一天重複只留最後一筆
           .slice(-PRICE_HIST_KEEP)
