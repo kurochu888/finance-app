@@ -330,12 +330,26 @@ const DEFAULT_LEVERAGE = {
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
 const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
+/* 均線趨勢訊號的參數預設值:槓桿倍數 >=2(正2類)用較慢、較寬鬆的組合,
+   避免被槓桿本身的波動洗出場;1倍(0050類)用稍快一點的組合。
+   這兩組是使用者自己長期在用、驗證過樣本外表現的參數,不是隨便挑的。 */
+function defaultTrendParams(leverage){
+  const base = (num(leverage) >= 2)
+    ? { maFast:120, maSlow:240, exitBuffer:0.90, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2 }
+    : { maFast:100, maSlow:200, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:1 };
+  return Object.assign(base, { lastSeenStatus:'', lastSeenDate:'' });
+}
+const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的長度
+
 /* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
-  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true },
-  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true }
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] }
 ];
-const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: uid() }, x));
+// trend/priceHistory 是巢狀物件,Object.assign 只會淺拷貝參照 —— 每個新 instrument
+// 都要有自己獨立的 trend/priceHistory,不能共用同一份 DEFAULT_INSTRUMENTS 底下的物件,
+// 不然改一個標的的均線參數會意外改到共用預設值,下次重置資料就跑掉。
+const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: uid() }, JSON.parse(JSON.stringify(x))));
 
 function emptyState(){
   return {
@@ -357,15 +371,37 @@ function normalize(raw){
   // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
   if (Array.isArray(raw.instruments) && raw.instruments.length){
-    s.instruments = raw.instruments.map(x => ({
-      key: String(x.key || '') || uid(),
-      id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
-      name: String(x.name || ''),
-      leverage: x.leverage === undefined ? 1 : num(x.leverage),
-      price: Math.max(0, num(x.price)),
-      shares: Math.max(0, num(x.shares)),
-      auto: x.auto !== false
-    }));
+    s.instruments = raw.instruments.map(x => {
+      const leverage = x.leverage === undefined ? 1 : num(x.leverage);
+      const def = defaultTrendParams(leverage);
+      const t = x.trend && typeof x.trend === 'object' ? x.trend : {};
+      return {
+        key: String(x.key || '') || uid(),
+        id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
+        name: String(x.name || ''),
+        leverage,
+        price: Math.max(0, num(x.price)),
+        shares: Math.max(0, num(x.shares)),
+        auto: x.auto !== false,
+        trend: {
+          maFast: Math.max(1, num(t.maFast) || def.maFast),
+          maSlow: Math.max(1, num(t.maSlow) || def.maSlow),
+          exitBuffer: num(t.exitBuffer) > 0 ? num(t.exitBuffer) : def.exitBuffer,
+          recoverSlopeThreshold: num(t.recoverSlopeThreshold) > 0 ? num(t.recoverSlopeThreshold) : def.recoverSlopeThreshold,
+          recoverStrongRebound: num(t.recoverStrongRebound) > 0 ? num(t.recoverStrongRebound) : def.recoverStrongRebound,
+          pyramidGap: num(t.pyramidGap) > 0 ? num(t.pyramidGap) : def.pyramidGap,
+          pyramidLevels: Math.max(1, Math.round(num(t.pyramidLevels) || def.pyramidLevels)),
+          lastSeenStatus: String(t.lastSeenStatus || ''),
+          lastSeenDate: String(t.lastSeenDate || '')
+        },
+        priceHistory: (Array.isArray(x.priceHistory) ? x.priceHistory : [])
+          .map(h => ({ d: String(h.d || '').slice(0, 10), c: Math.max(0, num(h.c)) }))
+          .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
+          .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
+          .filter((h, i, arr) => i === arr.length - 1 || h.d !== arr[i + 1].d)   // 同一天重複只留最後一筆
+          .slice(-PRICE_HIST_KEEP)
+      };
+    });
   }
   s.trades = arr(raw.trades).map(t => ({
     id: t.id || uid(),
@@ -805,7 +841,10 @@ const QUOTE_TS_KEY = 'financeQuoteFetchedAt';
 let quoteBusy = false;
 let quoteMsg = '';
 let levMsg = '';      // 持股與報價卡的提示
+let backfillBusy = false;
+let backfillMsg = '';
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const cleanNum = v => num(String(v).replace(/,/g, ''));
 function rocToISO(s){                       // '115/09/04' → '2026-09-04'
   const p = String(s).split('/');
@@ -829,6 +868,21 @@ async function twseRows(url){
   }
   return null;
 }
+/* 把 TWSE STOCK_DAY 一個月的資料列併入某標的的歷史收盤價:
+   日期去重(同一天多次抓到,後寫入的蓋掉前面的)、依日期排序、裁切到 PRICE_HIST_KEEP。
+   回補(backfillHistory)跟每次抓報價(fetchQuotes)都呼叫這個,不重複寫合併邏輯。 */
+function mergeHistory(hist, rows){
+  const byDate = new Map((hist || []).map(h => [h.d, h.c]));
+  (rows || []).forEach(row => {
+    const d = rocToISO(row[0]);
+    if (d) byDate.set(d, cleanNum(row[6]));
+  });
+  return [...byDate.entries()]
+    .map(([d, c]) => ({ d, c }))
+    .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
+    .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
+    .slice(-PRICE_HIST_KEEP);
+}
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
   quoteBusy = true;
@@ -847,6 +901,7 @@ async function fetchQuotes(manual){
       if (rows && rows.length){
         const row = rows[rows.length - 1];
         it.price = cleanNum(row[6]);      // 收盤價
+        it.priceHistory = mergeHistory(it.priceHistory, rows);   // 順便把整月資料併進歷史,累積均線用的資料
         date = rocToISO(row[0]) || date;
         got++;
       }else{
@@ -883,6 +938,43 @@ function maybeAutoQuote(){
   let last = 0;
   try{ last = Number(localStorage.getItem(QUOTE_TS_KEY)) || 0; }catch(e){}
   if (Date.now() - last > 3600000) fetchQuotes(false);   // 一小時內不重覆抓
+}
+
+/* 回補約 14 個月(涵蓋 240 日均線)的歷史收盤價,給趨勢訊號用。
+   刻意逐月「依序」抓、每次間隔一下,不要 Promise.all 對證交所同時發一串請求。
+   單一月份抓失敗就跳過繼續,不中止整個回補;最後回報哪些標的/月份沒抓到。 */
+const BACKFILL_MONTHS = 14;
+async function backfillHistory(){
+  if (!QUOTES_ENABLED || backfillBusy) return;
+  backfillBusy = true;
+  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+  const incomplete = [];
+  for (const it of targets){
+    backfillMsg = `回補中…${it.id}`;
+    renderAll();
+    let hist = it.priceHistory || [];
+    let monthsOk = 0;
+    for (let offset = 0; offset > -BACKFILL_MONTHS; offset--){
+      try{
+        const m = monthParam(offset);
+        const res = await fetch(TWSE_STOCK + encodeURIComponent(it.id) + '&date=' + m);
+        if (res.ok){
+          const j = await res.json();
+          if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
+            hist = mergeHistory(hist, j.data);
+            monthsOk++;
+          }
+        }
+      }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
+      await sleep(300);
+    }
+    it.priceHistory = hist;
+    if (monthsOk < BACKFILL_MONTHS) incomplete.push(it.id + '(' + monthsOk + '/' + BACKFILL_MONTHS + ' 個月)');
+  }
+  backfillMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '回補完成';
+  backfillBusy = false;
+  scheduleSave();
+  renderAll();
 }
 
 /* ===================== 部位損益 =====================
@@ -1664,12 +1756,13 @@ function renderHelp(){
 
     <div class="sect">槓桿頁怎麼逛</div>
     <div class="card doc">
-      <p>槓桿頁分成四個小分頁,上方可以切換:</p>
+      <p>槓桿頁分成五個小分頁,上方可以切換:</p>
       <ul>
         <li><strong>概況</strong> — 每天看這頁就好:整體損益、年化報酬、曝險,以及兩張走勢圖</li>
-        <li><strong>訊號</strong> — 該加碼還是減碼:桶金觸發狀態、撤退門檻、壓力測試</li>
+        <li><strong>訊號</strong> — 該不該動用房貸:桶金觸發狀態、撤退門檻、壓力測試</li>
+        <li><strong>趨勢</strong> — 每檔標的現在該續抱還是該跑:均線趨勢訊號</li>
         <li><strong>紀錄</strong> — 買賣與還款,記完就走</li>
-        <li><strong>設定</strong> — 很少要動的:持股代號與報價、房貸額度與利率、桶金門檻、歷史最高市值</li>
+        <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、房貸額度與利率、桶金門檻、歷史最高市值</li>
       </ul>
     </div>
 
@@ -1681,6 +1774,27 @@ function renderHelp(){
       <p>大盤即時點位跌到觸發點位以下,那一桶就顯示「已觸發」,總覽也會跳提示。</p>
       <p><strong>觸發不等於已動用。</strong>真的去銀行動用了,才填「實際動用日期」——
       填了才會計入借款餘額、利息與撤退門檻。可以順便記下當時的大盤點位和買了什麼。</p>
+    </div>
+
+    <div class="sect">趨勢分頁:均線訊號</div>
+    <div class="card doc">
+      <p>桶金系統回答的是「該不該動用房貸」;趨勢分頁回答的是另一個獨立的問題——
+      <strong>手上已經有的部位,現在該續抱還是該跑</strong>,跟房貸動用與否無關,兩套系統並存、互不影響。</p>
+      <p>每檔標的用自己的快線(短天期均線)與慢線(長天期均線)判斷三種狀態:</p>
+      <ul>
+        <li><strong>HOLD</strong> — 價格站上快線、趨勢確認,續抱</li>
+        <li><strong>WAIT_RECOVER</strong> — 出場後還沒重新站上趨勢,依「加碼間距」分批試水</li>
+        <li><strong>WATCH</strong> — 歷史價格不夠(還沒回補,或標的太新),算不出均線</li>
+      </ul>
+      <div class="formula">HOLD 時:收盤 &lt; 快線 × 出場緩衝 → 出場,轉入 WAIT_RECOVER
+非 HOLD 時:站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
+           否則,跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
+      <p>均線需要的歷史收盤價要先在<strong>「趨勢」分頁</strong>按「回補歷史價格」抓一次
+      (逐月依序抓,不會同時對證交所發一串請求);之後每次更新報價會順便累積,不用常按。
+      快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
+      改壞了按「重設為預設值」就好。</p>
+      <p><strong>這只是訊號顯示,不會自動下單。</strong>該買該賣一樣要自己到「紀錄」分頁記一筆——
+      這個分頁只負責告訴你現在是什麼狀態、距離出場線還有多少緩衝。</p>
     </div>
 
     <div class="sect">減碼訊號:撤退門檻</div>
@@ -1858,6 +1972,74 @@ function computeLeverage(){
            positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
+
+/* ===================== 均線趨勢訊號 =====================
+   跟上面的桶金/撤退門檻系統是兩套獨立邏輯,並存、互不影響——
+   桶金系統管的是「該不該動用房貸」,這裡管的是「現在該續抱還是該跑」。
+   狀態:WATCH(還沒進場)→ WAIT_RECOVER(接刀中,部分加碼)→ HOLD(趨勢確認,滿倉續抱)。
+   HOLD 時只看會不會 EXIT;非 HOLD 時先看會不會 RECOVER(優先),再看會不會 ADD。
+
+   刻意設計成「每次都從完整的 priceHistory 重新回放整個狀態機」,
+   不是把 status/pyramidCount 當成逐筆增量修改、存在 state 裡的可變狀態——
+   這樣任何一個分支都不可能「忘記重置」pyramidCount,回放到哪一天答案就該是什麼,
+   不存在陳舊狀態遺留的問題。*/
+function sma(vals, w){
+  const out = new Array(vals.length).fill(null);
+  let s = 0;
+  for (let i = 0; i < vals.length; i++){
+    s += vals[i];
+    if (i >= w) s -= vals[i - w];
+    if (i >= w - 1) out[i] = s / w;
+  }
+  return out;
+}
+function computeTrend(it){
+  const p = it.trend || defaultTrendParams(it.leverage);
+  const hist = it.priceHistory || [];
+  const barsNeeded = p.maSlow + 1;   // 至少要能算出一天的慢線,還要前一天的快線才能判斷斜率
+  const base = { key: it.key, id: it.id, params: p, barsAvailable: hist.length, barsNeeded };
+  if (hist.length < barsNeeded){
+    return { ...base, status:'WATCH', pyramidCount:0, basePrice:0,
+             maFast:null, maSlow:null, lastClose:null, lastDate:'', cushionPct:null };
+  }
+  const closes = hist.map(h => h.c);
+  const dates = hist.map(h => h.d);
+  const maF = sma(closes, p.maFast);
+  const maS = sma(closes, p.maSlow);
+  const start = p.maSlow - 1;
+  let status = 'WATCH', basePrice = 0, pyramidCount = 0;
+  for (let i = start + 1; i < closes.length; i++){
+    const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
+    if (f == null || s == null || fy == null) continue;
+    let action;
+    if (status === 'HOLD'){
+      action = close < f * p.exitBuffer ? 'EXIT' : 'HOLD';
+    }else{
+      const priceStable = close > f && closes[i - 1] > maF[i - 1];
+      const slopeOk = f >= fy * p.recoverSlopeThreshold;
+      const strongRebound = close > f * p.recoverStrongRebound;
+      const manualPrice = basePrice > 0 ? basePrice : closes[i - 1];
+      const effectiveBase = Math.min(manualPrice, s);
+      const gapTriggered = close < effectiveBase * (1 - p.pyramidGap);
+      if ((priceStable && slopeOk) || strongRebound) action = 'RECOVER';
+      else if (gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
+      else action = status;
+    }
+    if (action === 'RECOVER'){ basePrice = close; pyramidCount = 0; status = 'HOLD'; }
+    else if (action === 'ADD'){ basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER'; }
+    else if (action === 'EXIT'){ basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER'; }
+  }
+  const last = closes.length - 1;
+  const fLast = maF[last], sLast = maS[last], lastClose = closes[last];
+  let cushionPct = null;
+  if (status === 'HOLD' && fLast){
+    const exitLine = fLast * p.exitBuffer;
+    cushionPct = exitLine > 0 ? (lastClose / exitLine - 1) * 100 : null;
+  }
+  return { ...base, status, pyramidCount, basePrice,
+           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct };
+}
+const computeAllTrends = () => state.instruments.map(computeTrend);
 
 /* 自動記錄看過的最高總市值。只在欄位輸入完成(change)或重畫時檢查,
    避免打字打到一半的中間值被記成新高。 */
@@ -2186,7 +2368,7 @@ function renderTrades(){
 }
 
 function levTabs(){
-  const t = [['overview','概況'], ['signal','訊號'], ['log','紀錄'], ['setup','設定']];
+  const t = [['overview','概況'], ['signal','訊號'], ['trend','趨勢'], ['log','紀錄'], ['setup','設定']];
   return `<div class="subtabs"><div class="seg">
     ${t.map(([v, label]) => `<button class="seg-btn ${levTab === v ? 'on' : ''}" data-act="lev-tab" data-v="${v}">${label}</button>`).join('')}
   </div></div>`;
@@ -2290,6 +2472,63 @@ function stressBody(){
   <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
 }
 
+/* 均線趨勢訊號分頁的內容:跟前面的桶金/撤退門檻是兩套獨立系統,只是共用同一個
+   槓桿分頁殼子。純顯示,不會自動下單——買賣還是要自己到「紀錄」分頁記一筆。 */
+function trendBadge(status){
+  if (status === 'HOLD') return `<span class="badge green">HOLD 續抱</span>`;
+  if (status === 'WAIT_RECOVER') return `<span class="badge amber">WAIT_RECOVER 接刀中</span>`;
+  return `<span class="badge gray">WATCH 資料不足</span>`;
+}
+function renderTrendTab(){
+  const trends = computeAllTrends();
+  const changed = trends.filter(t => {
+    const it = findInstrumentByKey(t.key);
+    return it && it.trend.lastSeenStatus && it.trend.lastSeenStatus !== t.status && t.barsAvailable >= t.barsNeeded;
+  });
+  return `
+    ${changed.length ? changed.map(t => {
+      const it = findInstrumentByKey(t.key);
+      return `
+      <div class="alert amber">
+        <span class="ai">🔔</span>
+        <div>
+          <div class="at">${esc(it.id || it.name)} 狀態變成${t.status === 'HOLD' ? '續抱(HOLD)' : t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}</div>
+          <div class="ad">原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。</div>
+          <button class="go" data-act="ack-trend" data-id="${it.key}">知道了</button>
+        </div>
+      </div>`;
+    }).join('') : ''}
+    <div class="card">
+      <h3>均線趨勢訊號</h3>
+      <div class="notice" style="margin-bottom:12px;">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場緩衝」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div>
+      ${trends.map(t => {
+        const it = findInstrumentByKey(t.key);
+        if (!it) return '';
+        if (t.barsAvailable < t.barsNeeded){
+          return `
+          <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+            <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
+            <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${QUOTES_ENABLED ? '按下面「回補歷史價格」補齊。' : '這個版本不能連線抓報價。'}</div>
+          </div>`;
+        }
+        return `
+        <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
+          <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${fmt(t.maFast)} / ${fmt(t.maSlow)}</span></div>
+          <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${fmt(t.lastClose)}</span></div>
+          ${t.status === 'HOLD'
+            ? `<div class="row sub"><span class="label">距出場緩衝</span><span class="val">${t.cushionPct == null ? '—' : t.cushionPct.toFixed(1) + '%'}</span></div>`
+            : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
+        </div>`;
+      }).join('')}
+      ${QUOTES_ENABLED ? `
+        <button class="btn quiet" data-act="backfill-history" ${backfillBusy ? 'disabled' : ''}>${backfillBusy ? '回補中…' : '🔄 回補歷史價格'}</button>
+        <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '第一次使用要回補約 14 個月的歷史收盤價,均線才算得出來。之後每次更新報價會自動累積,不用常按。'}</div>
+      ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回補歷史價格。</div>`}
+      <button class="why" data-act="go" data-v="help">這個訊號怎麼算 →</button>
+    </div>`;
+}
+
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
@@ -2375,6 +2614,8 @@ function renderLeverage(){
     </div>
 
     <div class="sect">加碼與減碼訊號</div>
+    ` : levTab === 'trend' ? `
+      ${renderTrendTab()}
     ` : levTab === 'log' ? `
       ${renderTrades()}
       ${renderRepayments()}
@@ -2400,6 +2641,17 @@ function renderLeverage(){
           <div class="field"><label>槓桿倍數(正2 填 2,一般股票填 1)</label>
             <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.key}" value="${it.leverage}"></div>
           <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
+          <div class="row sub" style="margin-top:8px;"><span class="label" style="font-weight:700;">趨勢訊號參數</span><span class="val"></span></div>
+          <div class="grid2">
+            <div class="field"><label>快線(日)</label><input type="number" inputmode="decimal" data-k="sig-maFast-${it.key}" value="${it.trend.maFast}"></div>
+            <div class="field"><label>慢線(日)</label><input type="number" inputmode="decimal" data-k="sig-maSlow-${it.key}" value="${it.trend.maSlow}"></div>
+            <div class="field"><label>出場緩衝(0.90=跌破快線10%出場)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-exitBuffer-${it.key}" value="${it.trend.exitBuffer}"></div>
+            <div class="field"><label>加碼間距(0.15=跌15%加碼)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-pyramidGap-${it.key}" value="${it.trend.pyramidGap}"></div>
+            <div class="field"><label>最多加碼層數</label><input type="number" inputmode="decimal" data-k="sig-pyramidLevels-${it.key}" value="${it.trend.pyramidLevels}"></div>
+            <div class="field"><label>回歸斜率門檻</label><input type="number" inputmode="decimal" step="0.001" data-k="sig-recoverSlopeThreshold-${it.key}" value="${it.trend.recoverSlopeThreshold}"></div>
+            <div class="field"><label>強力反彈門檻</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-recoverStrongRebound-${it.key}" value="${it.trend.recoverStrongRebound}"></div>
+          </div>
+          <button class="btn quiet" data-act="reset-trend-params" data-id="${it.key}">趨勢參數重設為預設值</button>
         </div>`;
       }).join('')}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
@@ -2547,6 +2799,7 @@ function onField(key, el){
           state.trades.forEach(t => { if (t.symbol === prev) t.symbol = next; });
           if (tradeDraft.symbol === prev) tradeDraft.symbol = next;
           it.id = next;
+          it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
           levMsg = '';
           structural = true;
         }else if (taken){
@@ -2557,6 +2810,17 @@ function onField(key, el){
       else if (what === 'lev') it.leverage = num(el.value);
       else if (what === 'price') it.price = Math.max(0, num(el.value));
       else if (what === 'shares') it.shares = Math.max(0, num(el.value));
+    }
+  }
+  else if (kind === 'sig'){                      // 趨勢訊號參數,用內部 key 定位
+    const cut = rest.indexOf('-');
+    const what = rest.slice(0, cut), ikey = rest.slice(cut + 1);
+    const it = findInstrumentByKey(ikey);
+    if (it && it.trend){
+      const v = num(el.value);
+      if (what === 'maFast' || what === 'maSlow') it.trend[what] = Math.max(1, Math.round(v));
+      else if (what === 'pyramidLevels') it.trend[what] = Math.max(1, Math.round(v));
+      else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
     }
   }
   else if (kind === 'tr'){
@@ -2638,6 +2902,28 @@ function onField(key, el){
   else if (currentTab === 'leverage') refreshLeverage();
 }
 
+/* 範例資料用:生出一段看起來合理的歷史收盤價(緩緩上漲、帶一點波動),
+   讓「趨勢」分頁載入範例資料後就有均線可以算,不用真的連線抓報價。
+   最後一筆固定等於 endPrice,跟畫面上「股價」欄位顯示的數字對得上。 */
+function genSamplePriceHistory(endPrice, tradingDays){
+  const dates = [];
+  const d = new Date();
+  while (dates.length < tradingDays - 1){
+    d.setDate(d.getDate() - 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) dates.push(d.toISOString().slice(0, 10));
+  }
+  dates.reverse();
+  dates.push(todayISO());
+  const n = dates.length;
+  return dates.map((iso, i) => {
+    const t = i / (n - 1);
+    const drift = 0.72 + 0.28 * t;                 // 一路緩漲到今天
+    const wiggle = i === n - 1 ? 1 : 1 + 0.03 * Math.sin(i / 4.5);
+    return { d: iso, c: Math.round(endPrice * drift * wiggle * 100) / 100 };
+  });
+}
+
 function sampleData(){
   const s = emptyState();
   const m = thisMonth();
@@ -2681,8 +2967,12 @@ function sampleData(){
   s.leverage.tranches[0].useIndex = 21500;
   s.leverage.tranches[0].note = '00631L 10,000 股';
   s.instruments = [
-    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true },
-    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true }
+    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260) },
+    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true,
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260) },
+    { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
+      trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220) }
   ];
   s.leverage.historicalHighValue = 2950000;
   const back = n => shiftMonth(m, -n) + '-05';
@@ -2897,7 +3187,8 @@ function onClick(el){
       break;
     }
     case 'add-instrument':
-      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true });
+      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true,
+        trend: defaultTrendParams(1), priceHistory:[] });
       levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
     case 'del-instrument': {
@@ -2970,6 +3261,21 @@ function onClick(el){
       break;
     }
     case 'fetch-quotes': fetchQuotes(true); return;
+    case 'backfill-history': backfillHistory(); return;
+    case 'reset-trend-params': {
+      const it = findInstrumentByKey(id);
+      if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenDate: it.trend.lastSeenDate });
+      break;
+    }
+    case 'ack-trend': {
+      const it = findInstrumentByKey(id);
+      if (it){
+        const t = computeTrend(it);
+        it.trend.lastSeenStatus = t.status;
+        it.trend.lastSeenDate = todayISO();
+      }
+      break;
+    }
     case 'show-backups':
       if (backupOpen){ backupOpen = false; break; }
       loadBackups();

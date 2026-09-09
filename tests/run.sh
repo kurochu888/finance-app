@@ -12,6 +12,9 @@ for f in ../finance_app.html ../finance_app_artifact.html ../docs/index.html; do
 done
 
 echo
+echo "=== 均線趨勢訊號(computeTrend) ==="
+node trend.js || fail=1
+echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo
