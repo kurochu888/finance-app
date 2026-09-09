@@ -61,7 +61,7 @@ const tabs = ['overview','assets','ledger','leverage','help'];
 function pass(label){
   for (const t of tabs){
     A.currentTab = t;
-    for (const lt of (t === 'leverage' ? ['overview','signal','log','setup'] : [null])){
+    for (const lt of (t === 'leverage' ? ['overview','signal','trend','log','setup'] : [null])){
       if (lt) A.levTab = lt;
       A.renderAll();
       const html = store.content.innerHTML;
@@ -484,7 +484,7 @@ console.log('小分頁內容不重複');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
 const seenCards = {};
-['overview','signal','log','setup'].forEach(t => {
+['overview','signal','trend','log','setup'].forEach(t => {
   A.levTab = t;
   A.renderAll();
   [...store.content.innerHTML.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].forEach(m => {
@@ -504,7 +504,7 @@ A.levTab = 'overview';
 console.log('槓桿頁小分頁固定');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
-['overview','signal','log','setup'].forEach(t => {
+['overview','signal','trend','log','setup'].forEach(t => {
   A.levTab = t;
   A.renderAll();
   const h = store.content.innerHTML;

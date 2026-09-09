@@ -62,7 +62,7 @@ console.log('  報價過期 5 天 / 空間提醒 75% ✓');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
 const where = {};
-['overview','signal','log','setup'].forEach(t => {
+['overview','signal','trend','log','setup'].forEach(t => {
   A.levTab = t; A.renderAll();
   where[t] = store.content.innerHTML;
 });
