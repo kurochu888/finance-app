@@ -947,33 +947,37 @@ const BACKFILL_MONTHS = 14;
 async function backfillHistory(){
   if (!QUOTES_ENABLED || backfillBusy) return;
   backfillBusy = true;
-  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+  // 只記 key/id,不要抓著 instrument 物件參照不放——回補一輪要跑十幾秒到幾十秒,
+  // 這段時間如果雲端同步收到遠端更新,applyRemote() 會把整個 state.instruments 換掉,
+  // 抓著舊物件參照的話,後面寫入的都是沒人在用的孤兒物件,畫面看起來跑完了但其實沒真的存進去。
+  // 每次要寫入前都用 key 重新查一次「現在活著」的物件,才不會被雲端同步蓋掉。
+  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+    .map(it => ({ key: it.key, id: it.id }));
   const incomplete = [];
-  for (const it of targets){
-    backfillMsg = `回補中…${it.id}`;
+  for (const target of targets){
+    backfillMsg = `回補中…${target.id}`;
     renderAll();
-    let hist = it.priceHistory || [];
     let monthsOk = 0;
     for (let offset = 0; offset > -BACKFILL_MONTHS; offset--){
       try{
         const m = monthParam(offset);
-        const res = await fetch(TWSE_STOCK + encodeURIComponent(it.id) + '&date=' + m);
+        const res = await fetch(TWSE_STOCK + encodeURIComponent(target.id) + '&date=' + m);
         if (res.ok){
           const j = await res.json();
           if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-            hist = mergeHistory(hist, j.data);
+            const live = findInstrumentByKey(target.key);
+            if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data);
             monthsOk++;
           }
         }
       }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
       await sleep(300);
     }
-    it.priceHistory = hist;
-    if (monthsOk < BACKFILL_MONTHS) incomplete.push(it.id + '(' + monthsOk + '/' + BACKFILL_MONTHS + ' 個月)');
+    if (monthsOk < BACKFILL_MONTHS) incomplete.push(target.id + '(' + monthsOk + '/' + BACKFILL_MONTHS + ' 個月)');
+    scheduleSave();   // 抓完一檔就存一次,不要等全部做完才存,縮短被雲端同步蓋掉的時間窗
   }
   backfillMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '回補完成';
   backfillBusy = false;
-  scheduleSave();
   renderAll();
 }
 
