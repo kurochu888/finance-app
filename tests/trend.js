@@ -17,7 +17,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory };`);
+eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -121,6 +121,25 @@ console.log('mergeHistory:分割造成的假斷崖要被還原成連續序列(�
   const oldPrice = hist[0].c;
   console.log('  分割前第一筆原始收盤 420,還原後變成', oldPrice.toFixed(2), '(應該跟分割後的價格尺度接近,不是 420)');
   must(oldPrice < 30, '分割前的價格沒有被換算到跟分割後同一個尺度(得到 ' + oldPrice.toFixed(2) + ')');
+})();
+console.log('  ok');
+
+console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄溜過去(迴歸測試:壓測抓到的 bug)');
+(function testInfinityGuard(){
+  // num() 只擋 NaN,擋不住 Infinity(parseFloat('Infinity') 是合法的);
+  // 這些欄位後面會拿去做除法、比大小,混進 Infinity 會讓 computeTrend 整個壞掉。
+  const s = A.normalize({ instruments: [{
+    key:'k1', id:'00631L', name:'測試', leverage:2, price:10, shares:0, auto:true,
+    trend: { maFast:Infinity, maSlow:-Infinity, exitBuffer:Infinity, recoverSlopeThreshold:Infinity,
+             recoverStrongRebound:Infinity, pyramidGap:Infinity, pyramidLevels:Infinity },
+    priceHistory: [{ d:'2026-01-01', c:Infinity }, { d:'2026-01-02', c:50 }]
+  }]});
+  const t = s.instruments[0].trend;
+  ['maFast','maSlow','exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','pyramidLevels']
+    .forEach(k => must(Number.isFinite(t[k]), 'trend.' + k + ' 沒有擋掉 Infinity,得到 ' + t[k]));
+  must(s.instruments[0].priceHistory.every(h => Number.isFinite(h.c)),
+       'priceHistory 裡的 Infinity 收盤價沒有被濾掉');
+  must(s.instruments[0].priceHistory.length === 1, 'Infinity 那筆應該被濾掉,只剩合法的那一筆(得到 ' + s.instruments[0].priceHistory.length + ' 筆)');
 })();
 console.log('  ok');
 
