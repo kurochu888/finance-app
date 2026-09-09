@@ -330,7 +330,11 @@ const DEFAULT_LEVERAGE = {
     { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
     { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] }
   ],
-  core:{ label:'長期投資部位', amount:2000000, useDate:'', repayments:[] }
+  core:{ label:'長期投資部位', amount:2000000, useDate:'', repayments:[] },
+  /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
+     hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
+     跟趨勢分頁的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。 */
+  exposureTargets: { byLayer:[65, 130], hold:130 }
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
 const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
@@ -465,6 +469,16 @@ function normalize(raw){
   base.autoInterest = L.autoInterest !== false;
   base.interestPosted = Array.isArray(L.interestPosted) ? L.interestPosted.map(String) : [];
   base.quoteDate = String(L.quoteDate || '');
+  {
+    const ET = L.exposureTargets && typeof L.exposureTargets === 'object' ? L.exposureTargets : {};
+    const defByLayer = DEFAULT_LEVERAGE.exposureTargets.byLayer;
+    const byLayer = (Array.isArray(ET.byLayer) ? ET.byLayer : [])
+      .map((v, i) => { const n = finiteNum(v, -1); return n >= 0 ? n : (defByLayer[i] ?? defByLayer[defByLayer.length - 1]); });
+    base.exposureTargets = {
+      byLayer: byLayer.length ? byLayer : defByLayer.slice(),
+      hold: finiteNum(ET.hold, -1) >= 0 ? finiteNum(ET.hold, 0) : DEFAULT_LEVERAGE.exposureTargets.hold
+    };
+  }
   // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
   [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
     const it = s.instruments.find(x => x.id === id);
@@ -1853,6 +1867,20 @@ function renderHelp(){
       這個分頁只負責告訴你現在是什麼狀態、距離出場線還有多少緩衝。</p>
     </div>
 
+    <div class="sect">趨勢分頁:正2 曝險目標</div>
+    <div class="card doc">
+      <p>趨勢訊號告訴你「該不該動」,但沒告訴你「該投入多少錢」——曝險目標補這一塊,只管正2
+      (槓桿倍數剛好等於 2 的標的),用「總覽」頁本來就有的曝險比例公式當標準:</p>
+      <div class="formula">曝險比例 = (各標的市值 × 槓桿倍數的總和) ÷ (部位淨值 + 房貸總額度)</div>
+      <p>兩檔正2 各自算「進度」——0 表示還沒進場或剛出場、1 到 N 表示加碼到第幾層(N 是加碼層數上限)、
+      N+1 表示已經確認 HOLD——<strong>取兩檔裡比較保守(數字較小)的那個</strong>當整組現在的階段,
+      因為兩檔經濟上幾乎是同一個賭注,一檔先轉弱就該一起保守,不各自獨立判斷。每個階段對應的目標曝險比例
+      在<strong>「設定」分頁的「曝險目標設定」</strong>可以調。</p>
+      <p>算出目標曝險金額後,拿現在的部位淨值去反推「該投入多少錢」,給兩個邊界值——全部用現金要投入多少、
+      全部用房貸要投入多少(現金會墊高部位淨值,房貸不會,所以兩個數字不一樣)——實際要怎麼混用,自己決定,
+      這個分頁不會幫你自動借款或下單。差額算出來是負的,代表目前曝險已經超過目標,顯示成「可考慮減碼」。</p>
+    </div>
+
     <div class="sect">減碼訊號:撤退門檻</div>
     <div class="card doc">
       <div class="formula">撤退門檻 = 歷史最高市值 + Σ(各桶金依實際餘額每年累加 8%)</div>
@@ -2096,6 +2124,38 @@ function computeTrend(it){
            maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct };
 }
 const computeAllTrends = () => state.instruments.map(computeTrend);
+
+/* 正2(00631L+00675L)該投入多少錢的曝險目標計算。只管槓桿倍數剛好等於 2 的標的,
+   目前策略裡只有正2,之後如果加了別的槓桿倍數的標的,這裡先不處理(不特別去適配)。
+
+   進度值:0=WATCH或剛EXIT(pyramidCount=0)、1..N=加碼到第幾層(N=兩檔裡較小的
+   pyramidLevels,防呆用)、N+1=兩檔都HOLD。兩檔各自算,取較小值代表整組現在的階段——
+   理由見「說明」分頁,兩檔經濟上幾乎是同一個賭注,一檔先轉弱就該一起保守。
+
+   算出來的 deltaCash/deltaLoan 是兩個邊界(全部用現金 vs 全部用房貸該投入多少),
+   實際怎麼混用現金/房貸由使用者自己決定,app 不追蹤「手上現金」這個數字。 */
+function computeExposurePlan(){
+  const lev2 = state.instruments.filter(it => it.auto && it.leverage === 2);
+  if (!lev2.length) return null;
+  const trends = lev2.map(computeTrend);
+  const N = Math.max(1, Math.min(...lev2.map(it => it.trend.pyramidLevels)));
+  const rawProgress = t => t.status === 'HOLD' ? N + 1 : (t.status === 'WAIT_RECOVER' ? t.pyramidCount : 0);
+  const progress = Math.min(...trends.map(rawProgress));
+  const targets = state.leverage.exposureTargets;
+  const targetRatio = progress === 0 ? 0
+                     : progress <= N ? (targets.byLayer[progress - 1] ?? targets.hold)
+                     : targets.hold;
+  const risk = computeRisk();
+  const R = targetRatio / 100, L = 2;
+  const denomCash = L - R;
+  const raw = R * (risk.equity + risk.creditLimit) - risk.exposure;   // 為負代表已經超過目標,該減碼
+  return {
+    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio,
+    deltaCash: denomCash > 0.0001 ? raw / denomCash : null,   // null = 這個目標純用現金到不了
+    deltaLoan: raw / L,
+    instruments: lev2.map(it => it.key)
+  };
+}
 
 /* 自動記錄看過的最高總市值。只在欄位輸入完成(change)或重畫時檢查,
    避免打字打到一半的中間值被記成新高。 */
@@ -2535,6 +2595,36 @@ function trendBadge(status){
   if (status === 'WAIT_RECOVER') return `<span class="badge amber">WAIT_RECOVER 接刀中</span>`;
   return `<span class="badge gray">WATCH 尚未進場</span>`;   // 資料足夠但還沒等到趨勢確認,不等於資料不夠
 }
+/* 正2 曝險目標卡片:目前曝險 vs 目標曝險,以及該加碼/減碼多少(現金/房貸兩個邊界值,
+   兩檔 00631L/00675L 均分)。只在有正2(槓桿2倍)標的時顯示。 */
+function renderExposurePlanCard(){
+  const p = computeExposurePlan();
+  if (!p) return '';
+  const n = p.instruments.length;
+  const stageLabel = p.progress === 0 ? '尚未進場'
+    : p.progress > p.layerCount ? '兩檔都 HOLD'
+    : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`;
+  const overTarget = p.deltaLoan < -0.5;   // 現值超過目標,允許一點點浮點誤差
+  return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="row"><span class="label">目前階段</span><span class="val">${esc(stageLabel)}</span></div>
+      <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
+      ${overTarget ? `
+        <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
+          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}(00631L/00675L 各半約 NT$ ${fmt(Math.abs(p.deltaLoan)/n)})</span></div>
+      ` : (p.deltaLoan > 0.5 ? `
+        <div class="row sub"><span class="label">全部用現金約需投入</span>
+          <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + '(各半 NT$ ' + fmt(p.deltaCash/n) + ')'}</span></div>
+        <div class="row sub"><span class="label">全部用房貸約需投入</span>
+          <span class="val">NT$ ${fmt(p.deltaLoan)}(各半 NT$ ${fmt(p.deltaLoan/n)})</span></div>
+        ${p.deltaCash == null ? `<div class="muted" style="margin-top:6px;">這個目標曝險純用現金到不了,一定要動用部分房貸,實際比例自己決定。</div>` : ''}
+      ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
+      <div class="muted" style="margin-top:6px;">目標依「兩檔裡比較保守的那個」決定,不是各自獨立算。</div>
+    </div>`;
+}
+
 function renderTrendTab(){
   const trends = computeAllTrends();
   const changed = trends.filter(t => {
@@ -2554,6 +2644,7 @@ function renderTrendTab(){
         </div>
       </div>`;
     }).join('') : ''}
+    ${renderExposurePlanCard()}
     <div class="card">
       <h3>均線趨勢訊號</h3>
       <div class="notice" style="margin-bottom:12px;">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場緩衝」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div>
@@ -2730,6 +2821,17 @@ function renderLeverage(){
     </div>
 
     <div class="card">
+      <h3>曝險目標設定</h3>
+      <div class="notice" style="margin-bottom:10px;">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「趨勢」分頁會照這個算出該投入/該減碼多少錢。</div>
+      ${L.exposureTargets.byLayer.map((v, i) => `
+        <div class="field"><label>加碼第 ${i+1} 層的目標曝險(%)</label>
+          <input type="number" inputmode="decimal" data-k="expo-layer-${i}" value="${v}"></div>
+      `).join('')}
+      <div class="field"><label>兩檔都 HOLD 的目標曝險(%)</label>
+        <input type="number" inputmode="decimal" data-k="expo-hold" value="${L.exposureTargets.hold}"></div>
+    </div>
+
+    <div class="card">
       <h3>借款與利息</h3>
       <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
       ${r.drawnAmount !== r.usedAmount ? `<div class="row"><span class="muted">累計動用 ${fmt(r.drawnAmount)} · 已還 ${fmt(r.drawnAmount - r.usedAmount)}</span><span class="muted"></span></div>` : ''}
@@ -2877,6 +2979,14 @@ function onField(key, el){
       if (what === 'maFast' || what === 'maSlow') it.trend[what] = Math.max(1, Math.round(v));
       else if (what === 'pyramidLevels') it.trend[what] = Math.max(1, Math.round(v));
       else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
+    }
+  }
+  else if (kind === 'expo'){                     // 正2 曝險目標設定
+    const v = Math.max(0, num(el.value));
+    if (rest === 'hold') state.leverage.exposureTargets.hold = v;
+    else if (rest.indexOf('layer-') === 0){
+      const i = Number(rest.slice(6));
+      if (Number.isInteger(i) && i >= 0) state.leverage.exposureTargets.byLayer[i] = v;
     }
   }
   else if (kind === 'tr'){

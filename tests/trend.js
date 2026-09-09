@@ -17,7 +17,8 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize };`);
+eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
+  computeExposurePlan, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -140,6 +141,57 @@ console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄
   must(s.instruments[0].priceHistory.every(h => Number.isFinite(h.c)),
        'priceHistory 裡的 Infinity 收盤價沒有被濾掉');
   must(s.instruments[0].priceHistory.length === 1, 'Infinity 那筆應該被濾掉,只剩合法的那一筆(得到 ' + s.instruments[0].priceHistory.length + ' 筆)');
+})();
+console.log('  ok');
+
+console.log('computeExposurePlan():正2 曝險目標的代數解');
+(function testExposurePlan(){
+  function setupState(n631, n675, equityValue){
+    const s = A.emptyState();
+    s.leverage.creditLimit = 8000000;
+    s.leverage.exposureTargets = { byLayer:[65, 130], hold:130 };
+    const i631 = s.instruments.find(x => x.id === '00631L');
+    const i675 = s.instruments.find(x => x.id === '00675L');
+    [ [i631, n631], [i675, n675] ].forEach(([it, n]) => {
+      it.trend = Object.assign({}, trend, { lastSeenStatus:'', lastSeenDate:'' });
+      it.priceHistory = mkHist(prices.slice(0, n));
+    });
+    // 用股數*股價模擬目前市值(部位淨值),不透過 priceHistory(那個只管均線)
+    if (equityValue > 0){
+      i631.price = 1; i631.shares = equityValue / 2;
+      i675.price = 1; i675.shares = equityValue / 2;
+    }
+    return s;
+  }
+
+  // 兩檔都在 n=49(WAIT_RECOVER, pyramidCount=1)→ progress=1 → 目標 65%,equity=0(剛開始)
+  A.state = setupState(49, 49, 0);
+  let p = A.computeExposurePlan();
+  console.log(`  兩檔都加碼第1層,equity=0: progress=${p.progress} target=${p.targetRatio}% deltaCash=${Math.round(p.deltaCash)}`);
+  must(p.progress === 1, '兩檔都在第1層,progress 應該是 1,得到 ' + p.progress);
+  must(p.targetRatio === 65, 'target 應該是 byLayer[0]=65,得到 ' + p.targetRatio);
+  must(Math.abs(p.deltaCash - 3851852) < 5000, 'equity=0、目標65%、槓桿2倍時 deltaCash 應該 ≈385萬,得到 ' + Math.round(p.deltaCash));
+
+  // 兩檔都到 n=78(HOLD)→ progress = N+1 = 3 → 目標 130%,equity 承接上一階算出的 385萬(全現金投入後)
+  A.state = setupState(78, 78, 3851852);
+  p = A.computeExposurePlan();
+  console.log(`  兩檔都 HOLD,equity≈385萬: progress=${p.progress} target=${p.targetRatio}% deltaCash=${p.deltaCash} deltaLoan=${Math.round(p.deltaLoan)}`);
+  must(p.progress === 3, '兩檔都 HOLD,progress 應該是 layerCount+1=3,得到 ' + p.progress);
+  must(p.targetRatio === 130, 'target 應該是 hold=130,得到 ' + p.targetRatio);
+  must(p.deltaCash === null || p.deltaCash > 10000000, '這個目標純現金到不了(需要的現金遠超過已有的385萬),deltaCash 應該是 null 或很大的數字,得到 ' + p.deltaCash);
+  must(Math.abs(p.deltaLoan - 3851852) < 5000, '全部用房貸的邊界值應該 ≈385萬(跟 deltaCash 那組不同,是另一個邊界),得到 ' + Math.round(p.deltaLoan));
+
+  // 兩檔進度不同:00631L 在 n=78(HOLD),00675L 在 n=49(第1層)→ 取較小的 progress=1
+  A.state = setupState(78, 49, 0);
+  p = A.computeExposurePlan();
+  console.log(`  兩檔進度不同(HOLD vs 第1層): progress=${p.progress}(應為1,不是HOLD那檔的3)`);
+  must(p.progress === 1, '兩檔進度不同時應該取較保守(較小)的那個,得到 ' + p.progress);
+
+  // 目前曝險已經超過目標:equity 給很大,目標卻只要 65%
+  A.state = setupState(49, 49, 20000000);   // equity 2000萬,遠超過目標需要的量
+  p = A.computeExposurePlan();
+  console.log(`  已超過目標: deltaLoan=${Math.round(p.deltaLoan)}(應為負值,代表該減碼)`);
+  must(p.deltaLoan < 0, '曝險已經超過目標時 deltaLoan 應該是負值(代表該減碼),得到 ' + p.deltaLoan);
 })();
 console.log('  ok');
 
