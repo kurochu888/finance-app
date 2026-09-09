@@ -144,6 +144,21 @@ console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄
 })();
 console.log('  ok');
 
+console.log('normalize():舊資料沒有 exposureTargets 欄位時,要救回預設值 130,不能救成 0(迴歸測試)');
+(function testExposureTargetsMissingField(){
+  // num() 把缺值收斂成 0,如果防呆邏輯沒有先判斷「欄位根本不存在」,
+  // 會把「沒填」誤判成「填了 0」,導致 HOLD 目標曝險變成 0%(這正是使用者回報的 bug)。
+  const s1 = A.normalize({ leverage: { creditLimit: 8000000 } });   // 完全沒有 exposureTargets
+  must(s1.leverage.exposureTargets.hold === 130, 'hold 沒填時應該救回預設 130,得到 ' + s1.leverage.exposureTargets.hold);
+  must(JSON.stringify(s1.leverage.exposureTargets.byLayer) === '[65,130]',
+       'byLayer 沒填時應該救回預設 [65,130],得到 ' + JSON.stringify(s1.leverage.exposureTargets.byLayer));
+
+  const s2 = A.normalize({ leverage: { exposureTargets: { byLayer: [50], hold: 200 } } });   // 使用者真的自己改過
+  must(s2.leverage.exposureTargets.hold === 200, '使用者自己設的 200 不該被蓋掉,得到 ' + s2.leverage.exposureTargets.hold);
+  must(s2.leverage.exposureTargets.byLayer[0] === 50, '使用者自己設的 byLayer[0]=50 不該被蓋掉,得到 ' + s2.leverage.exposureTargets.byLayer[0]);
+})();
+console.log('  ok');
+
 console.log('computeExposurePlan():正2 曝險目標的代數解');
 (function testExposurePlan(){
   function setupState(n631, n675, equityValue){

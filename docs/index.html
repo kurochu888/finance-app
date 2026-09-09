@@ -504,13 +504,17 @@ function normalize(raw){
   base.interestPosted = Array.isArray(L.interestPosted) ? L.interestPosted.map(String) : [];
   base.quoteDate = String(L.quoteDate || '');
   {
+    // num() 把缺值/NaN 都收斂成 0,單獨用 finiteNum 沒辦法分辨「欄位不存在」跟「真的填了 0」——
+    // 這裡的目標曝險是百分比,0 本來就不是有意義的設定值,乾脆兩種情況都當「沒填,用預設」處理,
+    // 跟其他趨勢參數(exitBuffer 等)用 >0 判斷的既有寫法一致。
+    const posNum = (v, fallback) => { const n = finiteNum(v, 0); return n > 0 ? n : fallback; };
     const ET = L.exposureTargets && typeof L.exposureTargets === 'object' ? L.exposureTargets : {};
     const defByLayer = DEFAULT_LEVERAGE.exposureTargets.byLayer;
     const byLayer = (Array.isArray(ET.byLayer) ? ET.byLayer : [])
-      .map((v, i) => { const n = finiteNum(v, -1); return n >= 0 ? n : (defByLayer[i] ?? defByLayer[defByLayer.length - 1]); });
+      .map((v, i) => posNum(v, defByLayer[i] ?? defByLayer[defByLayer.length - 1]));
     base.exposureTargets = {
       byLayer: byLayer.length ? byLayer : defByLayer.slice(),
-      hold: finiteNum(ET.hold, -1) >= 0 ? finiteNum(ET.hold, 0) : DEFAULT_LEVERAGE.exposureTargets.hold
+      hold: posNum(ET.hold, DEFAULT_LEVERAGE.exposureTargets.hold)
     };
   }
   // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
