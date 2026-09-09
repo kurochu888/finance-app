@@ -356,9 +356,9 @@ const DEFAULT_LEVERAGE = {
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
   tranches:[
-    { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'', repayments:[] },
-    { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'', repayments:[] },
-    { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'', repayments:[] }
+    { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
+    { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
+    { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] }
   ],
   core:{ label:'長期投資部位', amount:2000000, useDate:'', repayments:[] }
 };
@@ -2993,7 +2993,7 @@ function sampleData(){
     { back:0, pv:926030, loan:1000000, pnl:97000 }
   ].map(h => ({
     id: uid(), m: shiftMonth(m, -h.back), v: nw - h.back * 120000,
-    pv: h.pv, loan: h.loan, pnl: h.pnl, auto: true
+    pv: h.pv, pnl: h.pnl, loan: h.loan, auto: true
   }));
   s.leverage.marketHigh = 24000;
   s.leverage.marketCurrent = 21500;
@@ -3011,9 +3011,9 @@ function sampleData(){
   s.leverage.historicalHighValue = 2950000;
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
-    { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  fee:445, source:'cash', note:'定期投入' },
-    { id:uid(), date:back(3), symbol:'00675L', action:'buy', shares:600,   price:268.5, fee:230, source:'cash', note:'年終獎金加碼' },
-    { id:uid(), date:back(1), symbol:'00631L', action:'buy', shares:10000, price:34.8,  fee:496, source:'loan', note:'第一桶金動用' }
+    { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  amount:0, fee:445, source:'cash', note:'定期投入' },
+    { id:uid(), date:back(3), symbol:'00675L', action:'buy', shares:600,   price:268.5, amount:0, fee:230, source:'cash', note:'年終獎金加碼' },
+    { id:uid(), date:back(1), symbol:'00631L', action:'buy', shares:10000, price:34.8,  amount:0, fee:496, source:'loan', note:'第一桶金動用' }
   ];
   return s;
 }
