@@ -1880,9 +1880,16 @@ function renderHelp(){
       N+1 表示已經確認 HOLD——<strong>取兩檔裡比較保守(數字較小)的那個</strong>當整組現在的階段,
       因為兩檔經濟上幾乎是同一個賭注,一檔先轉弱就該一起保守,不各自獨立判斷。每個階段對應的目標曝險比例
       在<strong>「設定」分頁的「曝險目標設定」</strong>可以調。</p>
-      <p>算出目標曝險金額後,拿現在的部位淨值去反推「該投入多少錢」,給兩個邊界值——全部用現金要投入多少、
-      全部用房貸要投入多少(現金會墊高部位淨值,房貸不會,所以兩個數字不一樣)——實際要怎麼混用,自己決定,
-      這個分頁不會幫你自動借款或下單。差額算出來是負的,代表目前曝險已經超過目標,顯示成「可考慮減碼」。</p>
+      <p>算出目標曝險金額後,拿現在的部位淨值去反推「該投入多少錢」,給兩個方案:</p>
+      <ul>
+        <li><strong>方案A(現金)</strong>——自己拿新的錢出來買,等於幫這個部位多墊一筆本金(像買房付頭期款),
+        部位淨值會跟著漲</li>
+        <li><strong>方案B(房貸)</strong>——不拿新錢,直接借房貸額度買,買的東西(市值)跟欠的錢(借款餘額)
+        一起增加、互相抵銷,部位淨值不會漲</li>
+      </ul>
+      <p>同樣的目標曝險比例,方案A 因為部位淨值也跟著墊高,分母跟著變大,要投入的金額會比方案B 多——
+      不是算錯,是這兩種資金對「自己在這個部位裡佔多少」的影響本來就不一樣。實際要用哪個、還是兩個混著用,
+      自己決定,這個分頁不會幫你自動借款或下單。差額算出來是負的,代表目前曝險已經超過目標,顯示成「可考慮減碼」。</p>
     </div>
 
     <div class="sect">減碼訊號:撤退門檻</div>
@@ -2619,11 +2626,11 @@ function renderExposurePlanCard(){
         <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
           <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}(00631L/00675L 各半約 NT$ ${fmt(Math.abs(p.deltaLoan)/n)})</span></div>
       ` : (p.deltaLoan > 0.5 ? `
-        <div class="row sub"><span class="label">全部用現金約需投入</span>
+        <div class="row sub"><span class="label">方案A:自己拿新的錢出來買(現金)</span>
           <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + '(各半 NT$ ' + fmt(p.deltaCash/n) + ')'}</span></div>
-        <div class="row sub"><span class="label">全部用房貸約需投入</span>
+        <div class="row sub"><span class="label">方案B:直接借房貸額度買(不拿新錢)</span>
           <span class="val">NT$ ${fmt(p.deltaLoan)}(各半 NT$ ${fmt(p.deltaLoan/n)})</span></div>
-        ${p.deltaCash == null ? `<div class="muted" style="margin-top:6px;">這個目標曝險純用現金到不了,一定要動用部分房貸,實際比例自己決定。</div>` : ''}
+        <div class="muted" style="margin-top:6px;">兩個方案買到的部位一樣,但要花的錢不一樣:自己拿現金出來,等於幫這個部位多墊了一筆本金(像買房付頭期款),要花比較多錢才能把曝險比例撐到目標;直接借房貸,買的東西跟欠的錢一起增加、互相抵銷,不用墊本金,同樣的目標只要比較少的錢。實際要用哪個、還是兩個混著用,自己決定。${p.deltaCash == null ? '這次的目標純用現金到不了,至少要用方案B補足缺口。' : ''}</div>
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
       <div class="muted" style="margin-top:6px;">目標依「兩檔裡比較保守的那個」決定,不是各自獨立算。</div>
     </div>`;
