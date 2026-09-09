@@ -889,17 +889,31 @@ async function twseRows(url){
 /* 把 TWSE STOCK_DAY 一個月的資料列併入某標的的歷史收盤價:
    日期去重(同一天多次抓到,後寫入的蓋掉前面的)、依日期排序、裁切到 PRICE_HIST_KEEP。
    回補(backfillHistory)跟每次抓報價(fetchQuotes)都呼叫這個,不重複寫合併邏輯。 */
+/* 證交所 STOCK_DAY 給的是原始收盤價,沒有還原分割/反分割。正2 ETF 漲多了常會
+   分割降低單位淨值(00631L 就在 2026-03 分割過,一天內從 443 掉到 19,比例 0.0435)。
+   2 倍槓桿在最誇張的單日崩盤大概也不會腰斬到剩 4 成,所以拿「單日變動超過 40%」
+   當門檻夠安全,不會誤判成真的行情;抓到就把斷點之前的價格全部按同一個比例換算,
+   接成連續序列,不然均線會被這種假斷崖整個帶歪。 */
+function adjustForSplits(rows){
+  for (let i = 1; i < rows.length; i++){
+    const ratio = rows[i - 1].c > 0 ? rows[i].c / rows[i - 1].c : 1;
+    if (ratio > 0 && (ratio < 0.6 || ratio > 1.6)){
+      for (let j = 0; j < i; j++) rows[j].c = Math.round(rows[j].c * ratio * 10000) / 10000;
+    }
+  }
+  return rows;
+}
 function mergeHistory(hist, rows){
   const byDate = new Map((hist || []).map(h => [h.d, h.c]));
   (rows || []).forEach(row => {
     const d = rocToISO(row[0]);
     if (d) byDate.set(d, cleanNum(row[6]));
   });
-  return [...byDate.entries()]
+  const merged = [...byDate.entries()]
     .map(([d, c]) => ({ d, c }))
     .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
-    .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
-    .slice(-PRICE_HIST_KEEP);
+    .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
+  return adjustForSplits(merged).slice(-PRICE_HIST_KEEP);
 }
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
@@ -2499,7 +2513,7 @@ function stressBody(){
 function trendBadge(status){
   if (status === 'HOLD') return `<span class="badge green">HOLD 續抱</span>`;
   if (status === 'WAIT_RECOVER') return `<span class="badge amber">WAIT_RECOVER 接刀中</span>`;
-  return `<span class="badge gray">WATCH 資料不足</span>`;
+  return `<span class="badge gray">WATCH 尚未進場</span>`;   // 資料足夠但還沒等到趨勢確認,不等於資料不夠
 }
 function renderTrendTab(){
   const trends = computeAllTrends();

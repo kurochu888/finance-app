@@ -17,7 +17,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams };`);
+eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -93,6 +93,35 @@ console.log('defaultTrendParams:槓桿 >=2 用較慢的組合,1x 用較快的組
 const p2 = A.defaultTrendParams(2), p1 = A.defaultTrendParams(1);
 must(p2.maSlow > p1.maSlow, '正2 的慢線應該比 1x 慢(較不容易被洗出場)');
 must(p2.pyramidLevels >= p1.pyramidLevels, '正2 的加碼層數不該比 1x 少');
+console.log('  ok');
+
+console.log('mergeHistory:分割造成的假斷崖要被還原成連續序列(迴歸測試:00631L 2026-03 真實發生過)');
+(function testSplitAdjust(){
+  // 模擬 TWSE STOCK_DAY 的原始列格式:[ROC日期,量,額,開,高,低,收,漲跌,筆數]
+  const rocRow = (rocDate, close) => [rocDate, '0', '0', '0', '0', '0', String(close), '0', '0'];
+  // 分割前:緩緩上漲到 443 附近;分割後(比例 0.0435,近似 00631L 實際發生的那次):接著從 19 附近開始
+  const before = [];
+  for (let i = 0; i < 10; i++) before.push(rocRow(`115/03/${String(10+i).padStart(2,'0')}`, 420 + i * 2.5));
+  const after = [];
+  for (let i = 0; i < 5; i++) after.push(rocRow(`115/04/${String(1+i).padStart(2,'0')}`, 19 + i * 0.3));
+
+  let hist = A.mergeHistory([], before);
+  must(hist.length === 10, '分割前的資料筆數不對(得到 ' + hist.length + ')');
+  hist = A.mergeHistory(hist, after);   // 模擬回補時逐月合併,分割後的資料在下一次合併才進來
+  must(hist.length === 15, '合併後總筆數不對(得到 ' + hist.length + ')');
+
+  let maxJump = 0;
+  for (let i = 1; i < hist.length; i++){
+    const ratio = hist[i].c / hist[i - 1].c;
+    maxJump = Math.max(maxJump, Math.abs(ratio - 1));
+  }
+  console.log('  還原後最大單日變動幅度:', (maxJump * 100).toFixed(1) + '%');
+  must(maxJump < 0.4, '分割斷崖沒有被還原,均線會被這個假訊號帶歪(最大單日變動 ' + (maxJump*100).toFixed(1) + '%)');
+
+  const oldPrice = hist[0].c;
+  console.log('  分割前第一筆原始收盤 420,還原後變成', oldPrice.toFixed(2), '(應該跟分割後的價格尺度接近,不是 420)');
+  must(oldPrice < 30, '分割前的價格沒有被換算到跟分割後同一個尺度(得到 ' + oldPrice.toFixed(2) + ')');
+})();
 console.log('  ok');
 
 console.log();
