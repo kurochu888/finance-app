@@ -13,6 +13,7 @@ tests/run.sh         # 跑全部測試
 | `hunt.js` | 邊界情況:空白或重複的標的代號、刪掉還有紀錄的標的、賣超過持股、未來日期的還款、負數輸入 |
 | `charts.js` | 圖表:兩點、一年 250 點、滿載 1000 點、全等值、負數、極大極小、有缺洞;檢查座標不跑出畫布、沒有 NaN、可點區域數量,以及點下去說明列與游標線會不會跟著動 |
 | `trend.js` | 均線趨勢訊號(`computeTrend`)、分割還原(`mergeHistory`)、`normalize()` 防呆、曝險目標的代數解(`computeExposurePlan`)|
+| `backtest.js` | 策略回測引擎:`walkTrend` 跟 `computeTrend` 的等價性、`simulateLeveragedPath` 的槓桿複利、`blockBootstrapSample` 的可重現性與區塊連續性、`runMonteCarlo` 的邊界情況 |
 | `audit.js` | 版面密度盤點:每個小分頁有幾張卡、幾個大字、幾段說明、多少字。不是通過/失敗,是給人看的數字,用來檢查有沒有又變雜亂。**故意不放進 `run.sh`**,要看的話手動 `node tests/audit.js` |
 | `cloud.js` | 雲端同步(假後端):首次拉取、寫入回音、別台改動、打字中先擱著、寫入失敗、壞資料防護、匯入驗證 |
 | `help.js` | 說明頁與程式是否一致:手續費率、證交稅、快照與備份份數、報價過期天數、空間提醒門檻,以及說明裡提到的功能位置(例如「還款在紀錄分頁」)是否真的如此 |
