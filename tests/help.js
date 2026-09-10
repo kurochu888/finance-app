@@ -40,11 +40,6 @@ must(Math.abs(sellFee - (1000000 * 0.001425 + 1000000 * 0.001)) < 1, '賣出證�
 must(doc.includes('0.1% 證交稅'), '證交稅沒寫在說明裡');
 console.log('  賣出加 0.1% 證交稅 ✓');
 
-// 撤退門檻 8%
-must(appJs.includes('accrue(t, 8)'), '程式的撤退門檻累加率不是 8%');
-must(doc.includes('8%'), '說明沒寫 8%');
-console.log('  撤退門檻每年 8% ✓');
-
 // 快照與備份份數
 must(A.DAILY_KEEP_ === 1000 && doc.includes('1000 個交易日'), '每日快照上限與說明不符(程式 ' + A.DAILY_KEEP_ + ')');
 must(A.BACKUP_KEEP_ === 30 && doc.includes('雲端留 30 份'), '雲端備份份數與說明不符(程式 ' + A.BACKUP_KEEP_ + ')');
@@ -62,15 +57,18 @@ console.log('  報價過期 5 天 / 空間提醒 75% ✓');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
 const where = {};
-['overview','signal','trend','log','setup'].forEach(t => {
+['overview','signal','log','setup'].forEach(t => {
   A.levTab = t; A.renderAll();
   where[t] = store.content.innerHTML;
 });
 must(where.log.includes('記一筆還款'), '說明說還款在「紀錄」分頁,實際找不到');
 must(!where.signal.includes('記一筆還款'), '還款不該出現在「訊號」分頁');
+must(where.log.includes('房貸動用記錄'), '說明說房貸動用記錄在「紀錄」分頁,實際找不到');
+must(!where.signal.includes('房貸動用記錄'), '房貸動用記錄不該出現在「訊號」分頁');
 must(where.setup.includes('持股與報價'), '說明說持股與報價在「設定」分頁,實際找不到');
-must(where.setup.includes('桶金設定'), '說明說桶金設定在「設定」分頁,實際找不到');
-must(where.setup.includes('撤退門檻設定'), '說明說撤退門檻設定在「設定」分頁,實際找不到');
+must(where.setup.includes('曝險目標設定'), '說明說曝險目標設定在「設定」分頁,實際找不到');
+must(where.signal.includes('均線趨勢訊號') && where.signal.includes('正2 曝險目標') && where.signal.includes('壓力測試'),
+     '說明說訊號分頁該有趨勢訊號/曝險目標/壓力測試,實際找不到');
 console.log('  說明提到的分頁位置都對得上 ✓');
 
 // 提醒文案要與實際訊息一致

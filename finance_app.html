@@ -344,14 +344,14 @@ const DEFAULT_LEVERAGE = {
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
   tranches:[
-    { id:'t1', label:'第一桶金', thresholdPct:-20, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
-    { id:'t2', label:'第二桶金', thresholdPct:-32, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
-    { id:'t3', label:'第三桶金', thresholdPct:-45, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] }
+    { id:'t1', label:'動用記錄 1', thresholdPct:-20, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
+    { id:'t2', label:'動用記錄 2', thresholdPct:-32, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
+    { id:'t3', label:'動用記錄 3', thresholdPct:-45, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] }
   ],
-  core:{ label:'長期投資部位', amount:2000000, useDate:'', repayments:[] },
+  core:{ label:'長期投資部位', amount:2000000, useDate:'', note:'', repayments:[] },
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
-     跟趨勢分頁的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。 */
+     跟均線趨勢訊號的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。 */
   exposureTargets: { byLayer:[65, 130], hold:130 }
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
@@ -473,7 +473,7 @@ function normalize(raw){
   if (Array.isArray(L.tranches) && L.tranches.length){
     base.tranches = L.tranches.map((t, i) => ({
       id: t.id || ('t' + (i+1)),
-      label: String(t.label || ('第' + (i+1) + '桶金')),
+      label: String(t.label || ('動用記錄 ' + (i+1))),
       thresholdPct: num(t.thresholdPct),
       amount: Math.max(0, num(t.amount)),
       useDate: String(t.useDate || ''),
@@ -513,6 +513,7 @@ function normalize(raw){
       label: String(L.core.label || '長期投資部位'),
       amount: num(L.core.amount),
       useDate: String(L.core.useDate || ''),
+      note: String(L.core.note || ''),
       repayments: (Array.isArray(L.core.repayments) ? L.core.repayments : [])
         .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
     };
@@ -1353,19 +1354,9 @@ function computeStress(d){
   })();
   const newCapacity = newEquity + L.creditLimit;
 
-  const index = L.marketCurrent;
-  const newIndex = index ? index * (1 - decline / 100) : 0;
-  const wouldTrigger = (newIndex && L.marketHigh)
-    ? r.tranches.filter(t => !t.used && newIndex <= t.triggerLevel)
-    : [];
-  const needCash = sum(wouldTrigger, t => t.amount);
-  const newInterest = (k.loan + needCash) * (L.annualRate / 100) / 12;
-
   return {
     decline, pv: k.pv, newPv, loss, equity: k.equity, newEquity,
-    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0,
-    index, newIndex,
-    wouldTrigger, needCash, interest: k.monthlyInterest, newInterest
+    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0
   };
 }
 
@@ -1443,7 +1434,6 @@ function monthNav(){
 
 function renderAll(){
   clearPosMemo();
-  maybeUpdateHigh();
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
@@ -1477,35 +1467,20 @@ function renderOverview(){
   const catList = Object.keys(cats).map(k => ({ name:k, amount:cats[k] })).sort((a,b) => b.amount - a.amount);
   const isEmpty = !state.assets.length && !state.liabilities.length && !state.transactions.length;
 
-  const lev = computeLeverage();
-  const triggeredUnused = lev.tranches.filter(t => t.triggered && !t.used);
-  const alerts = [];
-  if (lev.exitReached){
-    alerts.push(`
-      <div class="alert red">
-        <span class="ai">⚡</span>
-        <div>
-          <div class="at">已達撤退門檻,可開始慢慢減碼</div>
-          <div class="ad">
-            自己的錢已值 NT$ ${fmt(lev.equityValue)},超過門檻 NT$ ${fmt(lev.exitThreshold)}。
-            <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
-          </div>
-        </div>
-      </div>`);
-  }
-  if (triggeredUnused.length){
-    alerts.push(`
+  const alerts = trendChanges().map(t => {
+    const it = findInstrumentByKey(t.key);
+    return `
       <div class="alert amber">
-        <span class="ai">📉</span>
+        <span class="ai">🔔</span>
         <div>
-          <div class="at">${triggeredUnused.map(t => esc(t.label)).join('、')}已觸發</div>
+          <div class="at">${esc(it.id || it.name)} 狀態變成${t.status === 'HOLD' ? '續抱(HOLD)' : t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}</div>
           <div class="ad">
-            大盤跌到觸發點位以下,但這${triggeredUnused.length > 1 ? '幾' : ''}桶還沒填動用日期。
+            原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。
             <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
           </div>
         </div>
-      </div>`);
-  }
+      </div>`;
+  });
 
   const chart = lineChart('nw', hist.map(h => shortMonth(h.m)), [
     { name:'淨資產', color:'var(--accent)', values: hist.map(h => h.v) }
@@ -1814,65 +1789,47 @@ function renderHelp(){
 
     <div class="sect">槓桿頁怎麼逛</div>
     <div class="card doc">
-      <p>槓桿頁分成五個小分頁,上方可以切換:</p>
+      <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
         <li><strong>概況</strong> — 每天看這頁就好:整體損益、年化報酬、曝險,以及兩張走勢圖</li>
-        <li><strong>訊號</strong> — 該不該動用房貸:桶金觸發狀態、撤退門檻、壓力測試</li>
-        <li><strong>趨勢</strong> — 每檔標的現在該續抱還是該跑:均線趨勢訊號</li>
-        <li><strong>紀錄</strong> — 買賣與還款,記完就走</li>
-        <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、房貸額度與利率、桶金門檻、歷史最高市值</li>
+        <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完</li>
+        <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
+        <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
       </ul>
     </div>
 
-    <div class="sect">整體邏輯:兩套系統各管什麼</div>
+    <div class="sect">整體邏輯</div>
     <div class="card doc">
       <p>用房屋擔保額度買槓桿部位,不是券商融資——大盤再怎麼跌,只要利息付得出來,
       部位就不會在最差的時間點被迫賣掉。所以這裡真正要處理的風險,不是「會不會斷頭」,
-      而是<strong>「會不會抱著一個被複利耗損吃掉的槓桿部位,等上超乎預期的時間」</strong>。
-      這個 app 用兩套刻意分開、各管各的系統來處理這件事:</p>
-      <ul>
-        <li><strong>桶金系統(訊號分頁)</strong> — 回答「大盤跌到這個深度,值不值得動用房貸」。
-        用跌幅分層決定要不要出手、出手多少,但<strong>沒有出場機制</strong>:一旦動用就是打算抱到
-        撤退門檻,遇到乾脆的下跌反彈(V 型)沒問題,遇到磨人的長期盤整,可能要抱好幾年甚至十幾年。</li>
-        <li><strong>趨勢分頁</strong> — 回答「手上已經有的部位,現在該續抱還是該跑」,跟要不要動用
-        房貸無關。用均線趨勢確認取代死抱,遇到趨勢真的轉弱會主動出場,避免陷入桶金系統那種
-        「不知道要抱多久」的陷阱,代價是可能提早出場、少賺後段反彈,或是遇到假訊號來回小賠。</li>
-      </ul>
-      <p>兩套系統不會互相覆蓋,也不會互相取代——今天大盤跌幅觸發了某一桶,不代表趨勢分頁就該顯示
-      HOLD;趨勢分頁顯示 HOLD,也不代表桶金系統的撤退門檻就達標。各自看各自的訊號。</p>
+      而是<strong>「會不會抱著一個被複利耗損吃掉的槓桿部位,等上超乎預期的時間」</strong>。</p>
+      <p>判斷該不該動的,是「訊號」分頁的<strong>均線趨勢訊號</strong>(現在該續抱還是該跑)跟
+      <strong>正2 曝險目標</strong>(該投入/該減碼多少錢)這兩層;真正借了多少、什麼時候借的,
+      記在「紀錄」分頁的<strong>房貸動用記錄</strong>裡——這是純粹的帳本,不判斷該不該借,
+      借款餘額跟利息都是從這本帳算出來的。</p>
     </div>
 
     <div class="sect">訊號怎麼接到實際買賣</div>
     <div class="card doc">
-      <p><strong>兩個分頁都只是判斷依據,不會自動下單、不會自動動用或償還房貸。</strong>
+      <p><strong>訊號分頁只是判斷依據,不會自動下單、不會自動動用或償還房貸。</strong>
       真正的錢要不要動,永遠是你自己決定,程式只負責把訊號算給你看。</p>
-      <h4>看到買進訊號(桶金觸發,或趨勢分頁的 RECOVER / ADD)</h4>
+      <h4>看到買進訊號(RECOVER / ADD,或曝險目標卡片顯示該加碼)</h4>
       <p>先在現實裡真的買進,再回來<strong>「紀錄」分頁</strong>記一筆買進。如果這筆錢是房貸借來的,
-      買賣紀錄的來源要選「房貸借款」,同時到<strong>「訊號」分頁</strong>把對應那桶(或長期投資部位)
-      的動用日期與金額更新——借款餘額跟利息都是從桶金的動用紀錄算出來的,不是從買賣紀錄自動推算,
+      買賣紀錄的來源要選「房貸借款」,同時在<strong>同一個分頁的「房貸動用記錄」</strong>把對應那筆
+      的動用日期與金額更新——借款餘額跟利息都是從動用記錄算出來的,不是從買賣紀錄自動推算,
       這兩邊要自己保持一致。「借款與利息」卡片會在兩邊金額對不起來時跳提醒,可以拿來對帳。</p>
-      <h4>看到出場訊號(趨勢分頁的 EXIT)</h4>
+      <h4>看到出場訊號(EXIT,或曝險目標卡片顯示已超過目標)</h4>
       <p>賣掉之後一樣要到「紀錄」分頁記一筆賣出。<strong>賣出的錢要不要拿去還房貸,是你自己的選擇</strong>:
-      想降低借款餘額就到「訊號」分頁記一筆還款;想留著現金等下次 RECOVER 訊號再買回,就先不記還款。</p>
-      <p>簡單說:趨勢分頁的每一層加碼(ADD),對應到現實裡就是一次動用房貸額度的買進;每一次 EXIT,
-      就是一次要不要順便還款的賣出決定。哪一筆買賣該算進哪一桶,目前完全靠自己記得住,程式不會幫忙配對。</p>
+      想降低借款餘額就記一筆還款;想留著現金等下次 RECOVER 訊號再買回,就先不記還款。</p>
+      <p>簡單說:趨勢訊號的每一層加碼(ADD),對應到現實裡就是一次動用房貸額度的買進;每一次 EXIT,
+      就是一次要不要順便還款的賣出決定。哪一筆買賣該算進哪一筆動用記錄,目前完全靠自己記得住,
+      程式不會幫忙配對。</p>
     </div>
 
-    <div class="sect">加碼訊號</div>
+    <div class="sect">均線趨勢訊號</div>
     <div class="card doc">
-      <p>大盤的歷史最高點與即時點位填在「訊號」分頁;每桶金的跌幅門檻與可動用金額
-      在<strong>「設定」分頁的「桶金設定」</strong>(預設 −20% / −32% / −45%,各 100 萬):</p>
-      <div class="formula">觸發點位 = 大盤歷史最高點 × (1 + 跌幅門檻)</div>
-      <p>大盤即時點位跌到觸發點位以下,那一桶就顯示「已觸發」,總覽也會跳提示。</p>
-      <p><strong>觸發不等於已動用。</strong>真的去銀行動用了,才填「實際動用日期」——
-      填了才會計入借款餘額、利息與撤退門檻。可以順便記下當時的大盤點位和買了什麼。</p>
-    </div>
-
-    <div class="sect">趨勢分頁:均線訊號</div>
-    <div class="card doc">
-      <p>桶金系統回答的是「該不該動用房貸」;趨勢分頁回答的是另一個獨立的問題——
-      <strong>手上已經有的部位,現在該續抱還是該跑</strong>,跟房貸動用與否無關,兩套系統並存、互不影響。</p>
-      <p>每檔標的用自己的快線(短天期均線)與慢線(長天期均線)判斷三種狀態:</p>
+      <p>回答「手上已經有的部位,現在該續抱還是該跑」,跟房貸動用與否無關。
+      每檔標的用自己的快線(短天期均線)與慢線(長天期均線)判斷三種狀態:</p>
       <ul>
         <li><strong>HOLD</strong> — 價格站上快線、趨勢確認,續抱</li>
         <li><strong>WAIT_RECOVER</strong> — 出場後還沒重新站上趨勢,依「加碼間距」分批試水</li>
@@ -1881,7 +1838,7 @@ function renderHelp(){
       <div class="formula">HOLD 時:收盤 &lt; 快線 × 出場緩衝 → 出場,轉入 WAIT_RECOVER
 非 HOLD 時:站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
            否則,跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
-      <p>均線需要的歷史收盤價要先在<strong>「趨勢」分頁</strong>按「回補歷史價格」抓一次
+      <p>均線需要的歷史收盤價要先在<strong>「訊號」分頁</strong>按「回補歷史價格」抓一次
       (逐月依序抓,不會同時對證交所發一串請求);之後每次更新報價會順便累積,不用常按。
       快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
       改壞了按「重設為預設值」就好。</p>
@@ -1889,7 +1846,7 @@ function renderHelp(){
       這個分頁只負責告訴你現在是什麼狀態、距離出場線還有多少緩衝。</p>
     </div>
 
-    <div class="sect">趨勢分頁:正2 曝險目標</div>
+    <div class="sect">正2 曝險目標</div>
     <div class="card doc">
       <p>趨勢訊號告訴你「該不該動」,但沒告訴你「該投入多少錢」——曝險目標補這一塊,只管正2
       (槓桿倍數剛好等於 2 的標的),用「總覽」頁本來就有的曝險比例公式當標準:</p>
@@ -1910,44 +1867,16 @@ function renderHelp(){
       自己決定,這個分頁不會幫你自動借款或下單。差額算出來是負的,代表目前曝險已經超過目標,顯示成「可考慮減碼」。</p>
     </div>
 
-    <div class="sect">減碼訊號:撤退門檻</div>
-    <div class="card doc">
-      <div class="formula">撤退門檻 = 歷史最高市值 + Σ(各桶金依實際餘額每年累加 8%)</div>
-      <p>意思是:光是漲回前高還不夠,還要多賺出這段時間借錢的機會成本,才算真的解套。
-      <strong>借越久,門檻自己會越爬越高。</strong>${esc(L.core.label)}視為長期持有,不列入。</p>
-      <h4>拿「自己的錢」去比,不是總市值</h4>
-      <div class="formula">自己的錢 = 部位市值
-           − 借款餘額
-           + 賣出與配息取回
-           − 已還款
-           − 動用後新投入的自有資金</div>
-      <p>如果拿總市值去比,兩個方向都會錯:</p>
-      <ul>
-        <li>借錢買進時總市值立刻跳升一筆借款金額,門檻卻只加了 8% 的成本 ——
-        <strong>借完的當下就假性達標</strong></li>
-        <li>賣出之後總市值被削掉,門檻仍錨在原本的部位規模 ——
-        <strong>減碼之後訊號永遠不會再亮</strong></li>
-      </ul>
-      <p>最後一項「減動用後新投入的自有資金」也是必要的:動用之後再拿薪水加碼,部位會變大,
-      但那是新的錢,不是部位漲回來。</p>
-      <h4>歷史最高市值</h4>
-      <ul>
-        <li><strong>動用桶金之前</strong>:自動記錄新高,不用自己維護</li>
-        <li><strong>動用之後</strong>:凍結,成為要漲回去的目標</li>
-        <li>把動用日期清掉(例如已經出場),又會恢復記錄新高</li>
-        <li>在<strong>「設定」分頁的「撤退門檻設定」</strong>可以改成手動,或直接修正填錯的數字</li>
-      </ul>
-    </div>
-
     <div class="sect">借款與還款</div>
     <div class="card doc">
-      <div class="formula">借款餘額 = 各桶動用金額 − 已還款
+      <div class="formula">借款餘額 = 各筆動用記錄的金額 − 已還款
 每月利息 = 借款餘額 × 年利率 ÷ 12</div>
-      <p>減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也失真。
-      還款記在<strong>「紀錄」分頁</strong>:選哪一筆桶金、填日期與金額。下面會列出所有還款,
-      可以修改或刪除,每桶的動用/已還/尚欠也一併顯示。</p>
-      <p>全部還清後不再計息,撤退訊號也會關閉(沒有槓桿就沒什麼好撤),
-      但動用紀錄與還款歷史都保留。</p>
+      <p>看到買進訊號、實際動用房貸買進之後,到<strong>「紀錄」分頁的「房貸動用記錄」</strong>
+      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息。
+      減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也會失真。
+      還款一樣記在「紀錄」分頁:選哪一筆動用記錄、填日期與金額,下面會列出所有還款,
+      可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
+      <p>全部還清後不再計息,但動用紀錄與還款歷史都保留。</p>
       <p>年利率是你填的假設值,實際以銀行核定為準。打開「每月自動記入支出」的話,
       每月會在記帳自動產生一筆「房貸利息」;你把那筆刪掉,那個月不會被補記。</p>
     </div>
@@ -1957,15 +1886,15 @@ function renderHelp(){
       <p>資料來源是<strong>臺灣證券交易所公開資訊</strong>,抓的是<strong>最近一個交易日的收盤價</strong>,
       不是盤中即時報價。上市櫃代號都查得到。</p>
       <p>開啟 app 時自動更新(一小時最多一次),也可以手動按「從證交所更新收盤價」。
-      超過 5 天沒更新會提醒你 —— 因為損益、曝險、撤退門檻全都是用那組價算的。</p>
+      超過 5 天沒更新會提醒你 —— 因為損益、曝險、曝險目標全都是用那組價算的。</p>
       <p><em>股數不會自動抓。</em>有買賣紀錄的話由紀錄自動加總,沒有的話要自己填。</p>
     </div>
 
     <div class="sect">壓力測試</div>
     <div class="card doc">
       <p>輸入假設的大盤跌幅,各標的<strong>依自己的槓桿倍數</strong>換算(正2 跌兩倍),
-      算出部位市值、部位淨值、曝險比例的前後對照,並列出這個跌幅會觸發哪幾桶金、
-      總共要準備多少錢、屆時月息變多少。</p>
+      算出部位市值、部位淨值、曝險比例的前後對照,並拿這個情境下的曝險比例對照目前正2 曝險目標的目標值,
+      看是還在目標之內還是會超過。</p>
       <p><em>沒有計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常比這裡算的更差。</em></p>
     </div>
 
@@ -2004,7 +1933,7 @@ function renderHelp(){
         檢查股數或日期是不是填錯。</li>
         <li><strong>代號和上面某一列重複了</strong> — 兩列填了同一個股票代號,重複的那列不計入市值,
         否則買賣紀錄會被算兩次。</li>
-        <li><strong>報價已經 N 天沒更新</strong> — 損益、曝險、撤退門檻都是用那組舊價算的,按更新抓最新的。</li>
+        <li><strong>報價已經 N 天沒更新</strong> — 損益、曝險、曝險目標都是用那組舊價算的,按更新抓最新的。</li>
         <li><strong>這台裝置的瀏覽器空間快滿了</strong> — 備份份數會自動減少以保住主資料,
         建議登入 Google 帳號改用雲端,或先匯出一份留底。</li>
       </ul>
@@ -2033,18 +1962,13 @@ function computeLeverage(){
   });
   const totalValue = sum(holdings, h => h.value);
 
-  const tranches = L.tranches.map(t => {
-    const triggerLevel = L.marketHigh * (1 + t.thresholdPct/100);
-    const triggered = L.marketHigh > 0 && L.marketCurrent > 0 && L.marketCurrent <= triggerLevel;
-    return {
-      ...t,
-      triggerLevel, triggered,
-      used: !!t.useDate,
-      repaid: repaidOf(t),
-      balance: outstanding(t),
-      yearsUsed: daysSince(t.useDate)/365.25
-    };
-  });
+  const tranches = L.tranches.map(t => ({
+    ...t,
+    used: !!t.useDate,
+    repaid: repaidOf(t),
+    balance: outstanding(t),
+    yearsUsed: daysSince(t.useDate)/365.25
+  }));
 
   const usedTranches = tranches.filter(t => t.used);
   const coreBalance = outstanding(L.core);
@@ -2053,13 +1977,10 @@ function computeLeverage(){
   const coreUsed = !!L.core.useDate;
 
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
-  // 撤退門檻的 8% 也依實際餘額累積,還款之後不再照原始金額計算
-  const exitThreshold = L.historicalHighValue + sum(L.tranches, t => accrue(t, 8));
 
-  /* 拿「自己的錢」跟門檻比,不能拿總市值:
-       總市值含借來的錢 → 一借完就假性達標
-       賣掉之後總市值變小 → 訊號永遠不會再亮
-     自己的錢 = 市值 − 借款餘額 + 已取回的現金 − 已還款 − 凍結後新投入的自有資金 */
+  /* 「自己的錢」(equityValue)給每日/每月快照記錄部位淨值走勢用,不能拿總市值代替:
+       總市值含借來的錢,不能反映真正屬於自己的部分;
+     自己的錢 = 市值 − 借款餘額 + 已取回的現金 − 已還款 − 動用後新投入的自有資金 */
   const freezeDate = L.tranches.filter(t => t.useDate).map(t => t.useDate).sort()[0] || '';
   let cashBack = 0, ownAfter = 0;
   if (freezeDate){
@@ -2073,22 +1994,17 @@ function computeLeverage(){
   const repaidTotal = sum(L.tranches, t => repaidOf(t)) + repaidOf(L.core);
   const equityValue = totalValue - usedAmount + cashBack - repaidTotal - ownAfter;
 
-  // 沒有還在欠的借款就沒有槓桿要撤,不論市值多高都不該亮燈
-  const anyUsed = usedAmount > 0;
-  const exitReached = anyUsed && L.historicalHighValue > 0 && equityValue >= exitThreshold;
-
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
   return { holdings, totalValue, tranches, usedAmount, drawnAmount, coreBalance, coreUsed, monthlyInterest,
-           exitThreshold, exitReached, anyUsed, equityValue, cashBack, ownAfter, repaidTotal,
+           equityValue, cashBack, ownAfter, repaidTotal,
            positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
 
 /* ===================== 均線趨勢訊號 =====================
-   跟上面的桶金/撤退門檻系統是兩套獨立邏輯,並存、互不影響——
-   桶金系統管的是「該不該動用房貸」,這裡管的是「現在該續抱還是該跑」。
+   桶金動用記錄管的是「借了多少、什麼時候借的」這本帳,這裡管的是「現在該續抱還是該跑」。
    狀態:WATCH(還沒進場)→ WAIT_RECOVER(接刀中,部分加碼)→ HOLD(趨勢確認,滿倉續抱)。
    HOLD 時只看會不會 EXIT;非 HOLD 時先看會不會 RECOVER(優先),再看會不會 ADD。
 
@@ -2184,34 +2100,6 @@ function computeExposurePlan(){
     deltaLoan: raw / L,
     instruments: lev2.map(it => it.key)
   };
-}
-
-/* 自動記錄看過的最高總市值。只在欄位輸入完成(change)或重畫時檢查,
-   避免打字打到一半的中間值被記成新高。 */
-function exitBadge(r){
-  if (!r.anyUsed) return `<div class="badge gray">尚未動用桶金,暫不適用</div>`;
-  return r.exitReached
-    ? `<div class="badge red">已達撤退門檻,可開始慢慢減碼</div>`
-    : `<div class="badge gray">尚未達撤退門檻</div>`;
-}
-
-/* 動用桶金之前持續記錄新高;一旦動用就凍結 —— 撤退要比的是「下跌前的高點」,
-   高點若跟著現價跑,門檻永遠追不上,訊號就永遠不會亮。 */
-function maybeUpdateHigh(){
-  const L = state.leverage;
-  if (!L.autoHigh) return false;
-  const r = computeLeverage();
-  if (r.anyUsed) return false;          // 已動用:凍結為撤退目標
-  if (r.totalValue > 0 && r.totalValue > L.historicalHighValue + 0.5){
-    L.historicalHighValue = Math.round(r.totalValue);
-    scheduleSave();
-    return true;
-  }
-  return false;
-}
-function syncHighInput(){
-  const el = document.querySelector('[data-k="lev-historicalHighValue"]');
-  if (el && document.activeElement !== el) el.value = state.leverage.historicalHighValue || '';
 }
 
 /* 通用折線圖。series: [{name, color, values}],values 對齊 labels,可含 null。
@@ -2513,10 +2401,43 @@ function renderTrades(){
 }
 
 function levTabs(){
-  const t = [['overview','概況'], ['signal','訊號'], ['trend','趨勢'], ['log','紀錄'], ['setup','設定']];
+  const t = [['overview','概況'], ['signal','訊號'], ['log','紀錄'], ['setup','設定']];
   return `<div class="subtabs"><div class="seg">
     ${t.map(([v, label]) => `<button class="seg-btn ${levTab === v ? 'on' : ''}" data-act="lev-tab" data-v="${v}">${label}</button>`).join('')}
   </div></div>`;
+}
+
+/* 房貸動用記錄:借了多少、什麼時候借的這本帳,借款餘額跟利息都是從這裡算出來的。
+   純記帳,不判斷該不該借——該不該借看「訊號」分頁的趨勢訊號跟曝險目標。 */
+function renderDrawRecords(){
+  const L = state.leverage;
+  const r = computeLeverage();
+  const row = (t, dateKey, amtKey, noteKey) => `
+    <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
+      <div class="row">
+        <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
+        <span class="badge ${t.useDate ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
+          t.useDate ? (t.balance ? '動用中' : '已還清') : '未動用'}</span>
+      </div>
+      ${t.useDate ? `
+        <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
+          <span class="val ${t.balance ? '' : 'pos'}" id="out-balance-${t.id}">${t.balance ? 'NT$ ' + fmt(t.balance) : '已還清'}</span></div>
+        <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
+      ` : ''}
+      <div class="grid2">
+        <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="${dateKey}" value="${esc(t.useDate)}"></div>
+        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="${amtKey}" value="${t.amount || ''}"></div>
+      </div>
+      <div class="field"><label>備註(買了什麼)</label><input data-k="${noteKey}" value="${esc(t.note || '')}" placeholder="00631L 27,000 股"></div>
+    </div>`;
+  return `
+    <div class="card">
+      <h3>房貸動用記錄</h3>
+      <div class="notice" style="margin-bottom:10px;">按「訊號」分頁的趨勢/曝險目標實際買進之後,在這裡記一筆動用金額——借款餘額跟利息都是從這裡算的,不是自動推算。</div>
+      ${r.tranches.map(t => row(t, `tr-date-${t.id}`, `tr-amt-${t.id}`, `tr-note-${t.id}`)).join('')}
+      ${row({ ...L.core, id:'core', balance:r.coreBalance, useDate:L.core.useDate,
+              yearsUsed: daysSince(L.core.useDate)/365.25 }, 'core-date', 'core-amt', 'core-note')}
+    </div>`;
 }
 
 /* 還款紀錄:原本夾在各桶金裡,搬成獨立的一張卡 */
@@ -2543,7 +2464,7 @@ function renderRepayments(){
         </div>
         <button class="btn solid" data-act="add-repay2">新增還款</button>
         ${repayError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(repayError)}</div>` : ''}
-      ` : `<div class="empty">還沒有動用中的桶金。<br>到「訊號」填了動用日期之後,這裡才能記還款。</div>`}
+      ` : `<div class="empty">還沒有動用中的記錄。<br>在上面「房貸動用記錄」填了動用日期之後,這裡才能記還款。</div>`}
     </div>
 
     <div class="card">
@@ -2564,34 +2485,6 @@ function renderRepayments(){
     </div>`;
 }
 
-function renderTrancheSetup(){
-  const L = state.leverage;
-  return `
-    <div class="card">
-      <h3>桶金設定</h3>
-      ${L.tranches.map(t => `
-        <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
-          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span><span class="val"></span></div>
-          <div class="grid2">
-            <div class="field"><label>跌幅門檻(%)</label><input type="number" inputmode="decimal" data-k="tr-pct-${t.id}" value="${t.thresholdPct}"></div>
-            <div class="field"><label>可動用金額</label><input type="number" inputmode="decimal" data-k="tr-amt-${t.id}" value="${t.amount || ''}"></div>
-          </div>
-        </div>`).join('')}
-      <div class="field"><label>${esc(L.core.label)}可動用金額</label><input type="number" inputmode="decimal" data-k="core-amt" value="${L.core.amount || ''}"></div>
-      <div class="notice">跌幅門檻是相對大盤歷史最高點。動用日期在「訊號」分頁填。</div>
-    </div>
-
-    <div class="card">
-      <h3>撤退門檻設定</h3>
-      <div class="field"><label>歷史最高市值</label><input type="number" inputmode="decimal" data-k="lev-historicalHighValue" value="${L.historicalHighValue || ''}"></div>
-      <button class="btn quiet" data-act="toggle-autohigh">${L.autoHigh ? '✓ 自動記錄新高' : '手動輸入(點此改為自動)'}</button>
-      <div class="muted" style="margin-top:6px;">${!L.autoHigh
-        ? '目前不會自動更新,新高要自己填。'
-        : computeLeverage().anyUsed
-          ? '已凍結 — 桶金動用後,這個高點就是要漲回去的目標,不再跟著市值變動。'
-          : '總市值創新高時自動更新。等你動用桶金,它會凍結成撤退目標。填錯可直接改成正確數字。'}</div>
-    </div>`;
-}
 
 
 /* 壓力測試的內容獨立成函式,輸入跌幅時可以只更新這一塊 */
@@ -2599,26 +2492,21 @@ function stressBody(){
   const L = state.leverage;
   const st = computeStress(L.stressDeclinePct);
   if (!st) return `<div class="empty">先填入持股與股價,或記幾筆買賣,才算得出來。</div>`;
+  const plan = computeExposurePlan();
   return `
   <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
   <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
   <div class="row"><span class="label">部位淨值(自己的錢)</span>
     <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
-  <div class="row"><span class="label">曝險比例</span>
-    <span class="val ${st.newRatio > 100 ? 'neg' : ''}">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
-  ${st.newIndex ? `<div class="row"><span class="label">大盤點位</span><span class="val">${fmt(st.index)} → ${fmt(st.newIndex)}</span></div>` : ''}
-  ${st.wouldTrigger.length ? `
-    <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
-      <div class="row"><span class="label" style="font-weight:700; color:var(--text);">這個跌幅會觸發</span>
-        <span class="val" style="font-weight:800;">NT$ ${fmt(st.needCash)}</span></div>
-      ${st.wouldTrigger.map(t => `<div class="row"><span class="muted">${esc(t.label)}(${t.thresholdPct}%)</span><span class="muted">NT$ ${fmt(t.amount)}</span></div>`).join('')}
-      <div class="row"><span class="label">屆時每月利息</span><span class="val">NT$ ${fmt(st.newInterest)}(現在 ${fmt(st.interest)})</span></div>
-    </div>` : (st.newIndex ? `<div class="muted" style="margin-top:10px;">這個跌幅還不會觸發任何一桶金。</div>` : '')}
+  <div class="row"><span class="label" style="font-weight:700;">曝險比例</span>
+    <span class="val" style="font-weight:800;">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
+  ${plan ? `<div class="row sub"><span class="label">對照目前正2曝險目標(${plan.targetRatio}%)</span>
+    <span class="val">${st.newRatio > plan.targetRatio ? '會超過目標,是加碼還是減碼自己判斷' : '還在目標之內'}</span></div>` : ''}
   <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
 }
 
-/* 均線趨勢訊號分頁的內容:跟前面的桶金/撤退門檻是兩套獨立系統,只是共用同一個
-   槓桿分頁殼子。純顯示,不會自動下單——買賣還是要自己到「紀錄」分頁記一筆。 */
+/* 均線趨勢訊號 + 正2 曝險目標,「訊號」分頁的內容。純顯示,不會自動下單——
+   買賣還是要自己到「紀錄」分頁記一筆。 */
 function trendBadge(status){
   if (status === 'HOLD') return `<span class="badge green">HOLD 續抱</span>`;
   if (status === 'WAIT_RECOVER') return `<span class="badge amber">WAIT_RECOVER 接刀中</span>`;
@@ -2654,16 +2542,17 @@ function renderExposurePlanCard(){
     </div>`;
 }
 
-function renderTrendTab(){
-  const trends = computeAllTrends();
-  const changed = trends.filter(t => {
+/* 哪些標的的趨勢狀態剛改變(跟使用者上次看過的不一樣),總覽頁跟訊號分頁都要用同一份判斷。 */
+function trendChanges(){
+  return computeAllTrends().filter(t => {
     const it = findInstrumentByKey(t.key);
-    return it && it.trend.lastSeenStatus && it.trend.lastSeenStatus !== t.status && t.barsAvailable >= t.barsNeeded;
+    return it && it.trend && it.trend.lastSeenStatus && it.trend.lastSeenStatus !== t.status && t.barsAvailable >= t.barsNeeded;
   });
-  return `
-    ${changed.length ? changed.map(t => {
-      const it = findInstrumentByKey(t.key);
-      return `
+}
+function renderTrendChangeAlerts(){
+  return trendChanges().map(t => {
+    const it = findInstrumentByKey(t.key);
+    return `
       <div class="alert amber">
         <span class="ai">🔔</span>
         <div>
@@ -2672,7 +2561,12 @@ function renderTrendTab(){
           <button class="go" data-act="ack-trend" data-id="${it.key}">知道了</button>
         </div>
       </div>`;
-    }).join('') : ''}
+  }).join('');
+}
+function renderTrendTab(){
+  const trends = computeAllTrends();
+  return `
+    ${renderTrendChangeAlerts()}
     ${renderExposurePlanCard()}
     <div class="card">
       <h3>均線趨勢訊號</h3>
@@ -2716,84 +2610,15 @@ function renderLeverage(){
       ${renderPnL()}
       ${renderRisk()}
     ` : levTab === 'signal' ? `
-    <div class="card">
-      <h3>加碼訊號:動用觸發點</h3>
-      <div class="grid2">
-        <div class="field"><label>大盤歷史最高點</label><input type="number" inputmode="decimal" data-k="lev-marketHigh" value="${L.marketHigh || ''}"></div>
-        <div class="field"><label>大盤即時點位</label><input type="number" inputmode="decimal" data-k="lev-marketCurrent" value="${L.marketCurrent || ''}"></div>
-      </div>
-      ${r.tranches.map(t => `
-        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-          <div class="row">
-            <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
-            <span class="badge ${t.useDate ? (t.balance ? 'amber' : 'gray') : t.triggered ? 'red' : 'gray'}" id="out-status-${t.id}">${
-              t.useDate ? (t.balance ? '動用中' : '已還清') : t.triggered ? '已觸發' : '未觸發'}</span>
-          </div>
-          <div class="row sub">
-            <span class="label">${t.thresholdPct}% · 觸發點位 <span id="out-trigger-${t.id}">${t.triggerLevel ? fmt(t.triggerLevel) : '—'}</span></span>
-            <span class="val">可動用 ${fmt(t.amount)}</span>
-          </div>
-          ${t.useDate ? `
-            <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
-              <span class="val ${t.balance ? '' : 'pos'}">${t.balance ? 'NT$ ' + fmt(t.balance) : '—'}</span></div>
-            <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
-          ` : ''}
-          <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="tr-date-${t.id}" value="${esc(t.useDate)}"></div>
-          ${t.useDate ? `
-            <div class="grid2">
-              <div class="field"><label>當時大盤點位</label><input type="number" inputmode="decimal" data-k="tr-idx-${t.id}" value="${t.useIndex || ''}" placeholder="${t.triggerLevel ? fmt(t.triggerLevel) : ''}"></div>
-              <div class="field"><label>買了什麼</label><input data-k="tr-note-${t.id}" value="${esc(t.note)}" placeholder="00631L 27,000 股"></div>
-            </div>
-          ` : ''}
-        </div>`).join('')}
-      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-        <div class="row">
-          <span class="label" style="font-weight:700; color:var(--text);">${esc(L.core.label)}</span>
-          <span class="badge ${L.core.useDate && r.coreBalance ? 'amber' : 'gray'}">${
-            L.core.useDate ? (r.coreBalance ? '動用中' : '已還清') : '未動用'}</span>
-        </div>
-        <div class="row sub"><span class="label">可動用 ${fmt(L.core.amount)} · 長期持有,不列入撤退門檻</span><span class="val"></span></div>
-        <div class="field"><label>動用日期</label><input type="date" data-k="core-date" value="${esc(L.core.useDate)}"></div>
-        ${L.core.useDate ? `
-          <div class="row"><span class="label">動用 ${fmt(L.core.amount)}${repaidOf(L.core) ? ' · 已還 ' + fmt(repaidOf(L.core)) : ''}</span>
-            <span class="val ${r.coreBalance ? '' : 'pos'}" style="font-weight:700;">${r.coreBalance ? '尚欠 NT$ ' + fmt(r.coreBalance) : '已還清'}</span></div>
-          ${(L.core.repayments || []).map(rp => `
-            <div class="erow">
-              <input type="date" class="f-name" data-k="rp-date-core-${rp.id}" value="${esc(rp.date)}">
-              <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-core-${rp.id}" value="${rp.amount || ''}" placeholder="還款金額">
-              <button class="xbtn" data-act="del-repay" data-id="core:${rp.id}" aria-label="刪除">✕</button>
-            </div>`).join('')}
-          <button class="btn" data-act="add-repay" data-id="core">＋ 記一筆還款</button>
-        ` : ''}
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>減碼訊號:撤退門檻</h3>
-      <div class="row"><span class="muted">歷史最高市值 NT$ ${fmt(L.historicalHighValue)}${L.autoHigh ? (r.anyUsed ? '(已凍結)' : '(自動記錄中)') : '(手動)'}</span><span class="muted"></span></div>
-      <div class="row"><span class="label">撤退門檻</span><span class="val" id="out-exitThreshold">NT$ ${fmt(r.exitThreshold)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">自己的錢(含已取回)</span>
-        <span class="val" id="out-exitCurrent" style="font-weight:800;">NT$ ${fmt(r.equityValue)}</span></div>
-      <div class="row sub"><span class="label">部位市值</span><span class="val">NT$ ${fmt(r.totalValue)}</span></div>
-      <div class="row sub"><span class="label">減 借款餘額</span><span class="val">−NT$ ${fmt(r.usedAmount)}</span></div>
-      ${r.cashBack ? `<div class="row sub"><span class="label">加 賣出與配息取回</span><span class="val">＋NT$ ${fmt(r.cashBack)}</span></div>` : ''}
-      ${r.repaidTotal ? `<div class="row sub"><span class="label">減 已還款</span><span class="val">−NT$ ${fmt(r.repaidTotal)}</span></div>` : ''}
-      ${r.ownAfter ? `<div class="row sub"><span class="label">減 動用後新投入的自有資金</span><span class="val">−NT$ ${fmt(r.ownAfter)}</span></div>` : ''}
-      <div id="out-exitBadgeWrap">${exitBadge(r)}</div>
-      <button class="why" data-act="go" data-v="help">撤退門檻怎麼算 →</button>
-    </div>
-
-    <div class="card">
-      <h3>壓力測試</h3>
-      <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
-      <div id="stress-body">${stressBody()}</div>
-    </div>
-
-    <div class="sect">加碼與減碼訊號</div>
-    ` : levTab === 'trend' ? `
       ${renderTrendTab()}
+      <div class="card">
+        <h3>壓力測試</h3>
+        <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
+        <div id="stress-body">${stressBody()}</div>
+      </div>
     ` : levTab === 'log' ? `
       ${renderTrades()}
+      ${renderDrawRecords()}
       ${renderRepayments()}
     ` : `
     <div class="card">
@@ -2844,7 +2669,7 @@ function renderLeverage(){
             <span class="ai">🕘</span>
             <div>
               <div class="at">報價已經 ${Math.floor(daysSince(L.quoteDate))} 天沒更新</div>
-              <div class="ad">上面的損益、曝險、撤退門檻都是用這組舊價算的。按「從證交所更新收盤價」抓最新的。</div>
+              <div class="ad">上面的損益、曝險、曝險目標都是用這組舊價算的。按「從證交所更新收盤價」抓最新的。</div>
             </div>
           </div>` : ''}` : ''}
     </div>
@@ -2897,8 +2722,6 @@ function renderLeverage(){
         ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
         : ''}</div>
     </div>
-
-      ${renderTrancheSetup()}
     `}
 
     <div class="notice">
@@ -2914,22 +2737,13 @@ function refreshLeverage(){
   r.holdings.forEach(h => set('out-val-' + h.key, 'NT$ ' + fmt(h.value)));
   set('out-totalValue', 'NT$ ' + fmt(r.totalValue));
   r.tranches.forEach(t => {
-    const badge = document.getElementById('out-status-' + t.id);
-    if (badge){
-      badge.textContent = t.triggered ? '已觸發' : '未觸發';
-      badge.className = 'badge ' + (t.triggered ? 'red' : 'gray');
-    }
-    set('out-trigger-' + t.id, t.triggerLevel ? fmt(t.triggerLevel) : '—');
+    set('out-balance-' + t.id, t.balance ? 'NT$ ' + fmt(t.balance) : '已還清');
   });
   set('out-usedAmount', 'NT$ ' + fmt(r.usedAmount));
   const bar = document.getElementById('out-usedBar');
   if (bar) bar.style.width = (L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0).toFixed(1) + '%';
   set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount)));
   set('out-monthlyInterest', 'NT$ ' + fmt(r.monthlyInterest));
-  set('out-exitThreshold', 'NT$ ' + fmt(r.exitThreshold));
-  set('out-exitCurrent', 'NT$ ' + fmt(r.equityValue));
-  const wrap = document.getElementById('out-exitBadgeWrap');
-  if (wrap) wrap.innerHTML = exitBadge(r);
   const stress = document.getElementById('stress-body');
   if (stress) stress.innerHTML = stressBody();
 }
@@ -3042,6 +2856,7 @@ function onField(key, el){
   }
   else if (kind === 'core'){
     if (rest === 'amt') state.leverage.core.amount = Math.max(0, num(el.value));
+    else if (rest === 'note') state.leverage.core.note = el.value;
     else state.leverage.core.useDate = el.value;
   }
   else if (kind === 'd'){
@@ -3174,7 +2989,7 @@ function sampleData(){
   s.trades = [
     { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  amount:0, fee:445, source:'cash', note:'定期投入' },
     { id:uid(), date:back(3), symbol:'00675L', action:'buy', shares:600,   price:268.5, amount:0, fee:230, source:'cash', note:'年終獎金加碼' },
-    { id:uid(), date:back(1), symbol:'00631L', action:'buy', shares:10000, price:34.8,  amount:0, fee:496, source:'loan', note:'第一桶金動用' }
+    { id:uid(), date:back(1), symbol:'00631L', action:'buy', shares:10000, price:34.8,  amount:0, fee:496, source:'loan', note:'房貸動用' }
   ];
   return s;
 }
@@ -3483,10 +3298,6 @@ function onClick(el){
       state.leverage.autoInterest = !state.leverage.autoInterest;
       if (state.leverage.autoInterest) maybePostInterest();
       break;
-    case 'toggle-autohigh':
-      state.leverage.autoHigh = !state.leverage.autoHigh;
-      if (state.leverage.autoHigh) maybeUpdateHigh();
-      break;
     case 'sign-in': signInCloud(); return;
     case 'sign-out': signOutCloud(); return;
     case 'draft-type': draft.type = el.dataset.v; break;
@@ -3548,9 +3359,7 @@ function init(){
       e.target.value = '';
       return;
     }
-    // 欄位輸入結束才檢查新高,避免記到打字中的中間值
     if (e.target.dataset && e.target.dataset.k && currentTab === 'leverage'){
-      if (maybeUpdateHigh()) syncHighInput();
       refreshLeverage();
       // 損益卡不是靠 id 局部更新的,沒有游標停在欄位上時整頁重畫一次
       if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();

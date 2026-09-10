@@ -39,7 +39,7 @@ globalThis.A = {
   set editingTx(v){editingTx=v},
   get pendingConfirm(){return pendingConfirm},
   get currentTabName(){return currentTab},
-  maybeUpdateHigh, renderOverview,
+  renderOverview,
   get draftError(){return draftError},
   get backupList(){return backupList},
   maybePostInterest, maybeBackup, loadBackups, restoreBackup, localBackupApi,
@@ -61,7 +61,7 @@ const tabs = ['overview','assets','ledger','leverage','help'];
 function pass(label){
   for (const t of tabs){
     A.currentTab = t;
-    for (const lt of (t === 'leverage' ? ['overview','signal','trend','log','setup'] : [null])){
+    for (const lt of (t === 'leverage' ? ['overview','signal','log','setup'] : [null])){
       if (lt) A.levTab = lt;
       A.renderAll();
       const html = store.content.innerHTML;
@@ -110,96 +110,29 @@ console.log('欄位輸入');
 const a = A.state.assets[0];
 A.onField('aa-'+a.id, { value:'2500000' });
 console.log('  資產改為', a.amount, '→ 淨資產', A.netWorth());
-A.onField('lev-marketCurrent', { value:'18000' });
 A.onField('tr-date-t1', { value: A.todayISO() });
 const r = A.computeLeverage();
-console.log('  觸發桶數', r.tranches.filter(t=>t.triggered).length, '| 已動用', r.usedAmount, '| 月息', Math.round(r.monthlyInterest));
+console.log('  已動用', r.usedAmount, '| 月息', Math.round(r.monthlyInterest));
 
-console.log('自動記錄新高');
+console.log('趨勢狀態改變時,總覽頁跟訊號分頁都要跳提醒(回歸測試)');
 A.state = A.sampleData();
 A.viewMonth = A.thisMonth();
-A.state.leverage.tranches.forEach(t => { t.useDate = ''; });   // 這段測的是「動用前」持續記錄新高
-A.state.leverage.historicalHighValue = 0;
-A.renderAll();
-const total = Math.round(A.computeLeverage().totalValue);
-console.log('  總市值', total, '→ 自動記錄的高點', A.state.leverage.historicalHighValue);
-if (A.state.leverage.historicalHighValue !== total) throw new Error('自動記錄新高失敗');
-
-inst('00675L').price *= 1.1;
-inst('00631L').price *= 1.1;
-A.maybeUpdateHigh();
-const up = Math.round(A.computeLeverage().totalValue);
-console.log('  漲一成後高點', A.state.leverage.historicalHighValue, '/ 總市值', up);
-if (A.state.leverage.historicalHighValue !== up) throw new Error('高點沒跟上漲勢');
-
-inst('00675L').price /= 1.3;
-A.maybeUpdateHigh();
-const kept = A.state.leverage.historicalHighValue;
-const down = Math.round(A.computeLeverage().totalValue);
-console.log('  下跌後高點維持', kept, '/ 總市值', down);
-if (down >= kept) throw new Error('測試前提有誤');
-if (kept !== up) throw new Error('下跌時高點不該變動');
-
-A.state.leverage.autoHigh = false;
-inst('00675L').price *= 3;
-A.maybeUpdateHigh();
-console.log('  關閉自動後高點', A.state.leverage.historicalHighValue, '(應維持', kept + ')');
-if (A.state.leverage.historicalHighValue !== kept) throw new Error('關閉自動後仍被改動');
-
-console.log('未動用時不該有撤退訊息(回歸測試)');
-A.state.leverage.autoHigh = true;
-A.state.leverage.tranches.forEach(t => { t.useDate = ''; });
-A.state.leverage.core.useDate = '';
-A.state.leverage.marketHigh = 0;
-A.state.leverage.marketCurrent = 0;
-A.renderAll();   // 自動高點會等於目前總市值
-const rr = A.computeLeverage();
-console.log('  高點', A.state.leverage.historicalHighValue, '= 總市值', Math.round(rr.totalValue),
-            '| anyUsed', rr.anyUsed, '| exitReached', rr.exitReached);
-if (rr.exitReached) throw new Error('未動用卻判定達撤退門檻');
+const i631 = inst('00631L');
+i631.trend.lastSeenStatus = 'WAIT_RECOVER';   // 假裝上次看到的是接刀中,跟目前算出來的 HOLD 不一樣
 A.currentTab = 'overview';
 A.renderAll();
-if (store.content.innerHTML.includes('已達撤退門檻')) throw new Error('未動用卻在總覽顯示撤退提示');
-console.log('  總覽沒有撤退提示 ✓');
+if (!store.content.innerHTML.includes('狀態變成')) throw new Error('總覽頁沒有顯示趨勢狀態改變的提醒');
+console.log('  總覽頁有顯示 ✓');
 A.currentTab = 'leverage';
 A.levTab = 'signal';
 A.renderAll();
-if (!store.content.innerHTML.includes('尚未動用桶金')) throw new Error('槓桿頁徽章沒顯示「尚未動用」');
+if (!store.content.innerHTML.includes('狀態變成')) throw new Error('訊號分頁沒有顯示趨勢狀態改變的提醒');
+console.log('  訊號分頁有顯示 ✓');
+A.onClick({ dataset:{ act:'ack-trend', id:i631.key } });
+A.renderAll();
+if (store.content.innerHTML.includes('狀態變成')) throw new Error('按過「知道了」之後提醒還在');
+console.log('  確認後提醒消失 ✓');
 A.levTab = 'overview';
-console.log('  槓桿頁顯示「尚未動用桶金,暫不適用」 ✓');
-
-console.log('動用之後:高點凍結,並開始判斷撤退');
-A.state.leverage.tranches[0].useDate = '2026-01-01';
-const frozen = A.state.leverage.historicalHighValue;
-inst('00675L').price *= 2;        // 市值大漲
-A.maybeUpdateHigh();
-console.log('  動用後市值翻倍,高點維持', A.state.leverage.historicalHighValue, '(凍結前', frozen + ')');
-if (A.state.leverage.historicalHighValue !== frozen) throw new Error('動用後高點仍被自動更新');
-A.state.leverage.historicalHighValue = 1000;
-A.currentTab = 'overview';
-A.renderAll();
-if (!store.content.innerHTML.includes('已達撤退門檻')) throw new Error('已動用且達標卻沒顯示');
-console.log('  已動用 + 達標 → 有顯示 ✓');
-
-console.log('總覽提示');
-A.state.leverage.historicalHighValue = 1000;   // 門檻遠低於總市值
-A.currentTab = 'overview';
-A.renderAll();
-let html = store.content.innerHTML;
-if (!html.includes('已達撤退門檻')) throw new Error('達標卻沒顯示提示');
-console.log('  達撤退門檻 → 有顯示 ✓');
-
-A.state.leverage.historicalHighValue = 99999999;
-A.renderAll();
-if (store.content.innerHTML.includes('已達撤退門檻')) throw new Error('未達標卻顯示提示');
-console.log('  未達標 → 不顯示 ✓');
-
-A.state.leverage.marketHigh = 24000;
-A.state.leverage.marketCurrent = 15000;
-A.state.leverage.tranches.forEach(t => { t.useDate = ''; });
-A.renderAll();
-if (!store.content.innerHTML.includes('已觸發')) throw new Error('桶金觸發卻沒顯示提示');
-console.log('  桶金觸發未動用 → 有顯示 ✓');
 
 console.log('部位損益');
 A.state = A.emptyState();
@@ -307,11 +240,10 @@ if (!svg.includes('<svg') || !svg.includes('stroke-dasharray')) throw new Error(
 if (A.lineChart('t2', ['1月'], [{ name:'x', color:'var(--s1)', values:[1] }], {}) !== '') throw new Error('只有一點時應該不畫圖');
 console.log('  兩點以上才畫、含零線 ✓');
 
-console.log('撤退門檻比的是自己的錢');
-(function testExit(){
+console.log('equityValue(自己的錢,每日/每月快照用)不能被借來的錢或新投入的錢灌水');
+(function testEquityValue(){
   A.state = A.emptyState();
   A.state.leverage.annualRate = 2.4;
-  A.state.leverage.historicalHighValue = 1000000;
   A.state.trades = [{ id:'own', date:'2025-06-01', symbol:'00631L', action:'buy',
                       shares:10000, price:100, fee:0, amount:0, source:'cash', note:'' }];
   const I = () => A.state.instruments.find(x => x.id === '00631L');
@@ -322,26 +254,24 @@ console.log('撤退門檻比的是自己的錢');
                         shares:16667, price:60, fee:0, amount:0, source:'loan', note:'' });
 
   let r = A.computeLeverage();
-  console.log('  剛借完:市值', Math.round(r.totalValue), '自己的錢', Math.round(r.equityValue));
-  if (r.totalValue <= r.exitThreshold) throw new Error('測試前提有誤:市值應已超過門檻');
-  if (r.exitReached) throw new Error('借完錢就假性達標了');
+  const expectOwn = (10000 + 16667) * 60 - 1000000;   // 市值 − 借款餘額;借來的那筆市值剛好被借款餘額抵銷掉
+  console.log('  剛借完:市值', Math.round(r.totalValue), '自己的錢', Math.round(r.equityValue), '(預期', expectOwn + ')');
+  if (Math.abs(r.equityValue - expectOwn) > 1) throw new Error('借來的錢灌水了 equityValue');
   console.log('  借來的錢沒有灌水 ✓');
 
   I().price = 80;
   r = A.computeLeverage();
-  if (!r.exitReached) throw new Error('自己的錢超過門檻卻沒達標');
   const before = r.equityValue;
-  console.log('  股價 80 → 自己的錢', Math.round(before), '達標 ✓');
+  console.log('  股價 80 → 自己的錢', Math.round(before));
 
   A.state.trades.push({ id:'sell', date:'2026-09-01', symbol:'00631L', action:'sell',
                         shares:21333, price:80, fee:0, amount:0, source:'cash', note:'' });
   r = A.computeLeverage();
   console.log('  賣掉八成後:市值', Math.round(r.totalValue), '自己的錢', Math.round(r.equityValue));
-  if (!r.exitReached) throw new Error('減碼之後撤退訊號消失了');
   if (Math.abs(r.equityValue - before) > 1) throw new Error('賣出不該改變自己的錢(同價賣出)');
-  console.log('  減碼後訊號不消失、金額不變 ✓');
+  console.log('  同價賣出金額不變 ✓');
 
-  // 動用之後再用薪水加碼,不能讓門檻假性達標
+  // 動用之後再用薪水加碼,不能讓 equityValue 灌水
   const eq0 = A.computeLeverage().equityValue;
   A.state.trades.push({ id:'add', date:'2026-09-02', symbol:'00631L', action:'buy',
                         shares:5000, price:80, fee:0, amount:0, source:'cash', note:'薪水加碼' });
@@ -484,7 +414,7 @@ console.log('小分頁內容不重複');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
 const seenCards = {};
-['overview','signal','trend','log','setup'].forEach(t => {
+['overview','signal','log','setup'].forEach(t => {
   A.levTab = t;
   A.renderAll();
   [...store.content.innerHTML.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].forEach(m => {
@@ -504,7 +434,7 @@ A.levTab = 'overview';
 console.log('槓桿頁小分頁固定');
 A.state = A.sampleData();
 A.currentTab = 'leverage';
-['overview','signal','trend','log','setup'].forEach(t => {
+['overview','signal','log','setup'].forEach(t => {
   A.levTab = t;
   A.renderAll();
   const h = store.content.innerHTML;
@@ -635,24 +565,12 @@ console.log('還款紀錄');
   T.repayments = [{ id:'r1', date:'2026-05-01', amount:1000000 }];
   inst('00631L').price = 100;
   inst('00631L').shares = 100000;
-  A.state.leverage.historicalHighValue = 1000;
   const RL = A.computeLeverage();
-  console.log('  全部還清 → 餘額', RL.usedAmount, '| 月息', Math.round(RL.monthlyInterest),
-              '| 撤退訊號', RL.exitReached);
+  console.log('  全部還清 → 餘額', RL.usedAmount, '| 月息', Math.round(RL.monthlyInterest));
   if (RL.usedAmount !== 0) throw new Error('還清後餘額不是 0');
   if (RL.monthlyInterest !== 0) throw new Error('還清後還在算月息');
-  if (RL.exitReached) throw new Error('沒有借款餘額卻亮撤退訊號');
   if (RL.drawnAmount !== 1000000) throw new Error('累計動用的歷史被清掉了');
-  console.log('  還清後不計息、撤退訊號關閉、動用歷史保留 ✓');
-
-  // 撤退門檻的 8% 也依餘額
-  T.repayments = [];
-  const th1 = A.computeLeverage().exitThreshold;
-  T.repayments = [{ id:'r1', date:'2026-05-01', amount:500000 }];
-  const th2 = A.computeLeverage().exitThreshold;
-  console.log('  撤退門檻:未還款', Math.round(th1), '→ 還一半', Math.round(th2));
-  if (!(th2 < th1)) throw new Error('還款後撤退門檻沒有跟著降');
-  console.log('  還款後門檻跟著降 ✓');
+  console.log('  還清後不計息、動用歷史保留 ✓');
 })();
 
 console.log('配息');
@@ -680,21 +598,19 @@ if (Math.round(RK.exposure) !== 400000*2 + 200000*1) throw new Error('各標的�
 console.log('  正2 算 ×2、0050 算 ×1 ✓');
 
 console.log('壓力測試');
-A.state.leverage.marketHigh = 24000;
-A.state.leverage.marketCurrent = 20000;
 A.state.leverage.creditLimit = 5000000;
-A.state.leverage.tranches[0].thresholdPct = -20;   // 觸發點 19200
-A.state.leverage.tranches[0].amount = 1000000;
-let ST = A.computeStress(10);   // 大盤跌 10%
-console.log('  大盤 20000 → ' + Math.round(ST.newIndex), '| 部位', Math.round(ST.pv), '→', Math.round(ST.newPv));
+let ST = A.computeStress(10);   // 大盤跌 10%,目前沒有借款(loan=0)
+console.log('  部位', Math.round(ST.pv), '→', Math.round(ST.newPv), '| 曝險比例', ST.ratio.toFixed(2) + '%', '→', ST.newRatio.toFixed(2) + '%');
 // 00631L 槓桿2 → 跌20% → 400000×0.8 = 320000;0050 槓桿1 → 跌10% → 180000
 if (Math.round(ST.newPv) !== 320000 + 180000) throw new Error('各標的沒依自己的槓桿倍數換算');
 console.log('  正2 跌兩倍、一般股跌一倍 ✓');
-console.log('  會觸發:', ST.wouldTrigger.map(t => t.label).join('、') || '(無)', '| 需準備', Math.round(ST.needCash));
-if (ST.wouldTrigger.length !== 1) throw new Error('沒抓出會觸發的桶金(18000 <= 19200)');
-let ST2 = A.computeStress(2);   // 只跌 2% → 19600,還沒到 19200
-if (ST2.wouldTrigger.length !== 0) throw new Error('未到價卻說會觸發');
-console.log('  跌 2% 不觸發、跌 10% 觸發第一桶 ✓');
+// 沒有借款時,分母(部位淨值+房貸總額度)裡的房貸總額度不會跟著縮水,
+// 部位下跌反而讓分母縮得比分子慢,曝險比例是降的,不是升的——
+// 曝險比例 = 100萬/560萬=17.86% → 82萬/550萬=14.91%
+const expRatio = 1000000/5600000*100, expNewRatio = 820000/5500000*100;
+if (Math.abs(ST.ratio - expRatio) > 0.01 || Math.abs(ST.newRatio - expNewRatio) > 0.01)
+  throw new Error('曝險比例算錯,預期 ' + expRatio.toFixed(2) + '% → ' + expNewRatio.toFixed(2) + '%');
+console.log('  沒有借款時,下跌後曝險比例反而下降(分母的額度沒縮水)✓');
 
 console.log('記帳類別');
 A.state = A.emptyState();
