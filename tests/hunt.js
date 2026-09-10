@@ -19,6 +19,11 @@ globalThis.A = {
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth
 };`);
 
+const draw = i => {
+  while (A.state.leverage.draws.length <= i)
+    A.state.leverage.draws.push({ id:'d'+A.state.leverage.draws.length, label:'動用記錄', amount:0, useDate:'', note:'', repayments:[] });
+  return A.state.leverage.draws[i];
+};
 const bugs = [];
 const check = (name, fn) => {
   try { const msg = fn(); if (msg) bugs.push(name + ' → ' + msg); }
@@ -83,7 +88,7 @@ check('賣超過持股', () => {
 
 check('還款日期填在未來', () => {
   A.state = A.emptyState();
-  const T = A.state.leverage.tranches[0];
+  const T = draw(0);
   T.amount = 1000000; T.useDate = '2026-01-01';
   T.repayments = [{ id:'r', date:'2099-01-01', amount:1000000 }];
   const bal = A.outstanding(T);
@@ -94,7 +99,7 @@ check('還款日期填在未來', () => {
 
 check('還款超過動用金額', () => {
   A.state = A.emptyState();
-  const T = A.state.leverage.tranches[0];
+  const T = draw(0);
   T.amount = 1000000; T.useDate = '2026-01-01';
   T.repayments = [{ id:'r', date:'2026-02-01', amount:3000000 }];
   const bal = A.outstanding(T);
@@ -104,7 +109,7 @@ check('還款超過動用金額', () => {
 
 check('資料完整往返(normalize 不掉東西)', () => {
   A.state = A.sampleData();
-  A.state.leverage.tranches[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
+  A.state.leverage.draws[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
   A.state.trades.push({ id:'dv', date:'2026-08-25', symbol:'00631L', action:'dividend', shares:0, price:0, amount:5000, fee:0, source:'cash', note:'配息' });
   const before = JSON.stringify(A.state);
   const after = JSON.stringify(A.normalize(JSON.parse(before)));
@@ -148,15 +153,6 @@ check('刪掉沒有紀錄的標的', () => {
   const before = A.state.instruments.length;
   A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });
   if (A.state.instruments.length !== before - 1) return '刪不掉(還有 ' + A.state.instruments.length + ' 列)';
-  return '';
-});
-
-check('大盤高點為 0 時的觸發判斷', () => {
-  A.state = A.emptyState();
-  A.state.leverage.marketHigh = 0;
-  A.state.leverage.marketCurrent = 15000;
-  const r = A.computeLeverage();
-  if (r.tranches.some(t => t.triggered)) return '沒填歷史高點卻判定已觸發';
   return '';
 });
 

@@ -15,7 +15,7 @@ eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A={ get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   set levTab(v){levTab=v}, renderAll, sampleData, onField };`);
 A.state = A.sampleData();
-A.state.leverage.tranches[0].useDate='2026-08-05';
+A.state.leverage.draws[0].useDate='2026-08-05';
 A.currentTab='leverage'; A.levTab='signal';
 A.renderAll();
 // stress-body 只存在於畫出來的 HTML 裡,直接從內容抓
