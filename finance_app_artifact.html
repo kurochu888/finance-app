@@ -1893,7 +1893,7 @@ function renderHelp(){
       <ul>
         <li><strong>每日快照</strong>:每天第一次開啟、或按「從證交所更新收盤價」時記一筆
         (部位市值、借款餘額、自己的錢、整體損益)。同一天會更新到最新,不會累積。
-        槓桿頁「概況」的兩張走勢圖就是用這個畫的,上方可切 1 個月 / 3 個月 / 1 年 / 全部,
+        槓桿頁「概況」的兩張走勢圖就是用這個畫的,各自的圖上方可切 1 個月 / 3 個月 / 1 年 / 全部,
         兩張圖共用同一個範圍。<strong>圖上任一處都可以點</strong>,會顯示那一天的日期與各條線的數值,
         並畫出垂直游標線。累積不到兩天時會顯示「還在等資料」而不是空白的圖。
         保留最近 1000 個交易日,約四年。</li>
@@ -2220,6 +2220,7 @@ function renderRisk(){
       ${posChart ? `
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <h3 style="margin-bottom:6px;">部位市值與借款</h3>
+        ${useDaily ? rangePicker() : ''}
         ${posChart}
         <div class="muted">兩條線的距離就是自己的錢。</div>
       </div>` : chartPending('部位市值')}
@@ -2262,6 +2263,7 @@ function pnlChartBlock(){
   if (!chart) return computePosition().hasData ? chartPending('整體損益') : '';
   return `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      ${useDaily ? rangePicker() : ''}
       ${chart}
       <div class="muted">虛線是損益兩平。</div>
     </div>`;
@@ -2593,7 +2595,6 @@ function renderLeverage(){
   return `
     ${levTabs()}
     ${levTab === 'overview' ? `
-      ${state.dailyHistory.length >= 2 ? rangePicker() : ''}
       ${renderPnL()}
       ${renderRisk()}
     ` : levTab === 'signal' ? `
