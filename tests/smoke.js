@@ -56,6 +56,13 @@ globalThis.A = {
 };`;
 eval(js + bridge);
 
+// 動用記錄現在是自由清單(state.leverage.draws),不再有預設的固定桶——
+// 測試裡要用第 i 筆動用記錄時,用這個確保它存在。
+const draw = i => {
+  while (A.state.leverage.draws.length <= i)
+    A.state.leverage.draws.push({ id:'d'+A.state.leverage.draws.length, label:'動用記錄', amount:0, useDate:'', note:'', repayments:[] });
+  return A.state.leverage.draws[i];
+};
 const inst = id => A.state.instruments.find(x => x.id === id);
 const tabs = ['overview','assets','ledger','leverage','help'];
 function pass(label){
@@ -110,7 +117,7 @@ console.log('欄位輸入');
 const a = A.state.assets[0];
 A.onField('aa-'+a.id, { value:'2500000' });
 console.log('  資產改為', a.amount, '→ 淨資產', A.netWorth());
-A.onField('tr-date-t1', { value: A.todayISO() });
+A.onField('draw-date-' + draw(0).id, { value: A.todayISO() });
 const r = A.computeLeverage();
 console.log('  已動用', r.usedAmount, '| 月息', Math.round(r.monthlyInterest));
 
@@ -162,8 +169,8 @@ if (P.interest !== 0) throw new Error('沒動用卻算出利息');
 if (Math.abs(P.total - (P.unrealized + P.realized)) > 0.01) throw new Error('整體損益組成錯誤');
 
 // 動用房貸後,利息要被扣掉
-A.state.leverage.tranches[0].useDate = '2026-01-01';
-A.state.leverage.tranches[0].amount = 1000000;
+draw(0).useDate = '2026-01-01';
+draw(0).amount = 1000000;
 P = A.computePosition();
 const days = Math.floor((Date.now() - new Date('2026-01-01T00:00:00').getTime()) / 86400000);
 console.log('  借款', days, '天 → 累積利息', Math.round(P.interest), '| 整體損益', Math.round(P.total));
@@ -189,8 +196,8 @@ A.state = A.emptyState();
 A.state.assets = [{ id:'a1', name:'現金', amount:5000000 }];
 A.state.liabilities = [];
 inst('00631L').price = 40;
-A.state.leverage.tranches[0].useDate = '2026-01-01';
-A.state.leverage.tranches[0].amount = 1000000;
+draw(0).useDate = '2026-01-01';
+draw(0).amount = 1000000;
 A.state.trades = [{ id:'t1', date:'2026-01-05', symbol:'00631L', action:'buy', shares:75000, price:32, fee:3420, source:'loan', note:'' }];
 let K = A.computeRisk();
 console.log('  部位市值', Math.round(K.pv), '| 借款', Math.round(K.loan), '| 部位淨值', Math.round(K.equity));
@@ -209,14 +216,14 @@ if (Math.abs(K.exposureRatio - expected) > 0.01) throw new Error('曝險比例�
 console.log('  曝險比例公式相符 ✓');
 // 額度用得越多,分母越接近自己的錢,比例要往上走
 const ratioBefore = K.exposureRatio;
-A.state.leverage.tranches[1].useDate = '2026-02-01';
-A.state.leverage.tranches[1].amount = 1000000;
+draw(1).useDate = '2026-02-01';
+draw(1).amount = 1000000;
 const K2 = A.computeRisk();
 console.log('  再動用 100 萬後,分母', Math.round(K2.capacity), '→ 曝險', K2.exposureRatio.toFixed(1) + '%',
             '(原', ratioBefore.toFixed(1) + '%)');
 if (!(K2.exposureRatio > ratioBefore)) throw new Error('多借錢後曝險比例沒有升高');
 console.log('  多借錢 → 比例升高 ✓');
-A.state.leverage.tranches[1].useDate = '';
+draw(1).useDate = '';
 
 console.log('每月快照');
 A.state.netWorthHistory = [];
@@ -248,8 +255,8 @@ console.log('equityValue(自己的錢,每日/每月快照用)不能被借來的�
                       shares:10000, price:100, fee:0, amount:0, source:'cash', note:'' }];
   const I = () => A.state.instruments.find(x => x.id === '00631L');
   I().price = 60;
-  A.state.leverage.tranches[0].useDate = '2026-01-01';
-  A.state.leverage.tranches[0].amount = 1000000;
+  draw(0).useDate = '2026-01-01';
+  draw(0).amount = 1000000;
   A.state.trades.push({ id:'lev', date:'2026-01-02', symbol:'00631L', action:'buy',
                         shares:16667, price:60, fee:0, amount:0, source:'loan', note:'' });
 
@@ -337,9 +344,9 @@ if (Math.abs(P7.netCash - P6.netCash) > 10000) throw new Error('淨投入被來�
 console.log('  來回買賣不會灌大淨投入 ✓');
 
 // 8) 現金流有含房貸與利息
-A.state.leverage.tranches[0].useDate = '2026-02-01';
-A.state.leverage.tranches[0].amount = 500000;
-A.state.leverage.tranches[0].repayments = [{ id:'r', date:'2026-08-01', amount:200000 }];
+draw(0).useDate = '2026-02-01';
+draw(0).amount = 500000;
+draw(0).repayments = [{ id:'r', date:'2026-08-01', amount:200000 }];
 A.state.leverage.annualRate = 2.4;
 const fl = A.cashFlows();
 const hasRepay = fl.some(f => f.date === '2026-08-01' && f.amount === -200000);
@@ -347,8 +354,8 @@ const interestFlows = fl.filter(f => f.amount < 0 && Math.abs(f.amount) < 2000).
 console.log('  現金流', fl.length, '筆 | 含還款', hasRepay, '| 每月利息', interestFlows, '筆');
 if (!hasRepay) throw new Error('還款沒有進現金流');
 if (interestFlows < 5) throw new Error('每月利息沒有進現金流');
-if (A.balanceAt(A.state.leverage.tranches[0], '2026-07-31') !== 500000) throw new Error('還款前的餘額錯誤');
-if (A.balanceAt(A.state.leverage.tranches[0], '2026-08-31') !== 300000) throw new Error('還款後的餘額錯誤');
+if (A.balanceAt(draw(0), '2026-07-31') !== 500000) throw new Error('還款前的餘額錯誤');
+if (A.balanceAt(draw(0), '2026-08-31') !== 300000) throw new Error('還款後的餘額錯誤');
 console.log('  房貸動用、還款、每月利息都進現金流 ✓');
 
 console.log('缺月份的走勢圖');
@@ -446,18 +453,18 @@ A.levTab = 'overview';
 
 console.log('從紀錄分頁記還款');
 A.state = A.emptyState();
-A.state.leverage.tranches[0].useDate = '2026-01-01';
-A.state.leverage.tranches[0].amount = 1000000;
+draw(0).useDate = '2026-01-01';
+draw(0).amount = 1000000;
 A.currentTab = 'leverage'; A.levTab = 'log';
 A.renderAll();
 const logHtml = store.content.innerHTML;
 if (!logHtml.includes('記一筆還款')) throw new Error('紀錄分頁沒有還款表單');
 A.onField('rd-amount', { value:'250000' });
 A.onClick({ dataset:{ act:'add-repay2' } });
-const rp = A.state.leverage.tranches[0].repayments;
-console.log('  記了', rp.length, '筆還款,金額', rp[0] && rp[0].amount, '| 餘額', A.outstanding(A.state.leverage.tranches[0]));
+const rp = draw(0).repayments;
+console.log('  記了', rp.length, '筆還款,金額', rp[0] && rp[0].amount, '| 餘額', A.outstanding(draw(0)));
 if (!rp.length || rp[0].amount !== 250000) throw new Error('還款沒有記進去');
-if (A.outstanding(A.state.leverage.tranches[0]) !== 750000) throw new Error('餘額沒有跟著減');
+if (A.outstanding(draw(0)) !== 750000) throw new Error('餘額沒有跟著減');
 console.log('  餘額跟著減 ✓');
 A.levTab = 'overview';
 
@@ -537,7 +544,7 @@ console.log('還款紀錄');
 (function testRepay(){
   A.state = A.emptyState();
   A.state.leverage.annualRate = 2.4;
-  const T = A.state.leverage.tranches[0];
+  const T = draw(0);
   T.amount = 1000000;
   T.useDate = '2026-01-01';
   T.repayments = [];
@@ -625,7 +632,7 @@ console.log('  預算類別 + 既有交易類別都在清單裡 ✓');
 console.log('利息自動入帳');
 A.state = A.sampleData();
 A.viewMonth = A.thisMonth();
-A.state.leverage.tranches[0].useDate = '2026-01-01';
+draw(0).useDate = '2026-01-01';
 A.state.leverage.interestPosted = [];
 const before = A.state.transactions.length;
 A.maybePostInterest();

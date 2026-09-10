@@ -250,6 +250,17 @@
     font-size:12px; line-height:1.7; color:var(--sub); background:var(--raised);
     border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:12px;
   }
+  details.tip{ margin-top:12px; }
+  details.tip > summary{
+    cursor:pointer; list-style:none; color:var(--accent); font-size:12px; font-family:inherit;
+  }
+  details.tip > summary::-webkit-details-marker{ display:none; }
+  details.tip > summary::before{ content:'說明 ▸ '; }
+  details.tip[open] > summary::before{ content:'說明 ▾ '; }
+  details.tip .body{
+    font-size:12px; line-height:1.7; color:var(--sub); background:var(--raised);
+    border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:6px;
+  }
   .storage-status{
     font-size:11px; color:var(--sub); text-align:center; padding:7px 10px 5px;
     background:var(--card); border-top:1px solid var(--line);
@@ -325,12 +336,7 @@ const DEFAULT_LEVERAGE = {
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
-  tranches:[
-    { id:'t1', label:'動用記錄 1', thresholdPct:-20, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
-    { id:'t2', label:'動用記錄 2', thresholdPct:-32, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] },
-    { id:'t3', label:'動用記錄 3', thresholdPct:-45, amount:1000000, useDate:'', useIndex:0, note:'', repayments:[] }
-  ],
-  core:{ label:'長期投資部位', amount:2000000, useDate:'', note:'', repayments:[] },
+  draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
      跟均線趨勢訊號的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。 */
@@ -452,18 +458,27 @@ function normalize(raw){
    'historicalHighValue','stressDeclinePct','creditLimit','annualRate'].forEach(k => {
     if (L[k] !== undefined) base[k] = Math.max(0, num(L[k]));   // 這些欄位沒有負值的意義
   });
-  if (Array.isArray(L.tranches) && L.tranches.length){
-    base.tranches = L.tranches.map((t, i) => ({
-      id: t.id || ('t' + (i+1)),
-      label: String(t.label || ('動用記錄 ' + (i+1))),
-      thresholdPct: num(t.thresholdPct),
-      amount: Math.max(0, num(t.amount)),
-      useDate: String(t.useDate || ''),
-      useIndex: num(t.useIndex),
-      note: String(t.note || ''),
-      repayments: (Array.isArray(t.repayments) ? t.repayments : [])
+  {
+    const mapDraw = d => ({
+      id: d.id,
+      label: String(d.label || '動用記錄'),
+      amount: Math.max(0, num(d.amount)),
+      useDate: String(d.useDate || ''),
+      note: String(d.note || ''),
+      repayments: (Array.isArray(d.repayments) ? d.repayments : [])
         .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
-    }));
+    });
+    if (Array.isArray(L.draws) && L.draws.length){
+      base.draws = L.draws.map(d => mapDraw({ ...d, id: d.id || uid() }));
+    } else {
+      // 舊格式(tranches+core)搬過來:id 沿用舊 id,同一份舊資料重覆呼叫 normalize() 也會得到
+      // 相同 id,避免存檔前 id 一直飄動。只搬「真的動用過」(有 useDate)的,從沒填過的預設
+      // 空桶本來就沒帶任何使用者資料,遷移時直接捨棄。
+      const legacy = [];
+      if (Array.isArray(L.tranches)) legacy.push(...L.tranches.map((t, i) => ({ ...t, id: t.id || ('t' + (i+1)) })));
+      if (L.core && typeof L.core === 'object') legacy.push({ ...L.core, id: 'core' });
+      base.draws = legacy.filter(d => d.useDate).map(mapDraw);
+    }
   }
   base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
   base.autoInterest = L.autoInterest !== false;
@@ -490,16 +505,6 @@ function normalize(raw){
     if (!it.shares && num(L[sk])) it.shares = num(L[sk]);
     if (!it.price && num(L[pk])) it.price = num(L[pk]);
   });
-  if (L.core && typeof L.core === 'object'){
-    base.core = {
-      label: String(L.core.label || '長期投資部位'),
-      amount: num(L.core.amount),
-      useDate: String(L.core.useDate || ''),
-      note: String(L.core.note || ''),
-      repayments: (Array.isArray(L.core.repayments) ? L.core.repayments : [])
-        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
-    };
-  }
   return s;
 }
 
@@ -510,8 +515,10 @@ function fromLegacy(old){
   ['shares675L','price675L','shares631L','price631L','marketHigh','marketCurrent',
    'historicalHighValue','stressDeclinePct'].forEach(k => { if (old[k] !== undefined) L[k] = num(old[k]); });
   const dates = old.trancheDates || {};
-  L.tranches.forEach(t => { if (dates[t.id]) t.useDate = String(dates[t.id]); });
-  if (old.coreUseDate) L.core.useDate = String(old.coreUseDate);
+  Object.keys(dates).forEach((id, i) => {
+    if (dates[id]) L.draws.push({ id: id || ('t' + (i+1)), label: '動用記錄', amount: 0, useDate: String(dates[id]), note: '', repayments: [] });
+  });
+  if (old.coreUseDate) L.draws.push({ id: 'core', label: '長期投資部位', amount: 0, useDate: String(old.coreUseDate), note: '', repayments: [] });
   return s;
 }
 
@@ -1085,7 +1092,7 @@ function outstanding(item){
 /* 已動用的房貸,從動用日算到今天的累積利息 */
 function accruedInterest(){
   const L = state.leverage;
-  return sum(L.tranches, t => accrue(t, L.annualRate)) + accrue(L.core, L.annualRate);
+  return sum(L.draws, t => accrue(t, L.annualRate));
 }
 /* 某一天當下,這筆借款還欠多少 */
 function balanceAt(item, dateISO){
@@ -1116,7 +1123,7 @@ function cashFlows(){
     else if (t.source !== 'loan') add(t.date, -(t.shares * t.price + t.fee));
   });
 
-  const loans = L.tranches.concat([L.core]);
+  const loans = L.draws;
   loans.forEach(item => {
     if (!item.useDate) return;
     (item.repayments || []).forEach(r => {
@@ -1190,7 +1197,7 @@ function posSignature(){
   state.instruments.forEach(it => {
     h += n(it.price) * 13 + n(it.shares) + n(it.leverage) + String(it.id || '').length;
   });
-  L.tranches.concat([L.core]).forEach(t => {
+  L.draws.forEach(t => {
     h += n(t.amount) / 7 + (t.useDate ? dc(t.useDate, 9) + String(t.useDate).length : 0);
     (t.repayments || []).forEach(r => { h += n(r.amount) / 3 + dc(r.date, 9); });
   });
@@ -1727,7 +1734,7 @@ function renderHelp(){
 整體損益  = 未實現 + 已實現 − 累積借款利息</div>
       <h4>為什麼一定要扣利息</h4>
       <p>借錢買股,利息每天都在跑。不扣的話,槓桿部位看起來會永遠比實際好看。
-      利息從各桶金的動用日算到今天,而且是<strong>依實際餘額分段計算</strong> ——
+      利息從每一筆動用記錄的動用日算到今天,而且是<strong>依實際餘額分段計算</strong> ——
       你記了還款之後,只對剩下的部分繼續算。</p>
       <h4>手續費</h4>
       <p>留空的話自動用 0.1425%(最低 20 元)估算,賣出再加 0.1% 證交稅。填了就用你填的。</p>
@@ -1909,7 +1916,7 @@ function renderHelp(){
     <div class="card doc">
       <p>看到黃色或紅色的提示框時,意思是:</p>
       <ul>
-        <li><strong>兩邊的房貸金額對不起來</strong> — 桶金的動用總額,和買賣紀錄裡標成「房貸借款」的
+        <li><strong>兩邊的房貸金額對不起來</strong> — 動用記錄的動用總額,和買賣紀錄裡標成「房貸借款」的
         買進金額差超過 2%。可能是借了還沒買、或買進時忘了選資金來源。利息與曝險以動用紀錄為準。</li>
         <li><strong>有一筆賣出超過當時的持股</strong> — 超出的部分沒有計入損益(不然會憑空多出獲利)。
         檢查股數或日期是不是填錯。</li>
@@ -1944,7 +1951,7 @@ function computeLeverage(){
   });
   const totalValue = sum(holdings, h => h.value);
 
-  const tranches = L.tranches.map(t => ({
+  const draws = L.draws.map(t => ({
     ...t,
     used: !!t.useDate,
     repaid: repaidOf(t),
@@ -1952,18 +1959,16 @@ function computeLeverage(){
     yearsUsed: daysSince(t.useDate)/365.25
   }));
 
-  const usedTranches = tranches.filter(t => t.used);
-  const coreBalance = outstanding(L.core);
-  const usedAmount = sum(tranches, t => t.balance) + coreBalance;   // 還欠銀行多少
-  const drawnAmount = sum(usedTranches, t => t.amount) + (L.core.useDate ? L.core.amount : 0);
-  const coreUsed = !!L.core.useDate;
+  const usedDraws = draws.filter(t => t.used);
+  const usedAmount = sum(draws, t => t.balance);   // 還欠銀行多少
+  const drawnAmount = sum(usedDraws, t => t.amount);
 
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
 
   /* 「自己的錢」(equityValue)給每日/每月快照記錄部位淨值走勢用,不能拿總市值代替:
        總市值含借來的錢,不能反映真正屬於自己的部分;
      自己的錢 = 市值 − 借款餘額 + 已取回的現金 − 已還款 − 動用後新投入的自有資金 */
-  const freezeDate = L.tranches.filter(t => t.useDate).map(t => t.useDate).sort()[0] || '';
+  const freezeDate = L.draws.filter(t => t.useDate).map(t => t.useDate).sort()[0] || '';
   let cashBack = 0, ownAfter = 0;
   if (freezeDate){
     state.trades.forEach(t => {
@@ -1973,20 +1978,20 @@ function computeLeverage(){
       else if (t.source !== 'loan') ownAfter += t.shares * t.price + t.fee;
     });
   }
-  const repaidTotal = sum(L.tranches, t => repaidOf(t)) + repaidOf(L.core);
+  const repaidTotal = sum(L.draws, t => repaidOf(t));
   const equityValue = totalValue - usedAmount + cashBack - repaidTotal - ownAfter;
 
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
-  return { holdings, totalValue, tranches, usedAmount, drawnAmount, coreBalance, coreUsed, monthlyInterest,
+  return { holdings, totalValue, draws, usedAmount, drawnAmount, monthlyInterest,
            equityValue, cashBack, ownAfter, repaidTotal,
            positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
 }
 
 /* ===================== 均線趨勢訊號 =====================
-   桶金動用記錄管的是「借了多少、什麼時候借的」這本帳,這裡管的是「現在該續抱還是該跑」。
+   房貸動用記錄管的是「借了多少、什麼時候借的」這本帳,這裡管的是「現在該續抱還是該跑」。
    狀態:WATCH(還沒進場)→ WAIT_RECOVER(接刀中,部分加碼)→ HOLD(趨勢確認,滿倉續抱)。
    HOLD 時只看會不會 EXIT;非 HOLD 時先看會不會 RECOVER(優先),再看會不會 ADD。
 
@@ -2394,10 +2399,10 @@ function levTabs(){
 function renderDrawRecords(){
   const L = state.leverage;
   const r = computeLeverage();
-  const row = (t, dateKey, amtKey, noteKey) => `
+  const row = (t) => `
     <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
       <div class="row">
-        <span class="label" style="font-weight:700; color:var(--text);">${esc(t.label)}</span>
+        <input class="f-name" style="font-weight:700; color:var(--text); max-width:60%;" data-k="draw-label-${t.id}" value="${esc(t.label)}">
         <span class="badge ${t.useDate ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
           t.useDate ? (t.balance ? '動用中' : '已還清') : '未動用'}</span>
       </div>
@@ -2407,26 +2412,26 @@ function renderDrawRecords(){
         <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
       ` : ''}
       <div class="grid2">
-        <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="${dateKey}" value="${esc(t.useDate)}"></div>
-        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="${amtKey}" value="${t.amount || ''}"></div>
+        <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="draw-date-${t.id}" value="${esc(t.useDate)}"></div>
+        <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="draw-amt-${t.id}" value="${t.amount || ''}"></div>
       </div>
-      <div class="field"><label>備註(買了什麼)</label><input data-k="${noteKey}" value="${esc(t.note || '')}" placeholder="00631L 27,000 股"></div>
+      <div class="field"><label>備註(買了什麼)</label><input data-k="draw-note-${t.id}" value="${esc(t.note || '')}" placeholder="00631L 27,000 股"></div>
+      <button class="btn" data-act="del-draw" data-id="${t.id}" style="margin-top:8px;">刪除這筆</button>
     </div>`;
   return `
     <div class="card">
       <h3>房貸動用記錄</h3>
-      <div class="notice" style="margin-bottom:10px;">按「訊號」分頁的趨勢/曝險目標實際買進之後,在這裡記一筆動用金額——借款餘額跟利息都是從這裡算的,不是自動推算。</div>
-      ${r.tranches.map(t => row(t, `tr-date-${t.id}`, `tr-amt-${t.id}`, `tr-note-${t.id}`)).join('')}
-      ${row({ ...L.core, id:'core', balance:r.coreBalance, useDate:L.core.useDate,
-              yearsUsed: daysSince(L.core.useDate)/365.25 }, 'core-date', 'core-amt', 'core-note')}
+      <details class="tip" style="margin-bottom:10px;"><summary>按「訊號」分頁實際買進之後怎麼記</summary><div class="body">按「訊號」分頁的趨勢/曝險目標實際買進之後,在這裡記一筆動用金額——借款餘額跟利息都是從這裡算的,不是自動推算。</div></details>
+      ${r.draws.length ? r.draws.map(row).join('') : `<div class="empty">還沒有動用記錄。</div>`}
+      <button class="btn solid" data-act="add-draw">+ 新增一筆動用記錄</button>
     </div>`;
 }
 
 /* 還款紀錄:原本夾在各桶金裡,搬成獨立的一張卡 */
 function renderRepayments(){
   const L = state.leverage;
-  const items = L.tranches.concat([L.core]).filter(x => x.useDate);
-  const ids = items.map(it => it === L.core ? 'core' : it.id);
+  const items = L.draws.filter(x => x.useDate);
+  const ids = items.map(it => it.id);
   if (!ids.includes(repayDraft.target)) repayDraft.target = ids[0] || '';
   const rows = [];
   items.forEach(it => (it.repayments || []).forEach(r => rows.push({ it, r })));
@@ -2437,7 +2442,7 @@ function renderRepayments(){
       ${items.length ? `
         <div class="field"><label>還哪一筆</label>
           <select data-k="rd-target">
-            ${items.map(it => `<option value="${it === L.core ? 'core' : it.id}" ${repayDraft.target === (it === L.core ? 'core' : it.id) ? 'selected' : ''}>${esc(it.label)}(尚欠 ${fmt(outstanding(it))})</option>`).join('')}
+            ${items.map(it => `<option value="${it.id}" ${repayDraft.target === it.id ? 'selected' : ''}>${esc(it.label)}(尚欠 ${fmt(outstanding(it))})</option>`).join('')}
           </select>
         </div>
         <div class="grid2">
@@ -2458,9 +2463,9 @@ function renderRepayments(){
       `).join('')}
       ${rows.length ? `<div style="margin-top:10px;">${rows.map(({ it, r }) => `
         <div class="erow">
-          <input type="date" class="f-name" data-k="rp-date-${it === L.core ? 'core' : it.id}-${r.id}" value="${esc(r.date)}">
-          <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it === L.core ? 'core' : it.id}-${r.id}" value="${r.amount || ''}">
-          <button class="xbtn" data-act="del-repay" data-id="${it === L.core ? 'core' : it.id}:${r.id}" aria-label="刪除">✕</button>
+          <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">
+          <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
+          <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
         </div>
         <div class="muted" style="margin-top:2px;">${esc(it.label)}</div>`).join('')}</div>`
         : (items.length ? `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '')}
@@ -2484,7 +2489,7 @@ function stressBody(){
     <span class="val" style="font-weight:800;">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
   ${plan ? `<div class="row sub"><span class="label">對照目前正2曝險目標(${plan.targetRatio}%)</span>
     <span class="val">${st.newRatio > plan.targetRatio ? '會超過目標,是加碼還是減碼自己判斷' : '還在目標之內'}</span></div>` : ''}
-  <div class="notice">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div>`;
+  <details class="tip"><summary>試算怎麼算的</summary><div class="body">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div></details>`;
 }
 
 /* 均線趨勢訊號 + 正2 曝險目標,「訊號」分頁的內容。純顯示,不會自動下單——
@@ -2552,7 +2557,7 @@ function renderTrendTab(){
     ${renderExposurePlanCard()}
     <div class="card">
       <h3>均線趨勢訊號</h3>
-      <div class="notice" style="margin-bottom:12px;">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場緩衝」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div>
+      <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場緩衝」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div></details>
       ${trends.map(t => {
         const it = findInstrumentByKey(t.key);
         if (!it) return '';
@@ -2658,7 +2663,7 @@ function renderLeverage(){
 
     <div class="card">
       <h3>曝險目標設定</h3>
-      <div class="notice" style="margin-bottom:10px;">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「趨勢」分頁會照這個算出該投入/該減碼多少錢。</div>
+      <details class="tip" style="margin-bottom:10px;"><summary>這個設定是做什麼用的</summary><div class="body">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「訊號」分頁會照這個算出該投入/該減碼多少錢。</div></details>
       ${L.exposureTargets.byLayer.map((v, i) => `
         <div class="field"><label>加碼第 ${i+1} 層的目標曝險(%)</label>
           <input type="number" inputmode="decimal" data-k="expo-layer-${i}" value="${v}"></div>
@@ -2718,7 +2723,7 @@ function refreshLeverage(){
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
   r.holdings.forEach(h => set('out-val-' + h.key, 'NT$ ' + fmt(h.value)));
   set('out-totalValue', 'NT$ ' + fmt(r.totalValue));
-  r.tranches.forEach(t => {
+  r.draws.forEach(t => {
     set('out-balance-' + t.id, t.balance ? 'NT$ ' + fmt(t.balance) : '已還清');
   });
   set('out-usedAmount', 'NT$ ' + fmt(r.usedAmount));
@@ -2814,32 +2819,26 @@ function onField(key, el){
       if (Number.isInteger(i) && i >= 0) state.leverage.exposureTargets.byLayer[i] = v;
     }
   }
-  else if (kind === 'tr'){
+  else if (kind === 'draw'){
     const p = rest.indexOf('-');
     const what = rest.slice(0, p), id = rest.slice(p + 1);
-    const t = findById(state.leverage.tranches, id);
+    const t = findById(state.leverage.draws, id);
     if (t){
-      if (what === 'pct') t.thresholdPct = num(el.value);      // 跌幅門檻本來就是負數
-      else if (what === 'amt') t.amount = Math.max(0, num(el.value));
-      else if (what === 'idx') t.useIndex = num(el.value);
+      if (what === 'amt') t.amount = Math.max(0, num(el.value));
       else if (what === 'note') t.note = el.value;
+      else if (what === 'label') t.label = el.value;
       else t.useDate = el.value;
     }
   }
-  else if (kind === 'rp'){                       // 還款紀錄 rp-<what>-<桶id>-<還款id>
+  else if (kind === 'rp'){                       // 還款紀錄 rp-<what>-<動用記錄id>-<還款id>
     const bits = rest.split('-');
     const what = bits[0], rid = bits[bits.length - 1], tid = bits.slice(1, -1).join('-');
-    const target = tid === 'core' ? state.leverage.core : findById(state.leverage.tranches, tid);
+    const target = findById(state.leverage.draws, tid);
     const rp = target && (target.repayments || []).find(x => x.id === rid);
     if (rp){
       if (what === 'date') rp.date = el.value;
       else rp.amount = Math.max(0, num(el.value));
     }
-  }
-  else if (kind === 'core'){
-    if (rest === 'amt') state.leverage.core.amount = Math.max(0, num(el.value));
-    else if (rest === 'note') state.leverage.core.note = el.value;
-    else state.leverage.core.useDate = el.value;
   }
   else if (kind === 'd'){
     if (rest === 'cat' && el.value === '__new__'){   // 下拉選到「新增類別…」
@@ -2955,9 +2954,8 @@ function sampleData(){
   }));
   s.leverage.marketHigh = 24000;
   s.leverage.marketCurrent = 21500;
-  s.leverage.tranches[0].useDate = shiftMonth(m, -1) + '-05';
-  s.leverage.tranches[0].useIndex = 21500;
-  s.leverage.tranches[0].note = '00631L 10,000 股';
+  s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 1000000,
+    useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
   s.instruments = [
     { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260) },
@@ -3021,15 +3019,12 @@ function stateCSV(){
 
   const r = computeLeverage();
   out += csvTable('# 房貸動用',
-    ['項目', '動用日期', '動用金額', '已還', '餘額', '動用時大盤點位', '備註'],
-    r.tranches.filter(t => t.useDate)
-      .map(t => [t.label, t.useDate, t.amount, t.repaid, t.balance, t.useIndex || '', t.note])
-      .concat(L.core.useDate
-        ? [[L.core.label, L.core.useDate, L.core.amount, repaidOf(L.core), r.coreBalance, '', '']]
-        : []));
+    ['項目', '動用日期', '動用金額', '已還', '餘額', '備註'],
+    r.draws.filter(t => t.useDate)
+      .map(t => [t.label, t.useDate, t.amount, t.repaid, t.balance, t.note]));
 
   const repays = [];
-  L.tranches.concat([L.core]).forEach(t => {
+  L.draws.forEach(t => {
     (t.repayments || []).forEach(rp => { if (rp.date) repays.push([t.label, rp.date, rp.amount]); });
   });
   out += csvTable('# 還款紀錄', ['項目', '日期', '金額'],
@@ -3165,7 +3160,7 @@ function onClick(el){
     case 'copy-json': copyJSON(); return;
     case 'export-csv': exportCSV(); return;
     case 'add-repay': {
-      const target = id === 'core' ? state.leverage.core : findById(state.leverage.tranches, id);
+      const target = findById(state.leverage.draws, id);
       if (target){
         if (!Array.isArray(target.repayments)) target.repayments = [];
         target.repayments.push({ id: uid(), date: todayISO(), amount: 0 });
@@ -3174,8 +3169,18 @@ function onClick(el){
     }
     case 'del-repay': {
       const [tid, rid] = String(id).split(':');
-      const target = tid === 'core' ? state.leverage.core : findById(state.leverage.tranches, tid);
+      const target = findById(state.leverage.draws, tid);
       if (target) target.repayments = (target.repayments || []).filter(x => x.id !== rid);
+      break;
+    }
+    case 'add-draw':
+      state.leverage.draws.push({ id: uid(), label: '動用記錄', amount: 0, useDate: '', note: '', repayments: [] });
+      break;
+    case 'del-draw': {
+      const d = findById(state.leverage.draws, id);
+      if (!d) break;
+      if ((d.repayments || []).length && needsConfirm('del-draw:' + id)) return;
+      state.leverage.draws = state.leverage.draws.filter(x => x.id !== id);
       break;
     }
     case 'add-instrument':
@@ -3241,10 +3246,10 @@ function onClick(el){
       break;
     case 'add-repay2': {
       const L2 = state.leverage;
-      const tid = repayDraft.target || (L2.tranches.find(t => t.useDate) || {}).id || '';
-      const target = tid === 'core' ? L2.core : findById(L2.tranches, tid);
+      const tid = repayDraft.target || (L2.draws.find(t => t.useDate) || {}).id || '';
+      const target = findById(L2.draws, tid);
       const amt = Math.abs(num(repayDraft.amount));
-      if (!target || !target.useDate){ repayError = '請先選一筆動用中的桶金'; renderAll(); return; }
+      if (!target || !target.useDate){ repayError = '請先選一筆動用中的記錄'; renderAll(); return; }
       if (!amt){ repayError = '請填還款金額'; renderAll(); return; }
       if (!Array.isArray(target.repayments)) target.repayments = [];
       target.repayments.push({ id: uid(), date: repayDraft.date || todayISO(), amount: amt });

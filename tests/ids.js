@@ -20,14 +20,14 @@ globalThis.A = { get state(){return state}, set state(v){state=v}, set currentTa
 
 const bugs = [];
 A.state = A.sampleData();
-A.state.leverage.tranches[0].useDate = '2026-08-05';
-A.state.leverage.core.useDate = '2026-07-01';
-A.state.leverage.tranches[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
+A.state.leverage.draws[0].useDate = '2026-08-05';
+A.state.leverage.draws[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
+A.state.leverage.draws.push({ id:'core', label:'長期投資部位', amount:2000000, useDate:'2026-07-01', note:'', repayments:[] });
 for (let i = 1; i <= 5; i++)
   A.state.dailyHistory.push({ d:'2026-09-0' + i, pv:900000+i*1000, loan:1000000, eq:-100000+i*1000, pnl:40000+i*500 });
 
 const rendered = {};
-['overview','signal','trend','log','setup'].forEach(t => {
+['overview','signal','log','setup'].forEach(t => {
   A.currentTab = 'leverage'; A.levTab = t;
   A.renderAll();
   const h = store.content.innerHTML;

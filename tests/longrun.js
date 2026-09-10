@@ -102,26 +102,32 @@ for (let day = 0; day < 365 * YEARS; day++){
       shares:2000, price:I().price, fee:Math.round(2000*I().price*0.001425), amount:0, source:'cash', note:'定期投入' });
 
   // 大盤跌到門檻就動用一筆記錄;曝險比例過高就還一點
-  // (marketHigh/marketCurrent/thresholdPct 欄位還在資料模型裡,只是 app 本身已經不用它們判斷,
-  //  這裡沿用舊公式純粹當「隨時間推進、觸發一些動用/還款事件」的模擬用途)
+  // (marketHigh/marketCurrent 欄位還在資料模型裡,只是 app 本身已經不用它們判斷,
+  //  這裡沿用舊公式純粹當「隨時間推進、觸發一些動用/還款事件」的模擬用途;
+  //  動用記錄不再分桶,模擬腳本自己維護「跌幅門檻」清單,觸發時才 push 進 state.leverage.draws)
   const L0 = A.state.leverage;
-  L0.tranches.forEach(t => {
-    const triggerLevel = L0.marketHigh * (1 + t.thresholdPct/100);
+  const SIM_THRESHOLDS = [-20, -32, -45];
+  if (drawn < SIM_THRESHOLDS.length){
+    const thresholdPct = SIM_THRESHOLDS[drawn];
+    const triggerLevel = L0.marketHigh * (1 + thresholdPct/100);
     const triggered = L0.marketHigh > 0 && L0.marketCurrent > 0 && L0.marketCurrent <= triggerLevel;
-    if (!t.useDate && triggered && drawn < 3){
-      t.useDate = today; t.useIndex = Math.round(L0.marketCurrent); drawn++;
+    if (triggered){
+      const amt = 1000000;
+      const label = '動用記錄 ' + (drawn + 1);
+      L0.draws.push({ id:A.uid(), label, amount:amt, useDate:today, note:'', repayments:[] });
+      drawn++;
       A.state.trades.push({ id:A.uid(), date:today, symbol:'00631L', action:'buy',
-        shares: Math.floor(t.amount / I().price), price:I().price, fee:Math.round(t.amount*0.001425),
-        amount:0, source:'loan', note:t.label });
+        shares: Math.floor(amt / I().price), price:I().price, fee:Math.round(amt*0.001425),
+        amount:0, source:'loan', note:label });
     }
-  });
+  }
   const overExposed = A.computeRisk().exposureRatio > 100;
   if (overExposed && rand() < 0.05){
     const held = A.heldShares('00631L');
     if (held > 3000){
       A.state.trades.push({ id:A.uid(), date:today, symbol:'00631L', action:'sell',
         shares:3000, price:I().price, fee:Math.round(3000*I().price*0.002425), amount:0, source:'cash', note:'減碼' });
-      const t = A.state.leverage.tranches.find(x => x.useDate && x.balance !== 0 &&
+      const t = L0.draws.find(x => x.useDate &&
         (x.repayments||[]).reduce((n,r)=>n+r.amount,0) < x.amount);
       if (t) t.repayments.push({ id:A.uid(), date:today, amount:200000 });
     }
@@ -183,8 +189,8 @@ samples.forEach(s => {
     String(s.lsKB).padStart(10) + 'KB' + String(s.renderMs).padStart(7) + 'ms' + s.xirr.padStart(9));
 });
 console.log('\n最慢一次五頁重畫:' + maxRender.toFixed(1) + 'ms(' + maxRenderDay + ')');
-console.log('\n動用桶金 ' + drawn + ' 桶 | 還款 ' +
-  A.state.leverage.tranches.reduce((n,t)=>n+(t.repayments||[]).length,0) + ' 筆 | ' +
+console.log('\n動用記錄 ' + drawn + ' 筆 | 還款 ' +
+  A.state.leverage.draws.reduce((n,t)=>n+(t.repayments||[]).length,0) + ' 筆 | ' +
   '房貸利息自動入帳 ' + A.state.transactions.filter(t=>t.cat==='房貸利息').length + ' 筆');
 console.log(problems.length ? '\n發現問題:\n' + problems.map((p,i)=>'  '+(i+1)+'. '+p).join('\n') : '\n沒有發現問題');
 })();
