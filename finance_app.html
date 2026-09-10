@@ -2543,9 +2543,11 @@ function renderExposurePlanCard(){
           <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + '(各半 NT$ ' + fmt(p.deltaCash/n) + ')'}</span></div>
         <div class="row sub"><span class="label">方案B:直接借房貸額度買(不拿新錢)</span>
           <span class="val">NT$ ${fmt(p.deltaLoan)}(各半 NT$ ${fmt(p.deltaLoan/n)})</span></div>
-        <div class="muted" style="margin-top:6px;">兩個方案買到的部位一樣,但要花的錢不一樣:自己拿現金出來,等於幫這個部位多墊了一筆本金(像買房付頭期款),要花比較多錢才能把曝險比例撐到目標;直接借房貸,買的東西跟欠的錢一起增加、互相抵銷,不用墊本金,同樣的目標只要比較少的錢。實際要用哪個、還是兩個混著用,自己決定。${p.deltaCash == null ? '這次的目標純用現金到不了,至少要用方案B補足缺口。' : ''}</div>
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
-      <div class="muted" style="margin-top:6px;">目標依「兩檔裡比較保守的那個」決定,不是各自獨立算。</div>
+      <details class="tip" style="margin-bottom:0;"><summary>這些數字是什麼意思</summary><div class="body">
+        ${(!overTarget && p.deltaLoan > 0.5) ? `方案A、方案B買到的部位一樣,但要花的錢不一樣:自己拿現金出來,等於幫這個部位多墊了一筆本金(像買房付頭期款),要花比較多錢才能把曝險比例撐到目標;直接借房貸,買的東西跟欠的錢一起增加、互相抵銷,不用墊本金,同樣的目標只要比較少的錢。實際要用哪個、還是兩個混著用,自己決定。${p.deltaCash == null ? '這次的目標純用現金到不了,至少要用方案B補足缺口。' : ''}<br><br>` : ''}
+        目標依「兩檔裡比較保守的那個」決定,不是各自獨立算。
+      </div></details>
     </div>`;
 }
 
