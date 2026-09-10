@@ -333,6 +333,8 @@ const seriesColor = i => i < SERIES.length ? SERIES[i] : 'var(--s9)';
 /* ===================== 預設狀態 ===================== */
 const DEFAULT_LEVERAGE = {
   shares675L:0, price675L:0, shares631L:0, price631L:0,
+  // marketHigh/marketCurrent/historicalHighValue/autoHigh:舊的跌幅觸發判斷用的欄位,
+  // 那套邏輯已經拿掉,現在沒有任何 UI 讀寫它們(只是讓舊存檔資料讀得進來不出錯)。
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
@@ -953,8 +955,9 @@ async function fetchQuotes(manual){
       }
     });
     if (idxRows && idxRows.length){
+      // 大盤點位本身現在沒有任何 UI 在用(舊的跌幅觸發判斷已經拿掉),
+      // 抓這組資料純粹是為了在個股都查不到時還有日期可以定錨。
       const row = idxRows[idxRows.length - 1];
-      state.leverage.marketCurrent = cleanNum(row[4]);
       date = rocToISO(row[0]) || date;
     }
     if (got || (idxRows && idxRows.length)){
@@ -1056,7 +1059,7 @@ function defaultFee(action, gross){
   return Math.round(action === 'sell' ? broker + gross * 0.001 : broker);
 }
 /* 一筆借款從動用日到今天,依「實際餘額」分段累積。
-   還款之後只對剩下的餘額繼續算,利息與撤退門檻都用這個。 */
+   還款之後只對剩下的餘額繼續算。 */
 function accrue(item, annualPct){
   if (!item.useDate) return 0;
   const today = todayISO();
@@ -1714,7 +1717,6 @@ function renderLedger(){
 /* ===================== 說明 =====================
    把不直覺的算法寫給使用者看,免得過幾個月自己也忘了數字是怎麼來的。 */
 function renderHelp(){
-  const L = state.leverage;
   return `
     <div class="sect">這個 app 在算什麼</div>
     <div class="card doc">
@@ -2429,7 +2431,7 @@ function renderDrawRecords(){
     </div>`;
 }
 
-/* 還款紀錄:原本夾在各桶金裡,搬成獨立的一張卡 */
+/* 還款紀錄:獨立成一張卡,對應 state.leverage.draws 裡任一筆有 useDate 的動用記錄 */
 function renderRepayments(){
   const L = state.leverage;
   const items = L.draws.filter(x => x.useDate);
