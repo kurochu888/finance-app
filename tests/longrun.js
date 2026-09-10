@@ -101,19 +101,22 @@ for (let day = 0; day < 365 * YEARS; day++){
     A.state.trades.push({ id:A.uid(), date:today, symbol:'00631L', action:'buy',
       shares:2000, price:I().price, fee:Math.round(2000*I().price*0.001425), amount:0, source:'cash', note:'定期投入' });
 
-  // 大盤跌到門檻就動用桶金;漲多了就還一點
-  const r0 = A.computeLeverage();
-  r0.tranches.forEach(view => {
-    // computeLeverage 回傳的是複本,要改真的那一筆
-    const t = A.state.leverage.tranches.find(x => x.id === view.id);
-    if (t && !t.useDate && view.triggered && drawn < 3){
-      t.useDate = today; t.useIndex = Math.round(A.state.leverage.marketCurrent); drawn++;
+  // 大盤跌到門檻就動用一筆記錄;曝險比例過高就還一點
+  // (marketHigh/marketCurrent/thresholdPct 欄位還在資料模型裡,只是 app 本身已經不用它們判斷,
+  //  這裡沿用舊公式純粹當「隨時間推進、觸發一些動用/還款事件」的模擬用途)
+  const L0 = A.state.leverage;
+  L0.tranches.forEach(t => {
+    const triggerLevel = L0.marketHigh * (1 + t.thresholdPct/100);
+    const triggered = L0.marketHigh > 0 && L0.marketCurrent > 0 && L0.marketCurrent <= triggerLevel;
+    if (!t.useDate && triggered && drawn < 3){
+      t.useDate = today; t.useIndex = Math.round(L0.marketCurrent); drawn++;
       A.state.trades.push({ id:A.uid(), date:today, symbol:'00631L', action:'buy',
         shares: Math.floor(t.amount / I().price), price:I().price, fee:Math.round(t.amount*0.001425),
         amount:0, source:'loan', note:t.label });
     }
   });
-  if (r0.exitReached && rand() < 0.05){
+  const overExposed = A.computeRisk().exposureRatio > 100;
+  if (overExposed && rand() < 0.05){
     const held = A.heldShares('00631L');
     if (held > 3000){
       A.state.trades.push({ id:A.uid(), date:today, symbol:'00631L', action:'sell',
