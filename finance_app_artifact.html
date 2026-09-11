@@ -532,6 +532,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
+const BUILD_VERSION = '2026-09-11 · 53c35b7d13';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1961,7 +1962,8 @@ function renderHelp(){
       <p>用房屋擔保額度做槓桿投資,會把投資虧損直接連到房子與每月現金流。
       這個 app 的所有計算都是<strong>簡化試算</strong>,不構成投資或貸款建議。
       實際動用資金前請與銀行確認正式條件。</p>
-    </div>`;
+    </div>
+    <div class="muted" style="text-align:center; margin-top:16px;">建置版本 ${BUILD_VERSION}</div>`;
 }
 
 /* ===================== 槓桿 ===================== */
@@ -2160,7 +2162,7 @@ function lineChart(key, labels, series, opts){
 
   const dots = series.map((s2, si) => s2.values.map((v, i) =>
     (v === null || v === undefined) ? '' :
-    `<circle class="pt-${key}-${si}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === labels.length - 1 ? 3.5 : 0}" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`
+    `<circle class="pt-${key}-${si}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2" fill="${s2.color}" stroke="var(--card)" stroke-width="2"/>`
   ).join('')).join('');
 
   // 整欄都可以點,手指好按
@@ -2208,7 +2210,7 @@ function pickChartPoint(key, i){
   }
   d.series.forEach((s2, si) => {
     document.querySelectorAll('.pt-' + key + '-' + si).forEach((el, idx) => {
-      el.setAttribute('r', idx === i ? '4' : '0');
+      el.setAttribute('r', idx === i ? '4' : '2');
     });
   });
 }
