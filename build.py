@@ -8,23 +8,31 @@
 程式碼只有一份,改 app.template.html 之後跑 python3 build.py 重新產生。
 圖示由 make_icons.py 產生。
 """
-import base64, hashlib, json, pathlib, re, shutil
+import base64, datetime, hashlib, json, pathlib, re, shutil
 
 ROOT = pathlib.Path(__file__).parent
 tpl = (ROOT / 'app.template.html').read_text(encoding='utf-8')
+
+# 版號不是手動維護的 semantic version——單人持續部署的 app,手動編號只會忘記更新。
+# 用「原始檔內容的 hash + build 當天日期」當版號,build.py 一跑就自動換,三份產物共用同一個值,
+# 拿來確認「網頁上看到的是不是最新那次 build」用,不代表任何相容性語意。
+BUILD_HASH = hashlib.sha256(tpl.encode()).hexdigest()[:10]
+BUILD_VERSION = f'{datetime.date.today().isoformat()} · {BUILD_HASH}'
 
 NOTE_LOCAL = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。'
 NOTE_CLOUD = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。'
 
 # --- Artifact 版:沒有 <!doctype>/<head>/<body>,由平台包起來 ---
 # Artifact 的 CSP 擋掉對外部網域的請求,證交所報價只在網頁版/單檔版可用
-artifact = tpl.replace('/*STORAGE_NOTE*/', NOTE_CLOUD).replace('/*QUOTES_ENABLED*/', 'false')
+artifact = (tpl.replace('/*STORAGE_NOTE*/', NOTE_CLOUD).replace('/*QUOTES_ENABLED*/', 'false')
+            .replace('/*BUILD_VERSION*/', BUILD_VERSION))
 (ROOT / 'finance_app_artifact.html').write_text(artifact, encoding='utf-8')
 
 # --- 獨立版:補回完整文件外殼與離線用的 icon ---
 icon_b64 = base64.b64encode((ROOT / 'icon-180.png').read_bytes()).decode()
 fav_b64 = base64.b64encode((ROOT / 'favicon-32.png').read_bytes()).decode()
-body = tpl.replace('/*STORAGE_NOTE*/', NOTE_LOCAL).replace('/*QUOTES_ENABLED*/', 'true')
+body = (tpl.replace('/*STORAGE_NOTE*/', NOTE_LOCAL).replace('/*QUOTES_ENABLED*/', 'true')
+        .replace('/*BUILD_VERSION*/', BUILD_VERSION))
 title = re.search(r'<title>(.*?)</title>', body).group(1)
 # 模板開頭是 <title> + <style>,把這段放進 <head>,其餘放進 <body>
 cut = body.index('</style>') + len('</style>')
@@ -141,10 +149,9 @@ CLOUD_FILES = ['firebase-sync.js', 'firebase-config.js']
 for name in ASSETS + CLOUD_FILES:
     shutil.copy2(ROOT / name, SITE / name)
 
-# 每次 build 內容有變就換 cache 名稱,使用者第二次開啟時自動拿到新版
-version = hashlib.sha256(site_html.encode()).hexdigest()[:10]
+# 跟「說明」頁顯示的建置版本用同一個 hash,換版時 CACHE 名稱會跟著變,舊快取自動清掉。
 sw = f"""/* 離線快取:換版時 CACHE 名稱會變,舊快取自動清掉。 */
-const CACHE = 'finance-{version}';
+const CACHE = 'finance-{BUILD_HASH}';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', {', '.join(repr('./' + a) for a in ASSETS + CLOUD_FILES)}];
 
 self.addEventListener('install', e => {{
@@ -180,4 +187,4 @@ self.addEventListener('fetch', e => {{
 (SITE / 'sw.js').write_text(sw, encoding='utf-8')
 (SITE / '.nojekyll').write_text('', encoding='utf-8')
 
-print('docs/                     ', len(site_html), 'bytes  (PWA,cache', version + ')')
+print('docs/                     ', len(site_html), 'bytes  (PWA,cache', BUILD_HASH + ')')
