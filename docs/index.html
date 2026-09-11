@@ -1863,6 +1863,32 @@ function renderHelp(){
       <div class="formula">HOLD 時:收盤 &lt; 快線 × 出場緩衝 → 出場,轉入 WAIT_RECOVER
 非 HOLD 時:站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
            否則,跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
+      <p>五個參數各自在管什麼:</p>
+      <ul>
+        <li><strong>快線/慢線天數</strong>(正2 預設 120/240,1倍標的預設 100/200)——決定多久算一次趨勢,
+        天數越長訊號越慢但越不容易被短期雜訊晃動。HOLD/EXIT 只看快線;慢線只當「接刀門檻」的參考之一。</li>
+        <li><strong>出場緩衝</strong>(預設 0.90)——HOLD 中不是跌破快線就跑,是要跌破「快線 × 0.90」才算真的破位,
+        留一段緩衝不被單日雜訊洗出場。</li>
+        <li><strong>回歸斜率門檻</strong>(預設 1.002)——光是收盤價站上快線還不夠,快線本身也要是真的在往上走
+        (今天快線 ≥ 昨天快線 × 1.002),排除快線還在下彎、只是價格短暫站上去的假訊號。</li>
+        <li><strong>強力反彈門檻</strong>(預設 1.03)——反彈夠猛的話(收盤衝到快線的 103% 以上)不用等斜率確認,
+        直接判定 RECOVER,用來抓急殺急拉、均線來不及反應的 V 型反轉。</li>
+        <li><strong>加碼間距</strong>(預設 15%)與<strong>加碼層數上限</strong>(正2 預設 2 層)——WAIT_RECOVER 時,
+        每跌破「基準價」(上一次動作那天的收盤價,跟慢線取較低者)再 15%,加碼一層,最多加到層數上限,
+        之後再跌也不再加碼,留著子彈等真正的 RECOVER。</li>
+      </ul>
+      <p>舉例(00631L,快線恰好 100):HOLD 中續抱,收盤跌到 89(跌破快線 × 0.90 = 90)觸發 EXIT,
+      轉入 WAIT_RECOVER,基準價記為 89。之後續跌到 89 打 85 折 ≈ 75.65 以下,觸發第一次 ADD,
+      基準價更新為當天收盤;再跌 15% 觸發第二次 ADD(正2 加碼層數上限是 2,到此不再加碼)。
+      之後如果收盤衝到快線 103% 以上、或連兩天站上快線且快線轉為上揚,判定 RECOVER,一次補滿倉位轉回 HOLD,
+      加碼層數歸零,整個循環重新開始。同一天如果 RECOVER 和 ADD 的條件都成立,只會回報 RECOVER。</p>
+      <p><strong>EXIT 只在 HOLD 狀態下才會檢查</strong>——加碼到層數上限之後,曝險目標(見下面「正2 曝險目標」)
+      其實已經可能跟 HOLD 一樣是滿倉,但只要狀態還沒真的轉成 HOLD,就不會有任何自動停損檢查,
+      會一路抱著等 RECOVER,不會因為之後又繼續下跌就跳出減碼建議。這是刻意的設計取捨(用房貸不怕斷頭,
+      不想在還沒確認真正反轉之前就跟著雜訊反覆進出),不是判斷邏輯漏了這段。</p>
+      <p>這裡每次都是拿完整的歷史價格<strong>從頭重新回放一次整個狀態機</strong>,不是把「現在狀態」存起來
+      逐日累加更新——所以在「設定」分頁改了均線參數之後,所有標的的狀態會立刻用新參數重新算過一遍,
+      不會有「改了參數但舊狀態沒跟著換」這種情況。</p>
       <p>均線需要的歷史收盤價要先在<strong>「訊號」分頁</strong>按「回補歷史價格」抓一次
       (逐月依序抓,不會同時對證交所發一串請求);之後每次更新報價會順便累積,不用常按。
       快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
@@ -2611,10 +2637,10 @@ function renderTrendTab(){
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
-          <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${fmt(t.maFast)} / ${fmt(t.maSlow)}</span></div>
-          <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${fmt(t.lastClose)}</span></div>
+          <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast.toFixed(2)} / ${t.maSlow.toFixed(2)}</span></div>
+          <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
-            ? `<div class="row sub"><span class="label">距出場緩衝</span><span class="val">${t.cushionPct == null ? '—' : t.cushionPct.toFixed(1) + '%'}</span></div>`
+            ? `<div class="row sub"><span class="label">距出場緩衝</span><span class="val">${t.cushionPct == null ? '—' : t.cushionPct.toFixed(2) + '%'}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
         </div>`;
       }).join('')}
