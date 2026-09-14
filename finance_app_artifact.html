@@ -261,6 +261,14 @@
     font-size:12px; line-height:1.7; color:var(--sub); background:var(--raised);
     border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:6px;
   }
+  details.adv{ margin-top:10px; }
+  details.adv > summary{
+    cursor:pointer; list-style:none; font-size:12px; font-weight:700; color:var(--text);
+  }
+  details.adv > summary::-webkit-details-marker{ display:none; }
+  details.adv > summary::after{ content:' ▸'; color:var(--sub); font-weight:400; }
+  details.adv[open] > summary::after{ content:' ▾'; }
+  details.adv > .body{ margin-top:10px; }
   .storage-status{
     font-size:11px; color:var(--sub); text-align:center; padding:7px 10px 5px;
     background:var(--card); border-top:1px solid var(--line);
@@ -532,7 +540,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-11 · 53c35b7d13';
+const BUILD_VERSION = '2026-09-15 · e4b0d59f00';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1520,6 +1528,7 @@ function renderOverview(){
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">NT$ ${fmt(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
+        <div class="row"><span class="label">累計報酬(對累計自有投入)</span><span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
         <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
       </div>`;
     })()}
@@ -2643,8 +2652,12 @@ function renderLeverage(){
     ` : `
     <div class="card">
       <h3>持股與報價</h3>
-      ${r.holdings.map(h => {
+      ${(() => { const p = computePosition(); return r.holdings.map(h => {
         const it = findInstrumentByKey(h.key);
+        const lot = p.lots[it.id];
+        const hasCost = lot && lot.shares > 0;
+        const avgCost = hasCost ? lot.cost / lot.shares : 0;
+        const gain = hasCost ? h.value - lot.cost : 0;
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
           <div class="erow" style="margin-top:0;">
@@ -2662,19 +2675,27 @@ function renderLeverage(){
           <div class="field"><label>槓桿倍數(正2 填 2,一般股票填 1)</label>
             <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.key}" value="${it.leverage}"></div>
           <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
-          <div class="row sub" style="margin-top:8px;"><span class="label" style="font-weight:700;">趨勢訊號參數</span><span class="val"></span></div>
-          <div class="grid2">
-            <div class="field"><label>快線(日)</label><input type="number" inputmode="decimal" data-k="sig-maFast-${it.key}" value="${it.trend.maFast}"></div>
-            <div class="field"><label>慢線(日)</label><input type="number" inputmode="decimal" data-k="sig-maSlow-${it.key}" value="${it.trend.maSlow}"></div>
-            <div class="field"><label>出場緩衝(0.90=跌破快線10%出場)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-exitBuffer-${it.key}" value="${it.trend.exitBuffer}"></div>
-            <div class="field"><label>加碼間距(0.15=跌15%加碼)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-pyramidGap-${it.key}" value="${it.trend.pyramidGap}"></div>
-            <div class="field"><label>最多加碼層數</label><input type="number" inputmode="decimal" data-k="sig-pyramidLevels-${it.key}" value="${it.trend.pyramidLevels}"></div>
-            <div class="field"><label>回歸斜率門檻</label><input type="number" inputmode="decimal" step="0.001" data-k="sig-recoverSlopeThreshold-${it.key}" value="${it.trend.recoverSlopeThreshold}"></div>
-            <div class="field"><label>強力反彈門檻</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-recoverStrongRebound-${it.key}" value="${it.trend.recoverStrongRebound}"></div>
-          </div>
-          <button class="btn quiet" data-act="reset-trend-params" data-id="${it.key}">趨勢參數重設為預設值</button>
+          ${hasCost ? `
+          <div class="row sub"><span class="label">平均成本</span><span class="val">${avgCost.toFixed(2)}</span></div>
+          <div class="row sub"><span class="label">未實現損益</span><span class="val ${gain >= 0 ? 'pos' : 'neg'}">${gain >= 0 ? '+' : '−'}NT$ ${fmt(Math.abs(gain))}(${gain >= 0 ? '+' : '−'}${Math.abs(gain / lot.cost * 100).toFixed(1)}%)</span></div>
+          ` : hasTrades() ? '' : `<div class="muted" style="margin-top:6px;">股數是手動填的,沒有買賣紀錄可以算成本。</div>`}
+          <details class="adv">
+            <summary>趨勢訊號參數(進階,通常不用改)</summary>
+            <div class="body">
+              <div class="grid2">
+                <div class="field"><label>快線(日)</label><input type="number" inputmode="decimal" data-k="sig-maFast-${it.key}" value="${it.trend.maFast}"></div>
+                <div class="field"><label>慢線(日)</label><input type="number" inputmode="decimal" data-k="sig-maSlow-${it.key}" value="${it.trend.maSlow}"></div>
+                <div class="field"><label>出場緩衝(0.90=跌破快線10%出場)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-exitBuffer-${it.key}" value="${it.trend.exitBuffer}"></div>
+                <div class="field"><label>加碼間距(0.15=跌15%加碼)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-pyramidGap-${it.key}" value="${it.trend.pyramidGap}"></div>
+                <div class="field"><label>最多加碼層數</label><input type="number" inputmode="decimal" data-k="sig-pyramidLevels-${it.key}" value="${it.trend.pyramidLevels}"></div>
+                <div class="field"><label>回歸斜率門檻</label><input type="number" inputmode="decimal" step="0.001" data-k="sig-recoverSlopeThreshold-${it.key}" value="${it.trend.recoverSlopeThreshold}"></div>
+                <div class="field"><label>強力反彈門檻</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-recoverStrongRebound-${it.key}" value="${it.trend.recoverStrongRebound}"></div>
+              </div>
+              <button class="btn quiet" data-act="reset-trend-params" data-id="${it.key}">趨勢參數重設為預設值</button>
+            </div>
+          </details>
         </div>`;
-      }).join('')}
+      }).join(''); })()}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
       <div class="row"><span class="label" style="font-weight:700;">總市值</span><span class="val" id="out-totalValue" style="font-weight:800;">NT$ ${fmt(r.totalValue)}</span></div>
       <button class="btn" data-act="add-instrument">＋ 新增標的</button>
