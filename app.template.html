@@ -367,8 +367,8 @@ const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的
 
 /* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
-  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] },
-  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] }
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, cost:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, cost:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] }
 ];
 // trend/priceHistory 是巢狀物件,Object.assign 只會淺拷貝參照 —— 每個新 instrument
 // 都要有自己獨立的 trend/priceHistory,不能共用同一份 DEFAULT_INSTRUMENTS 底下的物件,
@@ -406,6 +406,7 @@ function normalize(raw){
         leverage,
         price: Math.max(0, num(x.price)),
         shares: Math.max(0, num(x.shares)),
+        cost: Math.max(0, num(x.cost)),
         auto: x.auto !== false,
         trend: {
           maFast: Math.max(1, finiteNum(t.maFast, 0) || def.maFast),
@@ -2652,12 +2653,16 @@ function renderLeverage(){
     ` : `
     <div class="card">
       <h3>持股與報價</h3>
-      ${(() => { const p = computePosition(); return r.holdings.map(h => {
+      ${(() => { const p = computePosition();
+      const gainRow = (value, costBasis) => `
+          <div class="row sub"><span class="label">未實現損益</span><span class="val ${value >= 0 ? 'pos' : 'neg'}">${value >= 0 ? '+' : '−'}NT$ ${fmt(Math.abs(value))}(${value >= 0 ? '+' : '−'}${(costBasis > 0 ? Math.abs(value / costBasis * 100) : 0).toFixed(1)}%)</span></div>`;
+      return r.holdings.map(h => {
         const it = findInstrumentByKey(h.key);
         const lot = p.lots[it.id];
         const hasCost = lot && lot.shares > 0;
         const avgCost = hasCost ? lot.cost / lot.shares : 0;
         const gain = hasCost ? h.value - lot.cost : 0;
+        const manualCostBasis = it.cost * h.shares;
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
           <div class="erow" style="margin-top:0;">
@@ -2677,8 +2682,12 @@ function renderLeverage(){
           <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
           ${hasCost ? `
           <div class="row sub"><span class="label">平均成本</span><span class="val">${avgCost.toFixed(2)}</span></div>
-          <div class="row sub"><span class="label">未實現損益</span><span class="val ${gain >= 0 ? 'pos' : 'neg'}">${gain >= 0 ? '+' : '−'}NT$ ${fmt(Math.abs(gain))}(${gain >= 0 ? '+' : '−'}${Math.abs(gain / lot.cost * 100).toFixed(1)}%)</span></div>
-          ` : hasTrades() ? '' : `<div class="muted" style="margin-top:6px;">股數是手動填的,沒有買賣紀錄可以算成本。</div>`}
+          ${gainRow(gain, lot.cost)}
+          ` : lot ? '' : `
+          <div class="field"><label>平均成本(每股,選填)</label>
+            <input type="number" inputmode="decimal" step="0.01" data-k="in-cost-${it.key}" value="${it.cost || ''}" placeholder="填了才看得到損益"></div>
+          ${it.cost > 0 && h.shares > 0 ? gainRow(h.value - manualCostBasis, manualCostBasis) : ''}
+          `}
           <details class="adv">
             <summary>趨勢訊號參數(進階,通常不用改)</summary>
             <div class="body">
@@ -2852,6 +2861,7 @@ function onField(key, el){
       else if (what === 'lev') it.leverage = num(el.value);
       else if (what === 'price') it.price = Math.max(0, num(el.value));
       else if (what === 'shares') it.shares = Math.max(0, num(el.value));
+      else if (what === 'cost') it.cost = Math.max(0, num(el.value));
     }
   }
   else if (kind === 'sig'){                      // 趨勢訊號參數,用內部 key 定位
@@ -3009,11 +3019,11 @@ function sampleData(){
   s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 1000000,
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
   s.instruments = [
-    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
+    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, cost:0, auto:true,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260) },
-    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true,
+    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, cost:0, auto:true,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260) },
-    { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
+    { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, cost:0, auto:true,
       trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220) }
   ];
   const back = n => shiftMonth(m, -n) + '-05';
@@ -3235,7 +3245,7 @@ function onClick(el){
       break;
     }
     case 'add-instrument':
-      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true,
+      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, cost:0, auto:true,
         trend: defaultTrendParams(1), priceHistory:[] });
       levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
