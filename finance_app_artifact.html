@@ -540,7 +540,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-15 · 29ca838b98';
+const BUILD_VERSION = '2026-09-15 · 4a1c55ca50';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1651,6 +1651,20 @@ function refreshAssets(){
   });
 }
 
+/* 買賣草稿的「成交金額」預估:只改這一小塊 DOM,不整頁重畫,
+   不然打字打到一半、input 被整個換掉就會失焦。 */
+function refreshTradeDraft(){
+  const d = tradeDraft;
+  const gross = num(d.shares) * num(d.price);
+  const box = document.getElementById('pd-gross');
+  if (box){
+    box.style.display = (gross && d.action !== 'dividend') ? '' : 'none';
+    box.textContent = '成交金額 NT$ ' + fmt(gross) + (d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : '');
+  }
+  const feeInput = document.getElementById('pd-fee-input');
+  if (feeInput) feeInput.placeholder = gross ? fmt(defaultFee(d.action, gross)) : '自動';
+}
+
 /* ===================== 記帳 ===================== */
 function renderLedger(){
   const cats0 = knownCats();
@@ -2384,10 +2398,10 @@ function renderTrades(){
         <div class="field"><label>日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
         <div class="field"><label>股數</label><input type="number" inputmode="decimal" data-k="pd-shares" value="${esc(d.shares)}" placeholder="0"></div>
         <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pd-price" value="${esc(d.price)}" placeholder="${symbolPrice(d.symbol) || '0'}"></div>
-        <div class="field"><label>手續費(可空)</label><input type="number" inputmode="decimal" data-k="pd-fee" value="${esc(d.fee)}" placeholder="${gross ? fmt(defaultFee(d.action, gross)) : '自動'}"></div>
+        <div class="field"><label>手續費(可空)</label><input type="number" inputmode="decimal" id="pd-fee-input" data-k="pd-fee" value="${esc(d.fee)}" placeholder="${gross ? fmt(defaultFee(d.action, gross)) : '自動'}"></div>
       </div>`}
       <div class="field"><label>備註(可空)</label><input data-k="pd-note" value="${esc(d.note)}" placeholder="例如:年終獎金加碼"></div>
-      ${(gross && d.action !== 'dividend') ? `<div class="muted" style="margin-bottom:8px;">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>` : ''}
+      <div class="muted" id="pd-gross" style="margin-bottom:8px; ${(gross && d.action !== 'dividend') ? '' : 'display:none;'}">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>
       <button class="btn solid" data-act="add-trade">新增紀錄</button>
       ${tradeError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(tradeError)}</div>` : ''}
     </div>
@@ -2914,7 +2928,7 @@ function onField(key, el){
   }
   else if (kind === 'pd'){                                          // 買賣草稿
     tradeDraft[rest] = el.value;
-    if (rest === 'shares' || rest === 'price') renderAll();          // 更新成交金額預估
+    if (rest === 'shares' || rest === 'price') refreshTradeDraft();  // 更新成交金額預估,不整頁重畫
     return;
   }
   else if (kind === 'pt'){                                          // 修改既有買賣紀錄
