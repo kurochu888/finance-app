@@ -393,8 +393,8 @@ const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他
    這兩組是使用者自己長期在用、驗證過樣本外表現的參數,不是隨便挑的。 */
 function defaultTrendParams(leverage){
   const base = (num(leverage) >= 2)
-    ? { maFast:120, maSlow:240, exitBuffer:0.90, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2, chopThreshold:0.03 }
-    : { maFast:100, maSlow:200, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:1, chopThreshold:0.03 };
+    ? { maFast:120, maSlow:240, exitBuffer:0.90, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2 }
+    : { maFast:100, maSlow:200, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:1 };
   return Object.assign(base, { lastSeenStatus:'', lastSeenDate:'' });
 }
 const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的長度
@@ -449,7 +449,6 @@ function normalize(raw){
           recoverStrongRebound: finiteNum(t.recoverStrongRebound, 0) > 0 ? finiteNum(t.recoverStrongRebound, def.recoverStrongRebound) : def.recoverStrongRebound,
           pyramidGap: finiteNum(t.pyramidGap, 0) > 0 ? finiteNum(t.pyramidGap, def.pyramidGap) : def.pyramidGap,
           pyramidLevels: Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels)),
-          chopThreshold: finiteNum(t.chopThreshold, 0) > 0 ? finiteNum(t.chopThreshold, def.chopThreshold) : def.chopThreshold,
           lastSeenStatus: String(t.lastSeenStatus || ''),
           lastSeenDate: String(t.lastSeenDate || '')
         },
@@ -575,7 +574,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-15 · f63f251d58';
+const BUILD_VERSION = '2026-09-15 · 6614dbef7e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1902,10 +1901,9 @@ function renderHelp(){
         <li><strong>WATCH</strong> — 歷史價格不夠(還沒回補,或標的太新),算不出均線</li>
       </ul>
       <div class="formula">HOLD 時:收盤 &lt; 快線 × 出場緩衝 → 出場,轉入 WAIT_RECOVER
-非 HOLD 時(快慢線乖離要夠大,不是在盤整,以下才會生效):
-           站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
-           否則,連兩天都跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
-      <p>六個參數各自在管什麼:</p>
+非 HOLD 時:站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
+           否則,跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
+      <p>五個參數各自在管什麼:</p>
       <ul>
         <li><strong>快線/慢線天數</strong>(正2 預設 120/240,1倍標的預設 100/200)——決定多久算一次趨勢,
         天數越長訊號越慢但越不容易被短期雜訊晃動。HOLD/EXIT 只看快線;慢線只當「接刀門檻」的參考之一。</li>
@@ -1916,21 +1914,14 @@ function renderHelp(){
         <li><strong>強力反彈門檻</strong>(預設 1.03)——反彈夠猛的話(收盤衝到快線的 103% 以上)不用等斜率確認,
         直接判定 RECOVER,用來抓急殺急拉、均線來不及反應的 V 型反轉。</li>
         <li><strong>加碼間距</strong>(預設 15%)與<strong>加碼層數上限</strong>(正2 預設 2 層)——WAIT_RECOVER 時,
-        連續兩天收盤都跌破「基準價」(上一次動作那天的收盤價,跟慢線取較低者)再 15%,才算數、加碼一層,
-        最多加到層數上限,之後再跌也不再加碼,留著子彈等真正的 RECOVER。單日跌破隔天就彈回去不算,
-        濾掉單日雜訊誤加碼。</li>
-        <li><strong>乖離濾網</strong>(預設 3%,還沒像其他參數一樣長期驗證過,是討論出來的經驗值)——快線和慢線
-        靠太近時,代表行情在盤整、方向還不明朗,這時候即使剛好踩到「加碼間距」或「站回快線」的數字條件,
-        也先按兵不動,避免在雜訊裡來回打臉、白白多繳交易成本。快慢線差距要拉開超過這個門檻(不管誰在上面),
-        ADD/RECOVER 才會生效——出場不受這個濾網限制,該砍還是砍。</li>
+        每跌破「基準價」(上一次動作那天的收盤價,跟慢線取較低者)再 15%,加碼一層,最多加到層數上限,
+        之後再跌也不再加碼,留著子彈等真正的 RECOVER。</li>
       </ul>
-      <p>舉例(00631L,快線恰好 100,假設當時快慢線乖離已經夠大,乖離濾網不擋):HOLD 中續抱,
-      收盤跌到 89(跌破快線 × 0.90 = 90)觸發 EXIT,轉入 WAIT_RECOVER,基準價記為 89。之後連兩天收盤
-      都在 89 打 85 折 ≈ 75.65 以下,觸發第一次 ADD,基準價更新為第二天收盤;再連兩天跌破新基準價的 85%
-      觸發第二次 ADD(正2 加碼層數上限是 2,到此不再加碼)。之後如果收盤衝到快線 103% 以上、或連兩天站上
-      快線且快線轉為上揚,判定 RECOVER,一次補滿倉位轉回 HOLD,加碼層數歸零,整個循環重新開始。同一天如果
-      RECOVER 和 ADD 的條件都成立,只會回報 RECOVER。如果盤整中快慢線乖離一直沒拉開,以上動作全部暫停,
-      只會停在原本的狀態不動。</p>
+      <p>舉例(00631L,快線恰好 100):HOLD 中續抱,收盤跌到 89(跌破快線 × 0.90 = 90)觸發 EXIT,
+      轉入 WAIT_RECOVER,基準價記為 89。之後續跌到 89 打 85 折 ≈ 75.65 以下,觸發第一次 ADD,
+      基準價更新為當天收盤;再跌 15% 觸發第二次 ADD(正2 加碼層數上限是 2,到此不再加碼)。
+      之後如果收盤衝到快線 103% 以上、或連兩天站上快線且快線轉為上揚,判定 RECOVER,一次補滿倉位轉回 HOLD,
+      加碼層數歸零,整個循環重新開始。同一天如果 RECOVER 和 ADD 的條件都成立,只會回報 RECOVER。</p>
       <p><strong>EXIT 只在 HOLD 狀態下才會檢查</strong>——加碼到層數上限之後,曝險目標(見下面「正2 曝險目標」)
       其實已經可能跟 HOLD 一樣是滿倉,但只要狀態還沒真的轉成 HOLD,就不會有任何自動停損檢查,
       會一路抱著等 RECOVER,不會因為之後又繼續下跌就跳出減碼建議。這是刻意的設計取捨(用房貸不怕斷頭,
@@ -1941,7 +1932,7 @@ function renderHelp(){
       <p>均線需要的歷史收盤價,在<strong>「設定」分頁</strong>按「從證交所更新收盤價」就好——
       歷史不夠時會自動一併回補(逐月依序抓,不會同時對證交所發一串請求),
       不用特地跑去「訊號」分頁按「回補歷史價格」;之後每次更新報價會順便累積,不用常按。
-      快線/慢線天數、出場緩衝、加碼間距與層數、乖離濾網都可以在<strong>「設定」分頁</strong>每檔標的自己調,
+      快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
       改壞了按「重設為預設值」就好。</p>
       <p><strong>這只是訊號顯示,不會自動下單。</strong>該買該賣一樣要自己到「紀錄」分頁記一筆——
       這個分頁只負責告訴你現在是什麼狀態、距離出場線還有多少緩衝。</p>
@@ -2137,30 +2128,22 @@ function computeTrend(it){
   const maS = sma(closes, p.maSlow);
   const start = p.maSlow - 1;
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
-  let gapHitYesterday = false;   // ADD 的兩日確認:記住「昨天用昨天當時的門檻算,有沒有跌破」
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
     if (f == null || s == null || fy == null) continue;
     let action;
     if (status === 'HOLD'){
       action = close < f * p.exitBuffer ? 'EXIT' : 'HOLD';
-      gapHitYesterday = false;
     }else{
       const priceStable = close > f && closes[i - 1] > maF[i - 1];
       const slopeOk = f >= fy * p.recoverSlopeThreshold;
       const strongRebound = close > f * p.recoverStrongRebound;
       const manualPrice = basePrice > 0 ? basePrice : closes[i - 1];
       const effectiveBase = Math.min(manualPrice, s);
-      const gapHitToday = close < effectiveBase * (1 - p.pyramidGap);
-      // 連兩天都跌破才算數,單日雜訊不算——用「昨天當時的門檻」判斷昨天,不是拿今天的門檻回頭套昨天
-      // (基準價不變時門檻本來就不變;但 effectiveBase 有時是還在下滑的慢線,拿今天的門檻套昨天
-      // 會變成一直追著往下滑的目標,平白拖長好幾天,不是本來要的「多等一天確認」)
-      const gapTriggered = gapHitToday && gapHitYesterday;
-      const trending = Math.abs(f - s) / s >= p.chopThreshold;   // 快慢線靠太近視為盤整,ADD/RECOVER 暫停(EXIT 不受影響)
-      if (trending && ((priceStable && slopeOk) || strongRebound)) action = 'RECOVER';
-      else if (trending && gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
+      const gapTriggered = close < effectiveBase * (1 - p.pyramidGap);
+      if ((priceStable && slopeOk) || strongRebound) action = 'RECOVER';
+      else if (gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
       else action = status;
-      gapHitYesterday = (action === 'ADD') ? false : gapHitToday;   // 剛加碼過,門檻換新的,重新累積兩天
     }
     if (action === 'RECOVER'){ basePrice = close; pyramidCount = 0; status = 'HOLD'; }
     else if (action === 'ADD'){ basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER'; }
@@ -2772,7 +2755,6 @@ function renderLeverage(){
                 <div class="field"><label>慢線(日)</label><input type="number" inputmode="decimal" data-k="sig-maSlow-${it.key}" value="${it.trend.maSlow}"></div>
                 <div class="field"><label>出場緩衝(0.90=跌破快線10%出場)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-exitBuffer-${it.key}" value="${it.trend.exitBuffer}"></div>
                 <div class="field"><label>加碼間距(0.15=跌15%加碼)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-pyramidGap-${it.key}" value="${it.trend.pyramidGap}"></div>
-                <div class="field"><label>乖離濾網(0.03=快慢線差距&lt;3%視為盤整,暫停加碼/回歸)</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-chopThreshold-${it.key}" value="${it.trend.chopThreshold}"></div>
                 <div class="field"><label>最多加碼層數</label><input type="number" inputmode="decimal" data-k="sig-pyramidLevels-${it.key}" value="${it.trend.pyramidLevels}"></div>
                 <div class="field"><label>回歸斜率門檻</label><input type="number" inputmode="decimal" step="0.001" data-k="sig-recoverSlopeThreshold-${it.key}" value="${it.trend.recoverSlopeThreshold}"></div>
                 <div class="field"><label>強力反彈門檻</label><input type="number" inputmode="decimal" step="0.01" data-k="sig-recoverStrongRebound-${it.key}" value="${it.trend.recoverStrongRebound}"></div>
@@ -2948,7 +2930,7 @@ function onField(key, el){
       const v = num(el.value);
       if (what === 'maFast' || what === 'maSlow') it.trend[what] = Math.max(1, Math.round(v));
       else if (what === 'pyramidLevels') it.trend[what] = Math.max(1, Math.round(v));
-      else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','chopThreshold'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
+      else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
     }
   }
   else if (kind === 'expo'){                     // 正2 曝險目標設定
