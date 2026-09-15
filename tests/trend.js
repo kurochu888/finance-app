@@ -46,7 +46,7 @@ for (let i = 0; i < 6; i++) prices.push(109 - i * 8);           // 再急跌 →
 for (let i = 0; i < 3; i++) prices.push(69 - i * 3);            // 再緩跌一步 → 第二輪 ADD #1
 
 const trend = { maFast:5, maSlow:10, exitBuffer:0.9, recoverSlopeThreshold:1.0,
-                recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2 };
+                recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2, chopThreshold:0.02 };
 function trendAt(n){
   return A.computeTrend({ key:'t', id:'TEST', leverage:2, trend, priceHistory: mkHist(prices.slice(0, n)) });
 }
@@ -59,11 +59,13 @@ must(insufficient.barsAvailable === 10 && insufficient.barsNeeded === 11, 'barsA
 console.log('  ok');
 
 console.log('狀態機與 pyramidCount 全流程(迴歸測試:原本那個 bug 的位置)');
+// ADD 現在要連兩天收盤都跌破門檻才算數(見 computeTrend 的 gapHitYesterday),
+// 比單日觸發晚一天生效,所以下面幾個 checkpoint 比舊版(單日觸發)晚一天。
 const checkpoints = [
   [11, 'HOLD', 0],   // 一開始就處在上漲段,足夠資料後直接判定 HOLD
   [44, 'WAIT_RECOVER', 0],   // 急跌跌破出場線 → 第一次 EXIT,pyramidCount 歸零
-  [49, 'WAIT_RECOVER', 1],   // 緩跌觸發第一層加碼
-  [59, 'WAIT_RECOVER', 2],   // 緩跌觸發第二層加碼(達 pyramidLevels 上限)
+  [50, 'WAIT_RECOVER', 1],   // 緩跌連兩天跌破,觸發第一層加碼
+  [60, 'WAIT_RECOVER', 2],   // 緩跌連兩天跌破,觸發第二層加碼(達 pyramidLevels 上限)
   [78, 'HOLD', 0],           // 強力反彈 → RECOVER,狀態轉 HOLD 且 pyramidCount 真的歸零(不是還停在 2)
   [94, 'WAIT_RECOVER', 0],   // 再次急跌 → 第二次 EXIT,pyramidCount 再次歸零
   [99, 'WAIT_RECOVER', 1],   // 第二輪加碼從 1 開始,不是接著上一輪的 2
@@ -76,7 +78,7 @@ for (const [n, expStatus, expPyr] of checkpoints){
 }
 
 console.log('第二層之後不會再繼續加碼(即使繼續下跌)');
-const capA = trendAt(59), capB = trendAt(70);   // 59 之後到 78(RECOVER)之前都應該卡在 pyramidLevels
+const capA = trendAt(60), capB = trendAt(70);   // 60 之後到 78(RECOVER)之前都應該卡在 pyramidLevels
 must(capA.pyramidCount === 2 && capB.pyramidCount === 2 && capB.status === 'WAIT_RECOVER',
      '超過 pyramidLevels 之後 pyramidCount 不該再增加(得到 n=70 → ' + capB.pyramidCount + ')');
 console.log('  ok');
@@ -132,11 +134,11 @@ console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄
   const s = A.normalize({ instruments: [{
     key:'k1', id:'00631L', name:'測試', leverage:2, price:10, shares:0, auto:true,
     trend: { maFast:Infinity, maSlow:-Infinity, exitBuffer:Infinity, recoverSlopeThreshold:Infinity,
-             recoverStrongRebound:Infinity, pyramidGap:Infinity, pyramidLevels:Infinity },
+             recoverStrongRebound:Infinity, pyramidGap:Infinity, pyramidLevels:Infinity, chopThreshold:Infinity },
     priceHistory: [{ d:'2026-01-01', c:Infinity }, { d:'2026-01-02', c:50 }]
   }]});
   const t = s.instruments[0].trend;
-  ['maFast','maSlow','exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','pyramidLevels']
+  ['maFast','maSlow','exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','pyramidLevels','chopThreshold']
     .forEach(k => must(Number.isFinite(t[k]), 'trend.' + k + ' 沒有擋掉 Infinity,得到 ' + t[k]));
   must(s.instruments[0].priceHistory.every(h => Number.isFinite(h.c)),
        'priceHistory 裡的 Infinity 收盤價沒有被濾掉');
@@ -179,8 +181,8 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
     return s;
   }
 
-  // 兩檔都在 n=49(WAIT_RECOVER, pyramidCount=1)→ progress=1 → 目標 65%,equity=0(剛開始)
-  A.state = setupState(49, 49, 0);
+  // 兩檔都在 n=50(WAIT_RECOVER, pyramidCount=1)→ progress=1 → 目標 65%,equity=0(剛開始)
+  A.state = setupState(50, 50, 0);
   let p = A.computeExposurePlan();
   console.log(`  兩檔都加碼第1層,equity=0: progress=${p.progress} target=${p.targetRatio}% deltaCash=${Math.round(p.deltaCash)}`);
   must(p.progress === 1, '兩檔都在第1層,progress 應該是 1,得到 ' + p.progress);
@@ -196,17 +198,83 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
   must(p.deltaCash === null || p.deltaCash > 10000000, '這個目標純現金到不了(需要的現金遠超過已有的385萬),deltaCash 應該是 null 或很大的數字,得到 ' + p.deltaCash);
   must(Math.abs(p.deltaLoan - 3851852) < 5000, '全部用房貸的邊界值應該 ≈385萬(跟 deltaCash 那組不同,是另一個邊界),得到 ' + Math.round(p.deltaLoan));
 
-  // 兩檔進度不同:00631L 在 n=78(HOLD),00675L 在 n=49(第1層)→ 取較小的 progress=1
-  A.state = setupState(78, 49, 0);
+  // 兩檔進度不同:00631L 在 n=78(HOLD),00675L 在 n=50(第1層)→ 取較小的 progress=1
+  A.state = setupState(78, 50, 0);
   p = A.computeExposurePlan();
   console.log(`  兩檔進度不同(HOLD vs 第1層): progress=${p.progress}(應為1,不是HOLD那檔的3)`);
   must(p.progress === 1, '兩檔進度不同時應該取較保守(較小)的那個,得到 ' + p.progress);
 
   // 目前曝險已經超過目標:equity 給很大,目標卻只要 65%
-  A.state = setupState(49, 49, 20000000);   // equity 2000萬,遠超過目標需要的量
+  A.state = setupState(50, 50, 20000000);   // equity 2000萬,遠超過目標需要的量
   p = A.computeExposurePlan();
   console.log(`  已超過目標: deltaLoan=${Math.round(p.deltaLoan)}(應為負值,代表該減碼)`);
   must(p.deltaLoan < 0, '曝險已經超過目標時 deltaLoan 應該是負值(代表該減碼),得到 ' + p.deltaLoan);
+})();
+console.log('  ok');
+
+console.log('乖離濾網:快慢線靠太近時,盤整中的假訊號要被擋下來(RECOVER 暫停,不是永遠卡死)');
+(function testChopFilter(){
+  // 先進 HOLD 再急跌 EXIT(基準價 90),接著長時間持平——快慢線會收斂到幾乎重合(乖離 →0%)。
+  // 這時候插入一段「假反彈」(連兩天站回快線、斜率也轉正),數字上滿足 RECOVER 的老條件,
+  // 但乖離還是很小(這裡量到 0.33%,遠低於 chopThreshold 3%),應該被濾網擋下來,狀態不變。
+  const p1 = [];
+  for (let i = 0; i < 15; i++) p1.push(100 + i * 2);        // 上漲進場
+  p1.push(90);                                              // 急跌 → EXIT,基準價 90
+  for (let i = 0; i < 40; i++) p1.push(90);                  // 長時間持平,快慢線收斂
+  p1.push(91); p1.push(92);                                 // 假反彈:連兩天站回快線、斜率轉正
+  for (let i = 0; i < 5; i++) p1.push(91);                   // 之後又不漲了,證明真的只是雜訊
+  const afterFakeRally = p1.length;
+  for (let i = 0; i < 10; i++) p1.push(p1[p1.length - 1] + 3);   // 真正的反彈,乖離會被拉開
+
+  const chopTrend = { maFast:5, maSlow:10, exitBuffer:0.9, recoverSlopeThreshold:1.0,
+                       recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2, chopThreshold:0.03 };
+  const at = (n, params) => A.computeTrend({ key:'c', id:'CHOP', leverage:2, trend: params || chopTrend, priceHistory: mkHist(p1.slice(0, n)) });
+
+  const duringFakeRally = at(afterFakeRally);
+  console.log(`  假反彈後(n=${afterFakeRally}): status=${duringFakeRally.status} basePrice=${duringFakeRally.basePrice}`);
+  must(duringFakeRally.status === 'WAIT_RECOVER', '快慢線還很靠近時,假反彈不該讓狀態轉成 HOLD,實際是 ' + duringFakeRally.status);
+  must(duringFakeRally.basePrice === 90, '假反彈期間基準價不該被改掉,實際是 ' + duringFakeRally.basePrice);
+
+  // 對照組:同一段資料,把濾網關掉(chopThreshold:0),證明「不擋」的話這裡真的會誤觸發 RECOVER
+  const withoutFilter = at(afterFakeRally, Object.assign({}, chopTrend, { chopThreshold: 0 }));
+  must(withoutFilter.status === 'HOLD', '沒有濾網時,同一段資料應該會被假反彈誤觸發 RECOVER(對照組),實際是 ' + withoutFilter.status);
+
+  const afterRealRally = at(p1.length);
+  console.log(`  真正反彈後(n=${p1.length}): status=${afterRealRally.status} basePrice=${afterRealRally.basePrice}`);
+  must(afterRealRally.status === 'HOLD', '乖離真的拉開之後,RECOVER 應該正常生效,實際是 ' + afterRealRally.status);
+})();
+console.log('  ok');
+
+console.log('ADD 兩日確認:單日跌破隔天就彈回去不算,連兩天跌破才加碼');
+(function testAddTwoDayConfirm(){
+  const p2 = [];
+  for (let i = 0; i < 15; i++) p2.push(100 + i * 2);   // 上漲進場,last=128
+  p2.push(90);                                         // 急跌 → EXIT,基準價 90,門檻 90*(1-0.10)=81
+  for (let i = 0; i < 6; i++) p2.push(90);              // 持平幾天,讓門檻穩定在 81
+  p2.push(75);                                         // 單日跌破門檻(75<81)
+  p2.push(84);                                         // 隔天就彈回門檻之上(仍低於快線,不會誤觸發 RECOVER)
+  p2.push(84);                                         // 緩衝一天
+  p2.push(75);                                         // 兩日確認的第一天:跌破
+  p2.push(74);                                         // 兩日確認的第二天:再次跌破 → 這天才真的加碼
+
+  const addTrend = { maFast:5, maSlow:10, exitBuffer:0.9, recoverSlopeThreshold:1.0,
+                      recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2, chopThreshold:0.001 };
+  const at = (n) => A.computeTrend({ key:'a', id:'ADD2', leverage:2, trend: addTrend, priceHistory: mkHist(p2.slice(0, n)) });
+
+  const afterSingleDip = at(23);   // 處理到單日跌破那天(index 22)
+  must(afterSingleDip.pyramidCount === 0, '單日跌破不該就加碼,實際 pyramidCount=' + afterSingleDip.pyramidCount);
+
+  const afterRevert = at(24);      // 處理到隔天彈回(index 23)
+  must(afterRevert.pyramidCount === 0, '彈回門檻之上後不該殘留加碼,實際 pyramidCount=' + afterRevert.pyramidCount);
+
+  const firstDayOfTwo = at(26);    // 處理到兩日確認的第一天(index 25)
+  console.log(`  兩日確認的第一天(n=26): pyramidCount=${firstDayOfTwo.pyramidCount}(應為 0,還沒確認)`);
+  must(firstDayOfTwo.pyramidCount === 0, '兩日確認的第一天就不該加碼,實際 pyramidCount=' + firstDayOfTwo.pyramidCount);
+
+  const secondDayOfTwo = at(27);   // 處理到兩日確認的第二天(index 26)→ 應該加碼
+  console.log(`  兩日確認的第二天(n=27): pyramidCount=${secondDayOfTwo.pyramidCount} basePrice=${secondDayOfTwo.basePrice}(應為 1、74)`);
+  must(secondDayOfTwo.pyramidCount === 1, '連兩天都跌破後應該加碼一層,實際 pyramidCount=' + secondDayOfTwo.pyramidCount);
+  must(secondDayOfTwo.basePrice === 74, '加碼後基準價應該更新為當天收盤 74,實際是 ' + secondDayOfTwo.basePrice);
 })();
 console.log('  ok');
 
