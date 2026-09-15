@@ -558,7 +558,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-15 · 4a1c55ca50';
+const BUILD_VERSION = '2026-09-15 · 6614dbef7e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -956,6 +956,15 @@ function mergeHistory(hist, rows){
     .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
   return adjustForSplits(merged).slice(-PRICE_HIST_KEEP);
 }
+/* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
+   使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
+function needsBackfill(){
+  return state.instruments.some(it => {
+    if (!it.auto || !/^[0-9A-Za-z]{3,8}$/.test(it.id)) return false;
+    const t = computeTrend(it);
+    return t.barsAvailable < t.barsNeeded;
+  });
+}
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
   quoteBusy = true;
@@ -1000,6 +1009,13 @@ async function fetchQuotes(manual){
     quoteMsg = '抓不到報價(可能沒有網路),維持原本的數字';
   }
   quoteBusy = false;
+  if (needsBackfill() && !backfillBusy){
+    await backfillHistory();   // 歷史不夠就順便補,不用再多按一次
+    // 這是在「設定」分頁按的,回補結果原本只會顯示在「訊號」分頁,這裡順便帶一份過來
+    if (backfillMsg && backfillMsg !== '回補完成'){
+      quoteMsg = quoteMsg ? quoteMsg + ';歷史' + backfillMsg : '歷史' + backfillMsg;
+    }
+  }
   // 自動抓取可能在使用者打字時完成,別把游標和輸入到一半的內容洗掉
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){
     if (currentTab === 'leverage') refreshLeverage();
@@ -1897,8 +1913,9 @@ function renderHelp(){
       <p>這裡每次都是拿完整的歷史價格<strong>從頭重新回放一次整個狀態機</strong>,不是把「現在狀態」存起來
       逐日累加更新——所以在「設定」分頁改了均線參數之後,所有標的的狀態會立刻用新參數重新算過一遍,
       不會有「改了參數但舊狀態沒跟著換」這種情況。</p>
-      <p>均線需要的歷史收盤價要先在<strong>「訊號」分頁</strong>按「回補歷史價格」抓一次
-      (逐月依序抓,不會同時對證交所發一串請求);之後每次更新報價會順便累積,不用常按。
+      <p>均線需要的歷史收盤價,在<strong>「設定」分頁</strong>按「從證交所更新收盤價」就好——
+      歷史不夠時會自動一併回補(逐月依序抓,不會同時對證交所發一串請求),
+      不用特地跑去「訊號」分頁按「回補歷史價格」;之後每次更新報價會順便累積,不用常按。
       快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
       改壞了按「重設為預設值」就好。</p>
       <p><strong>這只是訊號顯示,不會自動下單。</strong>該買該賣一樣要自己到「紀錄」分頁記一筆——
@@ -2640,7 +2657,7 @@ function renderTrendTab(){
           return `
           <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
             <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
-            <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${QUOTES_ENABLED ? '按下面「回補歷史價格」補齊。' : '這個版本不能連線抓報價。'}</div>
+            <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${QUOTES_ENABLED ? '按「設定」分頁的「從證交所更新收盤價」就會自動一併回補,不用另外按下面的「回補歷史價格」。' : '這個版本不能連線抓報價。'}</div>
           </div>`;
         }
         return `
@@ -2654,8 +2671,8 @@ function renderTrendTab(){
         </div>`;
       }).join('')}
       ${QUOTES_ENABLED ? `
-        <button class="btn quiet" data-act="backfill-history" ${backfillBusy ? 'disabled' : ''}>${backfillBusy ? '回補中…' : '🔄 回補歷史價格'}</button>
-        <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '第一次使用要回補約 14 個月的歷史收盤價,均線才算得出來。之後每次更新報價會自動累積,不用常按。'}</div>
+        <button class="btn quiet" data-act="backfill-history" ${backfillBusy ? 'disabled' : ''}>${backfillBusy ? '回補中…' : '🔄 手動回補歷史價格'}</button>
+        <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '「設定」分頁按「從證交所更新收盤價」時,歷史不夠會自動一併回補,不用特地按這裡——這個按鈕是自動回補失敗或想手動重試時才用。'}</div>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回補歷史價格。</div>`}
       <button class="why" data-act="go" data-v="help">這個訊號怎麼算 →</button>
     </div>`;
@@ -2739,7 +2756,7 @@ function renderLeverage(){
         <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
         <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
           : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。上市櫃代號都查得到。'
-          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。'}</div>
+          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。「訊號」分頁均線需要的歷史價格不夠時也會自動一併回補。'}</div>
         ${(L.quoteDate && daysSince(L.quoteDate) > 5) ? `
           <div class="alert amber" style="margin-top:10px;">
             <span class="ai">🕘</span>
