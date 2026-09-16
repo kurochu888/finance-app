@@ -574,7 +574,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-15 · 6614dbef7e';
+const BUILD_VERSION = '2026-09-16 · 8e458702d5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1574,7 +1574,8 @@ function renderOverview(){
       <div class="card">
         <h3>投資部位</h3>
         <div class="big-num ${cls}">${sign}</div>
-        <div class="big-sub">整體損益(已扣借款利息)${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
+        <div class="big-sub">整體損益(已扣借款利息)</div>
+        ${p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : ''}
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">NT$ ${fmt(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
@@ -2388,13 +2389,15 @@ function renderPnL(){
     <div class="card">
       <h3>整體損益</h3>
       <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
-      <div class="big-sub">已扣掉借款利息${p.xirr !== null ? ' · 年化 ' + fmtPct(p.xirr) : ''}</div>
+      <div class="big-sub">已扣掉借款利息</div>
+      ${p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : ''}
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
       <div class="row"><span class="label">未實現</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
       ${p.realized ? `<div class="row"><span class="label">已實現${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
       <div class="row"><span class="label">借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
       <div class="row sub"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>
       ${p.dividends ? `<div class="row sub"><span class="label">其中配息</span><span class="val">+NT$ ${fmt(p.dividends)}</span></div>` : ''}
+      ${p.xirr !== null ? `<button class="why" data-act="go" data-v="help">年化報酬怎麼算 →</button>` : ''}
       ${pnlChartBlock()}
     </div>
 
@@ -2408,11 +2411,8 @@ function renderPnL(){
       <div class="row sub"><span class="label">累計自有投入</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
       ${p.sellNet ? `<div class="row sub"><span class="label">減 賣出回收</span><span class="val">−NT$ ${fmt(p.sellNet)}</span></div>` : ''}
       ${p.dividends ? `<div class="row sub"><span class="label">減 配息</span><span class="val">−NT$ ${fmt(p.dividends)}</span></div>` : ''}
-      <div class="row total"><span class="label">年化報酬</span>
-        <span class="val ${p.xirr === null ? '' : (p.xirr >= 0 ? 'pos' : 'neg')}">${p.xirr === null ? '—' : fmtPct(p.xirr)}</span></div>
       <div class="row sub"><span class="label">累計報酬(對累計自有投入)</span>
         <span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
-      <button class="why" data-act="go" data-v="help">年化報酬怎麼算 →</button>
     </div>`;
 }
 
