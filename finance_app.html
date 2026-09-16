@@ -140,6 +140,7 @@
     border:1px solid var(--line); background:var(--raised); color:var(--text);
     font-size:16px; font-family:inherit; font-variant-numeric:tabular-nums;
   }
+  .field.price-field input{ font-size:20px; font-weight:700; }
   /* iOS 的日期欄位自帶最小寬度,不關掉原生外觀就會撐破格子 */
   input[type="number"]{ -moz-appearance:textfield; }
   input[type="number"]::-webkit-outer-spin-button,
@@ -558,7 +559,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-16 · 8e458702d5';
+const BUILD_VERSION = '2026-09-16 · 5226de811c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -2721,7 +2722,7 @@ function renderLeverage(){
           <div class="grid2">
             <div class="field"><label>股數${hasTrades() ? '(自動)' : ''}</label>
               <input type="number" inputmode="decimal" data-k="in-shares-${it.key}" value="${h.shares || ''}" ${hasTrades() ? 'readonly' : ''}></div>
-            <div class="field"><label>股價</label>
+            <div class="field price-field"><label>股價</label>
               <input type="number" inputmode="decimal" step="0.01" data-k="in-price-${it.key}" value="${it.price || ''}"></div>
           </div>
           <div class="field"><label>槓桿倍數(正2 填 2,一般股票填 1)</label>
