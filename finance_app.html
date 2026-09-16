@@ -179,6 +179,9 @@
     background:var(--card); color:var(--sub); font-size:15px; cursor:pointer; font-family:inherit;
   }
   .xbtn:hover{color:var(--red); border-color:var(--red);}
+  .xbtn.step:hover{color:var(--accent); border-color:var(--accent);}
+  .xbtn:disabled{opacity:.4; cursor:default;}
+  .xbtn:disabled:hover{color:var(--sub); border-color:var(--line);}
 
   .btn{
     width:100%; padding:11px; border-radius:10px; border:1px dashed var(--line);
@@ -372,7 +375,7 @@ const DEFAULT_LEVERAGE = {
   exposureTargets: { byLayer:[65, 130], hold:130 }
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
-const DEFAULT_CATEGORIES = ['房貸 / 房租','餐飲','交通','娛樂','其他','房貸利息'];
+const DEFAULT_CATEGORIES = ['餐飲','房貸 / 房租','交通','娛樂','其他','房貸利息'];
 /* 均線趨勢訊號的參數預設值:槓桿倍數 >=2(正2類)用較慢、較寬鬆的組合,
    避免被槓桿本身的波動洗出場;1倍(0050類)用稍快一點的組合。
    這兩組是使用者自己長期在用、驗證過樣本外表現的參數,不是隨便挑的。 */
@@ -559,7 +562,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-16 · 5226de811c';
+const BUILD_VERSION = '2026-09-16 · 2577f18cff';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -1731,6 +1734,18 @@ function renderLedger(){
           </select>
         `}
       </div>
+      <details class="adv">
+        <summary>調整類別順序</summary>
+        <div class="body">
+          ${cats.map((c, i) => `
+          <div class="erow" style="margin-top:${i === 0 ? 0 : 7}px;">
+            <span class="f-name" style="padding:8px 0;">${esc(c)}</span>
+            <button class="xbtn step" data-act="cat-up" data-id="${esc(c)}" ${i === 0 ? 'disabled' : ''} aria-label="上移">↑</button>
+            <button class="xbtn step" data-act="cat-down" data-id="${esc(c)}" ${i === cats.length - 1 ? 'disabled' : ''} aria-label="下移">↓</button>
+          </div>`).join('')}
+          <div class="muted" style="margin-top:8px;">排在越前面,「類別」下拉選單裡就越靠上面,常用的往上移比較好選。</div>
+        </div>
+      </details>
       <div class="field"><label>說明(可留空)</label><input data-k="d-desc" value="${esc(draft.desc)}" placeholder="例如:超市採買"></div>
       <button class="btn solid" data-act="add-tx">新增紀錄</button>
       ${draftError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(draftError)}</div>` : ''}
@@ -3305,6 +3320,16 @@ function onClick(el){
     }
     case 'draft-action': tradeDraft.action = el.dataset.v; break;
     case 'cat-pick': draft.newCat = false; draft.cat = knownCats()[0] || ''; break;
+    case 'cat-up': case 'cat-down': {
+      const cats = knownCats();
+      const i = cats.indexOf(id);
+      const j = act === 'cat-up' ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= cats.length) break;
+      [cats[i], cats[j]] = [cats[j], cats[i]];
+      // 移過的類別如果只存在於交易紀錄裡(還沒真的進 budgets),這裡順便把它補成正式的一筆
+      state.budgets = cats.map(name => state.budgets.find(b => b.name === name) || { id: uid(), name, budget: 0 });
+      break;
+    }
     case 'draft-source': tradeDraft.source = el.dataset.v; break;
     case 'add-trade': {
       const d0 = tradeDraft;
