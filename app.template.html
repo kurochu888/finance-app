@@ -2342,6 +2342,19 @@ function monthEndSample(curve){
   return out;
 }
 
+/* sma() 是照陣列順序算的,不管日期——歷史資料如果中間漏了一整段(逐月回補時某幾個月
+   沒抓到),均線會被這種假斷點默默帶偏,算出來的回測數字會失真但不會報錯,很難發現。
+   證交所收盤資料本來就有正常間斷(週末、國定假日,農曆年前後最長約 9-10 天),16 天的門檻
+   夠寬鬆不會誤判正常假期,又能抓到「一整個月憑空消失」這種真的漏資料的狀況。 */
+const HISTORY_GAP_DAYS = 16;
+function findHistoryGap(hist){
+  for (let i = 1; i < hist.length; i++){
+    const days = (new Date(hist[i].d) - new Date(hist[i - 1].d)) / 86400000;
+    if (days > HISTORY_GAP_DAYS) return { from: hist[i - 1].d, to: hist[i].d, days: Math.round(days) };
+  }
+  return null;
+}
+
 function runAllBacktests(){
   const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
   backtestResults = targets.map(it => {
@@ -2349,6 +2362,10 @@ function runAllBacktests(){
     const p = it.trend || defaultTrendParams(it.leverage);
     if (!hist || hist.length < p.maSlow + 1){
       return { id: it.id, error: `歷史資料不夠(需要至少 ${p.maSlow + 1} 天),請先按上面「抓完整歷史」。` };
+    }
+    const gap = findHistoryGap(hist);
+    if (gap){
+      return { id: it.id, error: `歷史價格中間缺了一段(${gap.from} ~ ${gap.to},約 ${gap.days} 天沒有資料),均線會被這段斷點帶偏,回測結果不可靠。請再按一次上面「抓完整歷史」補齊之後再試一次。` };
     }
     const res = runBacktest(hist, p);
     const sampled = monthEndSample(res.curve);
