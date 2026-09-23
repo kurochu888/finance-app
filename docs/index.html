@@ -578,7 +578,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-23 · 754ae364f1';
+const BUILD_VERSION = '2026-09-23 · f59a275e73';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2290,8 +2290,11 @@ const computeAllTrends = () => state.instruments.map(computeTrend);
    狀態機判斷邏輯刻意跟 computeTrend 逐行保持一致——同一套規則只能有一個源頭,
    不要在這裡重新描述一次規則再各自維護,不然兩邊分岔是最容易埋 bug 的地方。
    手續費用跟真實交易紀錄同一個 defaultFee(),不是另外開一組數字;初始資金只是拿來
-   算報酬率%的基準,不代表真實金額,所以結果只看報酬率跟 MDD,不看金額本身。 */
+   算報酬率%的基準,不代表真實金額,所以結果只看報酬率跟 MDD,不看金額本身。
+   買賣只能整張(1000 股)成交,跟台股實際下單規則一致——零股會讓每次全押/出清的
+   資金使用效率比實際能做到的更高,長期複利下來會膨脹回測報酬。 */
 const BACKTEST_INITIAL_CASH = 1000000;
+const LOT_SIZE = 1000;
 function runBacktest(priceHistory, trendParams){
   const p = trendParams;
   const hist = priceHistory || [];
@@ -2306,9 +2309,10 @@ function runBacktest(priceHistory, trendParams){
 
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
   let cash = BACKTEST_INITIAL_CASH, shares = 0, cashAtExit = BACKTEST_INITIAL_CASH;
-  const bhFee = defaultFee('buy', BACKTEST_INITIAL_CASH / 1.001425);
-  const bhShares = (BACKTEST_INITIAL_CASH - bhFee) / closes[start];
-  const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhShares * closes[start] }];
+  const bhQty = Math.floor(BACKTEST_INITIAL_CASH / (closes[start] * 1.001425) / LOT_SIZE) * LOT_SIZE;
+  const bhShares = bhQty;
+  const bhCashLeft = BACKTEST_INITIAL_CASH - bhQty * closes[start] - (bhQty > 0 ? defaultFee('buy', bhQty * closes[start]) : 0);
+  const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhCashLeft + bhShares * closes[start] }];
 
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
@@ -2330,16 +2334,20 @@ function runBacktest(priceHistory, trendParams){
 
       if (action === 'RECOVER'){
         const totalValue = cash + shares * close;
-        const fee = defaultFee('buy', totalValue / 1.001425);
-        shares = (totalValue - fee) / close;
-        cash = 0;
+        const qty = Math.floor(totalValue / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
+        if (qty > 0){
+          const fee = defaultFee('buy', qty * close);
+          cash = totalValue - qty * close - fee;
+          shares = qty;
+        }
         basePrice = close; pyramidCount = 0; status = 'HOLD';
       }else if (action === 'ADD'){
         const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
-        if (unit > 0){
-          const fee = defaultFee('buy', unit / 1.001425);
-          shares += (unit - fee) / close;
-          cash -= unit;
+        const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
+        if (qty > 0){
+          const fee = defaultFee('buy', qty * close);
+          cash -= qty * close + fee;
+          shares += qty;
         }
         basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
       }else if (action === 'EXIT'){
@@ -2351,7 +2359,7 @@ function runBacktest(priceHistory, trendParams){
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
       }
     }
-    curve.push({ d: dates[i], strat: cash + shares * close, bh: bhShares * close });
+    curve.push({ d: dates[i], strat: cash + shares * close, bh: bhCashLeft + bhShares * close });
   }
 
   const mdd = vals => {
