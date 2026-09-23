@@ -71,6 +71,16 @@ id 沿用舊值以確保重複呼叫不會飄動。
 抓報價還在偷偷把大盤點位寫進 `marketCurrent`,寫了但完全沒人讀——已經刪掉那行寫入。
 以後如果要確認某個欄位是不是真的死了,`grep` 整個欄位名稱時**讀跟寫都要查**,不要只查其中一種。
 
+**`backtestFullHistory`(2026-09 新增,均線策略回測)**——刻意放在 `state` 之外的模組級變數,
+存在自己的 `localStorage` key(`financeBacktestHistory_v1`),不是 `state.instruments[].priceHistory`
+的一部分。原因:回測要看 2015 年至今的完整歷史(~2500 筆/檔),`priceHistory` 只留 4 年
+(`PRICE_HIST_KEEP`,夠算 240 日均線就好)——如果把回測用的長歷史塞進 `state`,會讓 Firebase
+同步整包資料每次編輯(打字記帳、改設定)都多帶這幾百 KB,拖慢平常操作。
+雲端同步走的是**獨立的一份文件**(Firebase:`users/{uid}/data/backtestHistory`;Claude Artifact:
+`state/backtestHistory`),只在按「抓完整歷史」時整份覆蓋寫入一次,登入時如果本機沒資料才會
+拉一次下來——不是跟著 `docApi()`/`cloud.onChange` 那套即時同步機制走。之後如果要幫別的「量大、
+低頻更新」資料加雲端同步,這是現成的參考模式(`namedDoc()` in `firebase-sync.js`)。
+
 ## 決策邏輯是怎麼演變的(現況 vs 已經拿掉的東西)
 
 這個 repo 經歷過一次策略上的大轉向,是為了理解「為什麼程式碼長這樣」而不是「程式碼在做什麼」

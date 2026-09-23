@@ -46,6 +46,17 @@ if (!firebaseConfig || !firebaseConfig.apiKey){
         }
       },
       signOut(){ return fbSignOut(auth); },
+      // 存取 users/{uid}/data/{name} 底下任一份獨立文件,不動主資料那份。
+      // 回測用的完整歷史價格就是靠這個存取——只在按「抓完整歷史」時寫,不會跟著
+      // 主資料每次編輯都一起送出去,不拖慢平常記帳/存檔的同步速度。
+      namedDoc(name){
+        const uid = auth.currentUser.uid;
+        const ref = doc(db, 'users', uid, 'data', name);
+        return {
+          get: async () => { const s = await getDoc(ref); return s.exists() ? s.data() : null; },
+          set: d => setDoc(ref, d)
+        };
+      },
       docApi(){
         const uid = auth.currentUser.uid;
         const ref = doc(db, 'users', uid, 'data', 'finance');
