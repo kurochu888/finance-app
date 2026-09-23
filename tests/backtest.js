@@ -1,0 +1,102 @@
+/* 均線策略回測(runBacktest)的迴歸測試。
+   重點測兩件事:(1) 回測的狀態機判斷跟 computeTrend 是否真的逐行一致——這兩個函式
+   故意各自維護同一套規則,只要哪天改了一邊忘了改另一邊,這裡就該炸開;(2) 現金/股數
+   簿記有沒有基本的算術錯誤(不會出現負現金、MDD 不會是正數、手續費真的扣了)。
+   純函式測試,不用連網、不用真的跑 app,直接餵手刻的 priceHistory 陣列。 */
+const el = (id) => ({ id, innerHTML:'', textContent:'', value:'', style:{}, dataset:{}, scrollTop:0,
+  classList:{toggle(){},add(){},remove(){},contains(){return false;}}, addEventListener(){}, closest(){return null;} });
+const store = {};
+global.document = { activeElement:null, getElementById:id=>store[id]||(store[id]=el(id)),
+  querySelectorAll:()=>[], querySelector:()=>null, addEventListener(){} };
+global.window = { claude: undefined };
+global.fetch = async () => { throw new Error('offline'); };
+global.localStorage = { _d:{}, get length(){return Object.keys(this._d).length;},
+  key(i){const k=Object.keys(this._d);return i<k.length?k[i]:null;},
+  getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=String(v);}, removeItem(k){delete this._d[k];} };
+
+const fs = require('fs');
+const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
+const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const appJs = blocks.sort((a, b) => b.length - a.length)[0];
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee };`);
+
+const bugs = [];
+const must = (cond, msg) => { if (!cond) bugs.push(msg); };
+
+function mkHist(prices){
+  const d0 = new Date('2020-01-01');
+  return prices.map((c, i) => {
+    const d = new Date(d0); d.setDate(d0.getDate() + i);
+    return { d: d.toISOString().slice(0, 10), c };
+  });
+}
+
+// 跟 trend.js 同一段合成價格路徑:上漲進場→急跌 EXIT→兩段緩跌各加碼一層→強力反彈 RECOVER
+// →再急跌第二次 EXIT→緩跌第二輪加碼。用短週期均線(5/10 日)方便少量資料就跑完整個循環。
+const prices = [];
+for (let i = 0; i < 40; i++) prices.push(80 + i * 1.25);
+for (let i = 0; i < 5; i++) prices.push(130 - i * 8);
+for (let i = 0; i < 10; i++) prices.push(98 - i * 1.2);
+for (let i = 0; i < 5; i++) prices.push(86 - i * 3);
+for (let i = 0; i < 10; i++) prices.push(74 - i * 0.5);
+for (let i = 0; i < 5; i++) prices.push(69 - i * 3);
+for (let i = 0; i < 15; i++) prices.push(57 + i * 3.5);
+for (let i = 0; i < 6; i++) prices.push(109 - i * 8);
+for (let i = 0; i < 3; i++) prices.push(69 - i * 3);
+
+const trend = { maFast:5, maSlow:10, exitBuffer:0.9, recoverSlopeThreshold:1.0,
+                recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2 };
+
+console.log('資料不足時回傳 null(不能算出慢線就不該硬跑)');
+must(A.runBacktest(mkHist(prices.slice(0, 5)), trend) === null, '資料不足時應該回傳 null');
+console.log('  ok');
+
+console.log('回測的狀態機判斷要跟 computeTrend 逐行一致(同一段價格路徑,結果必須相同)');
+const hist = mkHist(prices);
+const trendResult = A.computeTrend({ key:'t', id:'TEST', leverage:2, trend, priceHistory: hist });
+const btResult = A.runBacktest(hist, trend);
+must(btResult.status === trendResult.status,
+     `computeTrend 說 status=${trendResult.status},runBacktest 卻算成 ${btResult.status}——兩邊規則分岔了`);
+must(btResult.pyramidCount === trendResult.pyramidCount,
+     `computeTrend 說 pyramidCount=${trendResult.pyramidCount},runBacktest 卻算成 ${btResult.pyramidCount}`);
+console.log(`  最終 status=${btResult.status} pyramidCount=${btResult.pyramidCount},兩邊一致`);
+console.log('  ok');
+
+console.log('淨值曲線基本檢查:天數對得上、起點正確、現金/股數不會算出負值、MDD 不會是正數');
+must(btResult.curve.length === hist.length - (trend.maSlow - 1),
+     `曲線長度應該是 ${hist.length - (trend.maSlow - 1)},得到 ${btResult.curve.length}`);
+must(btResult.curve[0].strat === 1000000, `曲線第一天策略淨值應該是初始資金 1000000,得到 ${btResult.curve[0].strat}`);
+const negative = btResult.curve.find(c => c.strat < 0 || c.bh < 0);
+must(!negative, `曲線裡出現負的淨值(${negative ? JSON.stringify(negative) : ''}),簿記一定算錯了`);
+must(btResult.mddStrat <= 0 && btResult.mddBh <= 0,
+     `MDD 定義上不會是正數,得到 strat=${btResult.mddStrat} bh=${btResult.mddBh}`);
+console.log(`  策略總報酬 ${btResult.returnStrat.toFixed(1)}% / MDD ${btResult.mddStrat.toFixed(1)}%`);
+console.log(`  買進持有總報酬 ${btResult.returnBh.toFixed(1)}% / MDD ${btResult.mddBh.toFixed(1)}%`);
+console.log('  ok');
+
+console.log('全押進場真的扣了手續費(第一次 RECOVER 那天,淨值要比前一天的純現金少一點)');
+// curve[0] 是暖身結束那天(純現金,還沒進場);checkpoint 顯示 n=11(陣列索引 10)已經是 HOLD,
+// 對照 maSlow=10 → start=9,那正好是 curve[1](i=10=start+1)——回測第一次全押買進的那一天。
+// 同一天的收盤價估值,買進前後唯一的差異就是手續費,所以 curve[1] 應該嚴格小於 curve[0]。
+must(btResult.curve[1].strat < btResult.curve[0].strat,
+     `第一次全押買進當天淨值(${btResult.curve[1].strat})應該比前一天純現金(${btResult.curve[0].strat})少,手續費才是真的被扣了`);
+console.log(`  買進前 ${btResult.curve[0].strat} → 買進後 ${btResult.curve[1].strat.toFixed(0)}`);
+console.log('  ok');
+
+console.log('monthEndSample:每個月只留最後一個交易日,首尾一定保留');
+(function testMonthEndSample(){
+  const c = [
+    { d:'2020-01-05', strat:1, bh:1 }, { d:'2020-01-20', strat:2, bh:2 },
+    { d:'2020-02-03', strat:3, bh:3 }, { d:'2020-02-28', strat:4, bh:4 },
+    { d:'2020-03-02', strat:5, bh:5 },
+  ];
+  const s = A.monthEndSample(c);
+  must(s.length === 3, `三個月份應該取樣成 3 筆,得到 ${s.length}`);
+  must(s[0].d === '2020-01-20' && s[1].d === '2020-02-28' && s[2].d === '2020-03-02',
+       `取樣結果不對:${JSON.stringify(s.map(x => x.d))}`);
+})();
+console.log('  ok');
+
+console.log();
+console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
+process.exit(bugs.length ? 1 : 0);
