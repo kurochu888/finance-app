@@ -578,7 +578,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-16 · 2577f18cff';
+const BUILD_VERSION = '2026-09-23 · 01bf170410';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const STORAGE_KEY = 'financeAppState_v2';
@@ -923,6 +923,16 @@ let levMsg = '';      // 持股與報價卡的提示
 let backfillBusy = false;
 let backfillMsg = '';
 
+/* 回測用的完整歷史價格,跟「訊號」用的 priceHistory(4 年上限,會隨 state 同步)分開存——
+   回測要看 2015 年至今,量大很多,沒必要每次跨裝置同步都帶著這包資料跑。
+   存在自己的 localStorage key,按「抓完整歷史」才會去抓/更新,不會自動觸發。 */
+const BACKTEST_HIST_KEY = 'financeBacktestHistory_v1';
+const BACKTEST_FROM = '20150601';   // 抓到這個月為止,含 240 日均線的暖身緩衝
+let backtestFullHistory = {};       // { [instrumentId]: [{d,c}, ...] }
+let backtestHistBusy = false;
+let backtestHistMsg = '';
+let backtestResults = null;         // 上次「執行回測」的結果,重畫分頁不用重算
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const cleanNum = v => num(String(v).replace(/,/g, ''));
 function rocToISO(s){                       // '115/09/04' → '2026-09-04'
@@ -964,7 +974,7 @@ function adjustForSplits(rows){
   }
   return rows;
 }
-function mergeHistory(hist, rows){
+function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP){
   const byDate = new Map((hist || []).map(h => [h.d, h.c]));
   (rows || []).forEach(row => {
     const d = rocToISO(row[0]);
@@ -974,7 +984,7 @@ function mergeHistory(hist, rows){
     .map(([d, c]) => ({ d, c }))
     .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
     .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
-  return adjustForSplits(merged).slice(-PRICE_HIST_KEEP);
+  return adjustForSplits(merged).slice(-keep);
 }
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
    使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
@@ -1088,6 +1098,54 @@ async function backfillHistory(){
   }
   backfillMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '回補完成';
   backfillBusy = false;
+  renderAll();
+}
+
+function loadBacktestHistoryCache(){
+  try{
+    const raw = localStorage.getItem(BACKTEST_HIST_KEY);
+    backtestFullHistory = raw ? (JSON.parse(raw) || {}) : {};
+  }catch(e){ backtestFullHistory = {}; }
+}
+function saveBacktestHistoryCache(){
+  try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify(backtestFullHistory)); }catch(e){ /* 存不下就算了,下次按重抓 */ }
+}
+
+/* 回測要看的歷史比「訊號」用的 14 個月長得多,從 BACKTEST_FROM 那個月開始逐月往回抓到現在,
+   一樣逐月序列、每次間隔一下,不要一次對證交所發一串請求。抓完一檔就存一次,中途中斷
+   (使用者切分頁、關頁面)也不會整包資料不見。 */
+async function backfillFullHistory(){
+  if (!QUOTES_ENABLED || backtestHistBusy) return;
+  backtestHistBusy = true;
+  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).map(it => it.id);
+  const incomplete = [];
+  for (const tid of targets){
+    backtestHistMsg = `回補完整歷史中…${tid}`;
+    renderAll();
+    let hist = backtestFullHistory[tid] || [];
+    let monthsOk = 0, monthsTried = 0;
+    for (let offset = 0; offset > -260; offset--){
+      const m = monthParam(offset);
+      if (m < BACKTEST_FROM) break;
+      monthsTried++;
+      try{
+        const res = await fetch(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
+        if (res.ok){
+          const j = await res.json();
+          if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
+            hist = mergeHistory(hist, j.data, Infinity);
+            monthsOk++;
+          }
+        }
+      }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
+      await sleep(300);
+    }
+    backtestFullHistory[tid] = hist;
+    saveBacktestHistoryCache();
+    if (monthsOk < monthsTried) incomplete.push(tid + '(' + monthsOk + '/' + monthsTried + ' 個月)');
+  }
+  backtestHistMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成';
+  backtestHistBusy = false;
   renderAll();
 }
 
@@ -2178,6 +2236,124 @@ function computeTrend(it){
 }
 const computeAllTrends = () => state.instruments.map(computeTrend);
 
+/* ===================== 均線策略回測 =====================
+   拿「訊號」分頁同一套均線判斷規則,從頭到尾套用在完整歷史價格上,算出「照訊號進出」
+   VS「一開始就全押買進抱到現在」的淨值曲線,回報總報酬與最大回撤(MDD)。
+   狀態機判斷邏輯刻意跟 computeTrend 逐行保持一致——同一套規則只能有一個源頭,
+   不要在這裡重新描述一次規則再各自維護,不然兩邊分岔是最容易埋 bug 的地方。
+   手續費用跟真實交易紀錄同一個 defaultFee(),不是另外開一組數字;初始資金只是拿來
+   算報酬率%的基準,不代表真實金額,所以結果只看報酬率跟 MDD,不看金額本身。 */
+const BACKTEST_INITIAL_CASH = 1000000;
+function runBacktest(priceHistory, trendParams){
+  const p = trendParams;
+  const hist = priceHistory || [];
+  const barsNeeded = p.maSlow + 1;
+  if (hist.length < barsNeeded) return null;
+
+  const closes = hist.map(h => h.c);
+  const dates = hist.map(h => h.d);
+  const maF = sma(closes, p.maFast);
+  const maS = sma(closes, p.maSlow);
+  const start = p.maSlow - 1;
+
+  let status = 'WATCH', basePrice = 0, pyramidCount = 0;
+  let cash = BACKTEST_INITIAL_CASH, shares = 0, cashAtExit = BACKTEST_INITIAL_CASH;
+  const bhFee = defaultFee('buy', BACKTEST_INITIAL_CASH / 1.001425);
+  const bhShares = (BACKTEST_INITIAL_CASH - bhFee) / closes[start];
+  const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhShares * closes[start] }];
+
+  for (let i = start + 1; i < closes.length; i++){
+    const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
+    if (f != null && s != null && fy != null){
+      let action;
+      if (status === 'HOLD'){
+        action = close < f * p.exitBuffer ? 'EXIT' : 'HOLD';
+      }else{
+        const priceStable = close > f && closes[i - 1] > maF[i - 1];
+        const slopeOk = f >= fy * p.recoverSlopeThreshold;
+        const strongRebound = close > f * p.recoverStrongRebound;
+        const manualPrice = basePrice > 0 ? basePrice : closes[i - 1];
+        const effectiveBase = Math.min(manualPrice, s);
+        const gapTriggered = close < effectiveBase * (1 - p.pyramidGap);
+        if ((priceStable && slopeOk) || strongRebound) action = 'RECOVER';
+        else if (gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
+        else action = status;
+      }
+
+      if (action === 'RECOVER'){
+        const totalValue = cash + shares * close;
+        const fee = defaultFee('buy', totalValue / 1.001425);
+        shares = (totalValue - fee) / close;
+        cash = 0;
+        basePrice = close; pyramidCount = 0; status = 'HOLD';
+      }else if (action === 'ADD'){
+        const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
+        if (unit > 0){
+          const fee = defaultFee('buy', unit / 1.001425);
+          shares += (unit - fee) / close;
+          cash -= unit;
+        }
+        basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
+      }else if (action === 'EXIT'){
+        const gross = shares * close;
+        const fee = defaultFee('sell', gross);
+        cash += gross - fee;
+        shares = 0;
+        cashAtExit = cash;
+        basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
+      }
+    }
+    curve.push({ d: dates[i], strat: cash + shares * close, bh: bhShares * close });
+  }
+
+  const mdd = vals => {
+    let peak = -Infinity, worst = 0;
+    vals.forEach(v => { peak = Math.max(peak, v); worst = Math.min(worst, (v - peak) / peak); });
+    return worst * 100;
+  };
+  const final = curve[curve.length - 1];
+  return {
+    curve, from: curve[0].d, to: final.d, status, pyramidCount,
+    returnStrat: (final.strat / BACKTEST_INITIAL_CASH - 1) * 100,
+    returnBh: (final.bh / BACKTEST_INITIAL_CASH - 1) * 100,
+    mddStrat: mdd(curve.map(c => c.strat)),
+    mddBh: mdd(curve.map(c => c.bh)),
+  };
+}
+
+/* 回測畫圖只需要看得出長期走勢,不用每天畫一個點——每個月只留最後一個交易日,
+   十年份的日資料點數才不會爆掉(lineChart 一個點要畫圓點加可點區域,點數等於乘三)。 */
+function monthEndSample(curve){
+  const out = [];
+  for (let i = 0; i < curve.length; i++){
+    const cur = curve[i].d.slice(0, 7);
+    const next = i + 1 < curve.length ? curve[i + 1].d.slice(0, 7) : null;
+    if (cur !== next) out.push(curve[i]);
+  }
+  return out;
+}
+
+function runAllBacktests(){
+  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+  backtestResults = targets.map(it => {
+    const hist = backtestFullHistory[it.id];
+    const p = it.trend || defaultTrendParams(it.leverage);
+    if (!hist || hist.length < p.maSlow + 1){
+      return { id: it.id, error: `歷史資料不夠(需要至少 ${p.maSlow + 1} 天),請先按上面「抓完整歷史」。` };
+    }
+    const res = runBacktest(hist, p);
+    const sampled = monthEndSample(res.curve);
+    return {
+      id: it.id, from: res.from, to: res.to,
+      returnStrat: res.returnStrat, returnBh: res.returnBh,
+      mddStrat: res.mddStrat, mddBh: res.mddBh,
+      labels: sampled.map(pt => pt.d.slice(0, 7)),
+      stratSeries: sampled.map(pt => pt.strat / BACKTEST_INITIAL_CASH * 100),
+      bhSeries: sampled.map(pt => pt.bh / BACKTEST_INITIAL_CASH * 100),
+    };
+  });
+}
+
 /* 正2(00631L+00675L)該投入多少錢的曝險目標計算。只管槓桿倍數剛好等於 2 的標的,
    目前策略裡只有正2,之後如果加了別的槓桿倍數的標的,這裡先不處理(不特別去適配)。
 
@@ -2707,6 +2883,37 @@ function renderTrendTab(){
         <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '「設定」分頁按「從證交所更新收盤價」時,歷史不夠會自動一併回補,不用特地按這裡——這個按鈕是自動回補失敗或想手動重試時才用。'}</div>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回補歷史價格。</div>`}
       <button class="why" data-act="go" data-v="help">這個訊號怎麼算 →</button>
+    </div>
+    ${renderBacktestCard()}`;
+}
+
+function renderBacktestCard(){
+  return `
+    <div class="card">
+      <h3>策略回測</h3>
+      <details class="tip" style="margin-bottom:12px;"><summary>這是什麼</summary><div class="body">
+        拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟
+        「一開始就全押買進、抱到現在都不動」誰的總報酬與最大回撤(MDD)比較好。
+        這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
+      </div></details>
+      ${QUOTES_ENABLED ? `
+        <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史(較慢,約 1-2 分鐘)'}</button>
+        <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不佔用跨裝置同步的空間。第一次要先按這顆才有資料可以跑回測。'}</div>
+        <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
+      ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
+      ${(backtestResults || []).map(r => r.error ? `
+        <div class="muted neg" style="margin-top:12px;">${esc(r.id)}:${esc(r.error)}</div>
+      ` : `
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.id)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
+          <div class="row sub"><span class="label">策略總報酬 / MDD</span><span class="val ${r.returnStrat >= 0 ? 'pos' : 'neg'}">${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(1)}% / ${r.mddStrat.toFixed(1)}%</span></div>
+          <div class="row sub"><span class="label">買進持有總報酬 / MDD</span><span class="val ${r.returnBh >= 0 ? 'pos' : 'neg'}">${r.returnBh >= 0 ? '+' : ''}${r.returnBh.toFixed(1)}% / ${r.mddBh.toFixed(1)}%</span></div>
+          ${lineChart('bt-' + r.id, r.labels, [
+            { name:'策略', color:'var(--s1)', values:r.stratSeries },
+            { name:'買進持有', color:'var(--sub)', values:r.bhSeries }
+          ], { label: r.id + ' 回測淨值指數(起點=100)', height:150, fmtVal: v => v.toFixed(0) })}
+        </div>
+      `).join('')}
     </div>`;
 }
 
@@ -3404,6 +3611,8 @@ function onClick(el){
     }
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'backfill-history': backfillHistory(); return;
+    case 'backfill-backtest-history': backfillFullHistory(); return;
+    case 'run-backtest': runAllBacktests(); break;
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);
       if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenDate: it.trend.lastSeenDate });
@@ -3467,7 +3676,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade'].includes(act)) scheduleSave();
+  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 
@@ -3479,6 +3688,7 @@ function init(){
 
   const local = readLocal();
   if (local) state = normalize(local);
+  loadBacktestHistoryCache();
 
   const content = document.getElementById('content');
   content.addEventListener('input', e => {

@@ -15,6 +15,9 @@ echo
 echo "=== 均線趨勢訊號(computeTrend) ==="
 node trend.js || fail=1
 echo
+echo "=== 均線策略回測(runBacktest) ==="
+node backtest.js || fail=1
+echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo
