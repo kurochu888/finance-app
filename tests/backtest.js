@@ -18,7 +18,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee };`);
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -94,6 +94,27 @@ console.log('monthEndSample:每個月只留最後一個交易日,首尾一定保
   must(s.length === 3, `三個月份應該取樣成 3 筆,得到 ${s.length}`);
   must(s[0].d === '2020-01-20' && s[1].d === '2020-02-28' && s[2].d === '2020-03-02',
        `取樣結果不對:${JSON.stringify(s.map(x => x.d))}`);
+})();
+console.log('  ok');
+
+console.log('findHistoryGap:抓到真的漏資料的大缺口,不誤判週末/國定假日/農曆年這種正常間斷');
+(function testFindHistoryGap(){
+  const daily = (dates) => dates.map(d => ({ d, c: 100 }));
+
+  const clean = daily(['2024-01-01','2024-01-02','2024-01-03','2024-01-04','2024-01-05']);
+  must(A.findHistoryGap(clean) === null, '連續交易日不該被誤判成缺口');
+
+  const weekend = daily(['2024-01-05','2024-01-08']);   // 週五→下週一,隔 3 天
+  must(A.findHistoryGap(weekend) === null, '正常週末間隔不該被誤判成缺口');
+
+  const cny = daily(['2024-02-06','2024-02-16']);   // 模擬農曆年封關,隔 10 天
+  must(A.findHistoryGap(cny) === null, '農曆年這種長假(10 天)不該被誤判成缺口');
+
+  const realGap = daily(['2020-05-01','2020-05-04','2020-08-10','2020-08-11']);   // 中間憑空少了三個多月
+  const gap = A.findHistoryGap(realGap);
+  must(gap && gap.from === '2020-05-04' && gap.to === '2020-08-10',
+       `應該抓到 2020-05-04 ~ 2020-08-10 這段缺口,得到 ${JSON.stringify(gap)}`);
+  console.log(`  抓到缺口:${gap.from} ~ ${gap.to},約 ${gap.days} 天`);
 })();
 console.log('  ok');
 
