@@ -562,7 +562,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-23 · 085c4f13f3';
+const BUILD_VERSION = '2026-09-23 · d8696809b1';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1142,6 +1142,8 @@ async function backfillFullHistory(){
   backtestHistBusy = true;
   const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).map(it => it.id);
   const incomplete = [];
+  let consecutiveNetworkFails = 0;
+  let abortedByRateLimit = false;
   for (const tid of targets){
     backtestHistMsg = `回補完整歷史中…${tid}`;
     renderAll();
@@ -1167,13 +1169,22 @@ async function backfillFullHistory(){
             hist = mergeHistory(hist, j.data, Infinity);
             ok = true;
           }
+          consecutiveNetworkFails = 0;   // 伺服器有正常回應(不管這個月有沒有資料),不算網路失敗
+        }else{
+          consecutiveNetworkFails++;
         }
-      }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
+      }catch(e){
+        // fetch 本身丟出例外(離線、被 CORS/限流擋掉):連續好幾次代表可能被證交所暫時
+        // 限流了,不要傻傻把剩下上百個月的請求硬發完,先停下來讓使用者知道、也讓限流冷卻。
+        consecutiveNetworkFails++;
+      }
       monthLog.push(ok);
+      if (consecutiveNetworkFails >= 5){ abortedByRateLimit = true; break; }
       await sleep(300);
     }
     backtestFullHistory[tid] = hist;
     saveBacktestHistoryCache();
+    if (abortedByRateLimit) break;
     // monthLog 是新→舊。「最舊的那次成功」之前(更舊)如果也抓不到,代表那時候這標的
     // 還沒上市,是預期中的事,不算異常(00675L 2016 年 10 月才掛牌,更早的月份本來就查無資料)。
     // 只有「最舊成功月」之後(較新)出現的空月,才是真的漏抓——那段時間標的明明已經在交易了。
@@ -1181,7 +1192,9 @@ async function backfillFullHistory(){
     const realGaps = oldestOkIdx <= 0 ? 0 : monthLog.slice(0, oldestOkIdx).filter(v => !v).length;
     if (realGaps > 0) incomplete.push(tid + '(' + realGaps + ' 個月沒抓到,可以再按一次重試)');
   }
-  backtestHistMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成';
+  backtestHistMsg = abortedByRateLimit
+    ? '連續好幾個月都抓不到資料,證交所可能暫時限流了——建議休息 15-30 分鐘再試,不要連續按。'
+    : (incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成');
   // 推一份到雲端,其他裝置下次打開就能直接讀,不用再等一次逐月抓。失敗(沒登入/沒網路)就算了,
   // 本機的資料不受影響,不影響這次回補的結果。
   if (cloudBacktestDoc){
