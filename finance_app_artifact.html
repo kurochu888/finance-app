@@ -544,7 +544,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-23 · aa8d3788ce';
+const BUILD_VERSION = '2026-09-23 · b2ecf6ee4a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1113,10 +1113,18 @@ async function backfillFullHistory(){
     backtestHistMsg = `回補完整歷史中…${tid}`;
     renderAll();
     let hist = backtestFullHistory[tid] || [];
+    // 已經有資料的月份不用重抓——不然每次按都要重新跑一次完整 130 幾個月,跟第一次一樣久。
+    // 當月跟上個月永遠重抓(可能還有新收盤價/上次只抓到一半),更舊的月份只要已經有資料就跳過。
+    const haveMonths = new Set(hist.map(h => h.d.slice(0, 7)));
     const monthLog = [];   // 依時間新→舊記録每個月有沒有抓到,新到舊排(offset 0 → 最舊)
     for (let offset = 0; offset > -260; offset--){
       const m = monthParam(offset);
       if (m < BACKTEST_FROM) break;
+      const ym = m.slice(0, 4) + '-' + m.slice(4, 6);
+      if (offset <= -2 && haveMonths.has(ym)){
+        monthLog.push(true);
+        continue;
+      }
       let ok = false;
       try{
         const res = await fetch(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
@@ -2898,7 +2906,7 @@ function renderBacktestCard(){
         這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
       </div></details>
       ${QUOTES_ENABLED ? `
-        <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史(較慢,約 1-2 分鐘)'}</button>
+        <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 1-2 分鐘)')}</button>
         <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : (cloudBacktestDoc ? '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不會拖慢平常記帳/存檔的同步速度。第一次按這顆之後會存一份到雲端,其他裝置打開就會自動帶入,不用再等一次。' : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存。第一次要先按這顆才有資料可以跑回測——登入雲端同步的話,其他裝置就不用再重抓一次。')}</div>
         <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
