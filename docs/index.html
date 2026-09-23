@@ -578,7 +578,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-23 · 1103f2ad30';
+const BUILD_VERSION = '2026-09-23 · 754ae364f1';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -727,9 +727,14 @@ async function pullBacktestHistoryFromCloud(){
     if (remote && remote.data && Object.keys(remote.data).length){
       backtestFullHistory = remote.data;
       saveBacktestHistoryCache();
-      renderAll();
+      backtestHistMsg = '已從雲端帶入其他裝置抓過的完整歷史,不用重抓。';
+    }else{
+      backtestHistMsg = '雲端還沒有存過完整歷史(可能是還沒有任何裝置成功按過「抓完整歷史」並推上雲端),請按下面的按鈕抓一次。';
     }
-  }catch(e){ /* 拉不到就算了,按「抓完整歷史」還是能直接重新抓 */ }
+  }catch(e){
+    backtestHistMsg = '讀取雲端完整歷史失敗(' + (e && e.message ? e.message : '未知錯誤') + '),請按下面的按鈕直接重新抓取。';
+  }
+  renderAll();
 }
 
 async function connectCloud(){

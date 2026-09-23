@@ -693,9 +693,14 @@ async function pullBacktestHistoryFromCloud(){
     if (remote && remote.data && Object.keys(remote.data).length){
       backtestFullHistory = remote.data;
       saveBacktestHistoryCache();
-      renderAll();
+      backtestHistMsg = '已從雲端帶入其他裝置抓過的完整歷史,不用重抓。';
+    }else{
+      backtestHistMsg = '雲端還沒有存過完整歷史(可能是還沒有任何裝置成功按過「抓完整歷史」並推上雲端),請按下面的按鈕抓一次。';
     }
-  }catch(e){ /* 拉不到就算了,按「抓完整歷史」還是能直接重新抓 */ }
+  }catch(e){
+    backtestHistMsg = '讀取雲端完整歷史失敗(' + (e && e.message ? e.message : '未知錯誤') + '),請按下面的按鈕直接重新抓取。';
+  }
+  renderAll();
 }
 
 async function connectCloud(){
