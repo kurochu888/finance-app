@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, adjustForSplits, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -122,6 +122,19 @@ console.log('mergeHistory:分割造成的假斷崖要被還原成連續序列(�
   const oldPrice = hist[0].c;
   console.log('  分割前第一筆原始收盤 420,還原後變成', oldPrice.toFixed(2), '(應該跟分割後的價格尺度接近,不是 420)');
   must(oldPrice < 30, '分割前的價格沒有被換算到跟分割後同一個尺度(得到 ' + oldPrice.toFixed(2) + ')');
+})();
+console.log('  ok');
+
+console.log('adjustForSplits:資料缺口造成的真實累積漲跌,不該被誤判成分割(迴歸測試:實際發生過,把 2015 年的資料錯誤打折)');
+(function testGapNotSplit(){
+  // 模擬回補時中間漏了好幾個月:前段資料在 2015-06 附近,下一筆卻直接跳到 2016-01——
+  // 兩倍槓桿股價半年內腰斬超過一半很正常(尤其一路下跌的行情),換算成單日比例
+  // (10/22.95≈0.436)會落在舊版「< 0.6 就當分割」的誤判區間,不該被打折更早的資料。
+  const before = [{ d:'2015-06-01', c:23.07 }, { d:'2015-06-02', c:22.95 }];
+  const afterGap = [{ d:'2016-01-04', c:10.00 }, { d:'2016-01-05', c:10.30 }];
+  const hist = A.adjustForSplits([...before, ...afterGap]);
+  must(hist[0].c === 23.07 && hist[1].c === 22.95,
+       `資料缺口(隔了超過 16 天)不該被當成分割,更早的資料不該被打折,得到 ${JSON.stringify(hist.slice(0,2))}`);
 })();
 console.log('  ok');
 
