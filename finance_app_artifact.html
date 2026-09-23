@@ -544,14 +544,16 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-23 · 01bf170410';
+const BUILD_VERSION = '2026-09-23 · c8c5c0beac';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
+const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
 const STORAGE_KEY = 'financeAppState_v2';
 const LEGACY_KEY = 'financeAppLeverageData_v1';
 
 let storageMode = 'local';   // 'cloud' | 'local' | 'none'
 let cloud = null;            // { get, set, onChange } — 已連上的雲端
+let cloudBacktestDoc = null; // { get, set } — 回測完整歷史的獨立雲端文件,跟主資料 cloud 分開存
 let cloudKind = 'none';      // 'claude' | 'firebase' | 'none'
 let authUser = null;         // Firebase 已登入的帳號
 let authBusy = false;
@@ -679,6 +681,21 @@ async function syncFirstTime(){
     storageMode = 'local';
     updateStorageStatus();
   }
+  pullBacktestHistoryFromCloud();   // 跟主資料同步失敗與否無關,單獨試,失敗就算了
+}
+
+/* 回測完整歷史只在本機沒資料時才從雲端拉——本機已經有(不管是抓過還是剛從雲端拉過)
+   就不覆蓋,避免拿舊的雲端資料蓋掉這台裝置剛抓好的新資料。 */
+async function pullBacktestHistoryFromCloud(){
+  if (!cloudBacktestDoc || Object.keys(backtestFullHistory).length) return;
+  try{
+    const remote = await cloudBacktestDoc.get();
+    if (remote && remote.data && Object.keys(remote.data).length){
+      backtestFullHistory = remote.data;
+      saveBacktestHistoryCache();
+      renderAll();
+    }
+  }catch(e){ /* 拉不到就算了,按「抓完整歷史」還是能直接重新抓 */ }
 }
 
 async function connectCloud(){
@@ -717,6 +734,11 @@ async function connectCloud(){
             del: id => db.doc('backups/' + id).delete()
           }
         };
+        const btRef = db.doc(BACKTEST_DOC_PATH);
+        cloudBacktestDoc = {
+          get: async () => { const s2 = await btRef.get(); return s2.exists ? s2.data() : null; },
+          set: d => btRef.set(d)
+        };
         await syncFirstTime();
         return;
       }
@@ -735,9 +757,11 @@ async function connectCloud(){
         authBusy = false;
         if (user){
           cloud = fb.docApi();
+          cloudBacktestDoc = fb.namedDoc('backtestHistory');
           syncFirstTime();
         }else{
           cloud = null;
+          cloudBacktestDoc = null;
           storageMode = 'local';
           updateStorageStatus();
         }
@@ -1111,6 +1135,11 @@ async function backfillFullHistory(){
     if (monthsOk < monthsTried) incomplete.push(tid + '(' + monthsOk + '/' + monthsTried + ' 個月)');
   }
   backtestHistMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成';
+  // 推一份到雲端,其他裝置下次打開就能直接讀,不用再等一次逐月抓。失敗(沒登入/沒網路)就算了,
+  // 本機的資料不受影響,不影響這次回補的結果。
+  if (cloudBacktestDoc){
+    try{ await cloudBacktestDoc.set({ data: backtestFullHistory, updatedAt: Date.now() }); }catch(e){ /* 推不上去,本機還是有資料 */ }
+  }
   backtestHistBusy = false;
   renderAll();
 }
@@ -2864,7 +2893,7 @@ function renderBacktestCard(){
       </div></details>
       ${QUOTES_ENABLED ? `
         <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史(較慢,約 1-2 分鐘)'}</button>
-        <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不佔用跨裝置同步的空間。第一次要先按這顆才有資料可以跑回測。'}</div>
+        <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : (cloudBacktestDoc ? '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不會拖慢平常記帳/存檔的同步速度。第一次按這顆之後會存一份到雲端,其他裝置打開就會自動帶入,不用再等一次。' : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存。第一次要先按這顆才有資料可以跑回測——登入雲端同步的話,其他裝置就不用再重抓一次。')}</div>
         <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
       ${(backtestResults || []).map(r => r.error ? `
