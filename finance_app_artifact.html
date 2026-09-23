@@ -544,7 +544,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-23 · c8c5c0beac';
+const BUILD_VERSION = '2026-09-23 · aa8d3788ce';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1113,26 +1113,32 @@ async function backfillFullHistory(){
     backtestHistMsg = `回補完整歷史中…${tid}`;
     renderAll();
     let hist = backtestFullHistory[tid] || [];
-    let monthsOk = 0, monthsTried = 0;
+    const monthLog = [];   // 依時間新→舊記録每個月有沒有抓到,新到舊排(offset 0 → 最舊)
     for (let offset = 0; offset > -260; offset--){
       const m = monthParam(offset);
       if (m < BACKTEST_FROM) break;
-      monthsTried++;
+      let ok = false;
       try{
         const res = await fetch(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
         if (res.ok){
           const j = await res.json();
           if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
             hist = mergeHistory(hist, j.data, Infinity);
-            monthsOk++;
+            ok = true;
           }
         }
       }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
+      monthLog.push(ok);
       await sleep(300);
     }
     backtestFullHistory[tid] = hist;
     saveBacktestHistoryCache();
-    if (monthsOk < monthsTried) incomplete.push(tid + '(' + monthsOk + '/' + monthsTried + ' 個月)');
+    // monthLog 是新→舊。「最舊的那次成功」之前(更舊)如果也抓不到,代表那時候這標的
+    // 還沒上市,是預期中的事,不算異常(00675L 2016 年 10 月才掛牌,更早的月份本來就查無資料)。
+    // 只有「最舊成功月」之後(較新)出現的空月,才是真的漏抓——那段時間標的明明已經在交易了。
+    const oldestOkIdx = monthLog.lastIndexOf(true);
+    const realGaps = oldestOkIdx <= 0 ? 0 : monthLog.slice(0, oldestOkIdx).filter(v => !v).length;
+    if (realGaps > 0) incomplete.push(tid + '(' + realGaps + ' 個月沒抓到,可以再按一次重試)');
   }
   backtestHistMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成';
   // 推一份到雲端,其他裝置下次打開就能直接讀,不用再等一次逐月抓。失敗(沒登入/沒網路)就算了,
