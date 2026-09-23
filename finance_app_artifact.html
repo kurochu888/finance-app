@@ -544,7 +544,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-23 · f59a275e73';
+const BUILD_VERSION = '2026-09-23 · 085c4f13f3';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -959,9 +959,19 @@ async function twseRows(url){
    分割降低單位淨值(00631L 就在 2026-03 分割過,一天內從 443 掉到 19,比例 0.0435)。
    2 倍槓桿在最誇張的單日崩盤大概也不會腰斬到剩 4 成,所以拿「單日變動超過 40%」
    當門檻夠安全,不會誤判成真的行情;抓到就把斷點之前的價格全部按同一個比例換算,
-   接成連續序列,不然均線會被這種假斷崖整個帶歪。 */
+   接成連續序列,不然均線會被這種假斷崖整個帶歪。
+
+   2026-09 這輪抓到一個活生生的反例:回補歷史如果中間曾經缺過幾個月(逐月回補失敗
+   時就會發生),陣列裡「相鄰」的兩筆其實隔了大半年,2 倍槓桿股價半年內漲跌超過
+   40% 很正常,會被誤判成分割,把更早的資料全部錯誤打折——而且錯誤一旦發生,
+   之後補齊缺口也不會自動修正回來。所以前後兩筆的「實際日期」隔太久時,不當成分割處理,
+   寧可漏抓真分割也不要誤傷正常缺口——門檻跟 findHistoryGap() 共用同一個
+   HISTORY_GAP_DAYS,兩處判斷「正常間斷 vs 真的斷了」的標準要一致。 */
+const HISTORY_GAP_DAYS = 16;   // 比農曆年封關(約 9-10 天)還寬鬆,不會誤判正常長假
 function adjustForSplits(rows){
   for (let i = 1; i < rows.length; i++){
+    const dayGap = (new Date(rows[i].d) - new Date(rows[i - 1].d)) / 86400000;
+    if (dayGap > HISTORY_GAP_DAYS) continue;   // 中間隔太久,大波動是真實累積漲跌或資料缺口,不是分割
     const ratio = rows[i - 1].c > 0 ? rows[i].c / rows[i - 1].c : 1;
     if (ratio > 0 && (ratio < 0.6 || ratio > 1.6)){
       for (let j = 0; j < i; j++) rows[j].c = Math.round(rows[j].c * ratio * 10000) / 10000;
@@ -2357,9 +2367,9 @@ function monthEndSample(curve){
 
 /* sma() 是照陣列順序算的,不管日期——歷史資料如果中間漏了一整段(逐月回補時某幾個月
    沒抓到),均線會被這種假斷點默默帶偏,算出來的回測數字會失真但不會報錯,很難發現。
-   證交所收盤資料本來就有正常間斷(週末、國定假日,農曆年前後最長約 9-10 天),16 天的門檻
-   夠寬鬆不會誤判正常假期,又能抓到「一整個月憑空消失」這種真的漏資料的狀況。 */
-const HISTORY_GAP_DAYS = 16;
+   證交所收盤資料本來就有正常間斷(週末、國定假日,農曆年前後最長約 9-10 天),跟
+   adjustForSplits() 共用同一個 HISTORY_GAP_DAYS 門檻,兩處判斷「正常間斷 vs 真的斷了」
+   的標準要一致,不要各自維護一份數字。 */
 function findHistoryGap(hist){
   for (let i = 1; i < hist.length; i++){
     const days = (new Date(hist[i].d) - new Date(hist[i - 1].d)) / 86400000;
