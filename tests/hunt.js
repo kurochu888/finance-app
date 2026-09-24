@@ -345,6 +345,17 @@ check('動用日期填未來:到那天才算借款,當月不能先記一筆利�
   return '';
 });
 
+check('先記了一筆超賣、之後才買:持股、市值、報酬率要跟損益一致', () => {
+  A.state = A.normalize({ instruments:[{ key:'a', id:'00631L', leverage:2, price:25 }], trades:[
+    { id:'s', date:'2025-01-05', symbol:'00631L', action:'sell', shares:100, price:20, fee:0, source:'cash' },
+    { id:'b', date:'2025-06-05', symbol:'00631L', action:'buy', shares:100, price:20, fee:0, source:'cash' }] });
+  const p = A.computePosition(), r = A.computeLeverage();
+  if (A.heldShares('00631L') !== 100) return '持股應該是 100(超賣那筆不算),實際 ' + A.heldShares('00631L');
+  if (Math.abs(r.totalValue - p.marketValue) > 1e-6) return '市值兩邊不一致:' + r.totalValue + ' vs ' + p.marketValue;
+  if (p.xirr === null || !(p.xirr > 0)) return '報酬率應該是正的(買 2000 現值 2500),實際 ' + p.xirr;
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
