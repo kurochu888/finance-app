@@ -313,6 +313,7 @@ window.FinanceCloud.ready = new Promise(resolve => {
   .bt-grid th, .bt-grid td{border:1px solid var(--line); padding:4px 3px; text-align:center; line-height:1.35;}
   .bt-grid th{color:var(--sub); font-weight:600; background:var(--raised);}
   .bt-grid td span{display:block;}
+  .linkish{background:none; border:none; font:inherit; font-size:12px; cursor:pointer; color:inherit; text-align:left;}
   .update-banner{
     flex:0 0 auto; width:100%; border:none; cursor:pointer; padding:9px 12px; text-align:center;
     background:var(--accent); color:var(--accent-ink); font-size:13px; font-weight:700;
@@ -511,6 +512,10 @@ function normalize(raw){
       pv: h.pv === undefined ? null : num(h.pv),      // 部位市值
       pnl: h.pnl === undefined ? null : num(h.pnl),   // 整體損益
       loan: h.loan === undefined ? null : num(h.loan),// 借款餘額
+      // 當月資產/負債細項(2026-09 起才有;更早的月份沒存過,是空陣列)。id 對應 assets/liabilities 的 id,
+      // 改名也接得起來;t:'a' 資產、'l' 負債。
+      items: arr(h.items).map(it => ({ id: String(it.id || ''), name: String(it.name || ''), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
+        .filter(it => it.id),
       auto: h.auto !== false                           // 手動改過的不再被自動覆蓋
     }))
     .filter(h => /^\d{4}-\d{2}$/.test(h.m));
@@ -592,8 +597,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 84c5cd2b98';
-const BUILD_HASH = '84c5cd2b98';
+const BUILD_VERSION = '2026-09-24 · 24b5781493';
+const BUILD_HASH = '24b5781493';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1674,8 +1679,30 @@ function computeRisk(){
   };
 }
 
-/* 每月快照:第一次開啟該月時自動記一筆,之後每次開啟更新到最新。
-   使用者手動改過的那一筆(auto:false)不會被覆蓋。 */
+/* 每月快照:第一次開啟該月時自動記一筆,之後每次開啟(或改資產/負債細項時)更新到最新。
+   使用者手動改過的那一筆(auto:false)不會被覆蓋。過了這個月就固定下來,
+   連同當時每一筆資產/負債的金額(items),才看得到「哪一項每個月怎麼變」。 */
+const currentItems = () => [
+  ...state.assets.map(a => ({ id: a.id, name: a.name, amount: Math.round(a.amount), t: 'a' })),
+  ...state.liabilities.map(l => ({ id: l.id, name: l.name, amount: Math.round(l.amount), t: 'l' })),
+];
+/* 某一項在上一個「有細項紀錄」的月份是多少(本月之前最近的一筆快照),沒有就回傳 null */
+function prevItemAmount(id){
+  const m = thisMonth();
+  const prev = state.netWorthHistory
+    .filter(h => h.m < m && h.items && h.items.length)
+    .sort((a, b) => a.m < b.m ? 1 : -1)[0];
+  if (!prev) return null;
+  const it = prev.items.find(x => x.id === id);
+  return it ? { m: prev.m, amount: it.amount } : { m: prev.m, amount: null };
+}
+/* 某一項歷來每個月的金額(只有存過細項的月份) */
+function itemHistory(id){
+  return state.netWorthHistory
+    .filter(h => h.items && h.items.some(x => x.id === id))
+    .sort((a, b) => a.m < b.m ? -1 : 1)
+    .map(h => ({ m: h.m, amount: h.items.find(x => x.id === id).amount }));
+}
 function maybeSnapshot(){
   const p = computePosition();
   const r = computeLeverage();
@@ -1689,10 +1716,12 @@ function maybeSnapshot(){
     pv: Math.round(p.hasData ? p.marketValue : r.totalValue),
     pnl: p.hasData ? Math.round(p.total) : null,
     loan: Math.round(r.usedAmount),
+    items: currentItems(),
     auto: true
   };
   if (found){
-    if (found.v === snap.v && found.pv === snap.pv && found.pnl === snap.pnl && found.loan === snap.loan) return false;
+    if (found.v === snap.v && found.pv === snap.pv && found.pnl === snap.pnl && found.loan === snap.loan
+        && JSON.stringify(found.items || []) === JSON.stringify(snap.items)) return false;
     Object.assign(found, snap);
   }else{
     state.netWorthHistory.push(Object.assign({ id: uid(), m }, snap));
@@ -1971,6 +2000,39 @@ function renderOverview(){
 }
 
 /* ===================== 資產 ===================== */
+let itemHistOpen = '';   // 資產頁目前展開「每月紀錄」的那一項 id
+function itemDeltaText(id, amount){
+  const prev = prevItemAmount(id);
+  if (!prev) return '';
+  if (prev.amount === null) return `${monthLabel(prev.m)}還沒有這項`;
+  const d = Math.round(amount) - prev.amount;
+  // 上一筆有細項的月份不一定是上個月(中間可能有沒開 app 的月份),不是的話寫出是跟哪個月比
+  const vs = prev.m === shiftMonth(thisMonth(), -1) ? '比上月' : `比${monthLabel(prev.m)}`;
+  return d === 0 ? `${vs} 持平` : `${vs} ${d > 0 ? '+' : '−'}${fmt(Math.abs(d))}`;
+}
+function itemDeltaClass(id, amount, isLiab){
+  const prev = prevItemAmount(id);
+  if (!prev || prev.amount === null) return 'muted';
+  const d = Math.round(amount) - prev.amount;
+  if (d === 0) return 'muted';
+  return (d > 0) !== !!isLiab ? 'pos' : 'neg';   // 負債變多是壞事,顏色反過來
+}
+function itemRowExtras(x, isLiab, color){
+  const open = itemHistOpen === x.id;
+  const hist = open ? itemHistory(x.id) : [];
+  return `
+    <div class="row"><button class="linkish" data-act="item-hist" data-id="${x.id}" style="padding:0;">
+        <span class="${itemDeltaClass(x.id, x.amount, isLiab)}" id="${isLiab ? 'l' : 'a'}-delta-${x.id}">${itemDeltaText(x.id, x.amount) || '還沒有上月紀錄'}</span></button>
+      <button class="linkish muted" data-act="item-hist" data-id="${x.id}" style="padding:0;">${open ? '收起 ▾' : '每月紀錄 ▸'}</button></div>
+    ${open ? (hist.length ? `
+      ${lineChart('item-' + x.id, hist.map(h => h.m), [{ name: x.name || '這一項', color: color || 'var(--s1)', values: hist.map(h => h.amount) }], { height:110 })}
+      <div style="margin-top:4px;">${hist.slice().reverse().map((h, i, arr) => {
+        const older = arr[i + 1];
+        const d = older ? h.amount - older.amount : null;
+        return `<div class="row sub"><span class="label">${esc(monthLabel(h.m))}</span><span class="val">NT$ ${fmt(h.amount)}${d === null ? '' : `(${d >= 0 ? '+' : '−'}${fmt(Math.abs(d))})`}</span></div>`;
+      }).join('')}</div>` : `<div class="muted" style="font-size:12px;">還沒有每月紀錄——從這個月開始,每個月會自動記下這一項的金額。</div>`) : ''}`;
+}
+
 function renderAssets(){
   const tA = totalAssets(), tL = totalLiab();
   return `
@@ -1995,6 +2057,7 @@ function renderAssets(){
           <div class="row"><span class="muted"><span class="legend-dot" style="background:${seriesColor(i)}"></span>佔比</span>
             <span class="muted" id="a-pct-${a.id}">${pct.toFixed(1)}%</span></div>
           <div class="bar-track"><div class="bar-fill" id="a-bar-${a.id}" style="width:${pct.toFixed(1)}%;background:${seriesColor(i)}"></div></div>
+          ${itemRowExtras(a, false, seriesColor(i))}
         </div>`;
       }).join('') : `<div class="empty">還沒有資產項目。<br>例如:現金與活存、股票、不動產。</div>`}
       <button class="btn" data-act="add-asset">＋ 新增資產</button>
@@ -2003,10 +2066,13 @@ function renderAssets(){
     <div class="card">
       <h3>負債</h3>
       ${state.liabilities.length ? state.liabilities.map(l => `
+        <div style="margin-bottom:10px;">
         <div class="erow">
           <input class="f-name" data-k="ln-${l.id}" value="${esc(l.name)}" placeholder="項目名稱">
           <input class="f-amt" type="number" inputmode="decimal" data-k="la-${l.id}" value="${l.amount || ''}" placeholder="金額">
           <button class="xbtn" data-act="del-liab" data-id="${l.id}" aria-label="刪除">✕</button>
+        </div>
+        ${itemRowExtras(l, true, 'var(--red)')}
         </div>`).join('') : `<div class="empty">還沒有負債項目。<br>例如:房貸、信用貸款。</div>`}
       <button class="btn" data-act="add-liab">＋ 新增負債</button>
     </div>`;
@@ -2023,6 +2089,11 @@ function refreshAssets(){
     const bar = document.getElementById('a-bar-' + a.id);
     if (bar) bar.style.width = pct.toFixed(1) + '%';
   });
+  // 「比上月」跟著打字即時更新,不整頁重畫(整頁重畫會讓正在打的欄位失焦)
+  [[state.assets, 'a', false], [state.liabilities, 'l', true]].forEach(([list, pre, isLiab]) => list.forEach(x => {
+    const el = document.getElementById(pre + '-delta-' + x.id);
+    if (el){ el.textContent = itemDeltaText(x.id, x.amount) || '還沒有上月紀錄'; el.className = itemDeltaClass(x.id, x.amount, isLiab); }
+  }));
 }
 
 /* 買賣草稿的「成交金額」預估:只改這一小塊 DOM,不整頁重畫,
@@ -3462,6 +3533,8 @@ function onField(key, el){
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = Math.max(0, num(el.value)); }
+  // 細項一改就更新本月快照——不然月底最後一天改的數字,要等下個月打開才會存,那時已經算到下個月了
+  if (['an', 'aa', 'ln', 'la'].includes(kind)) maybeSnapshot();
   else if (kind === 'nh'){
     const h = findById(state.netWorthHistory, rest);
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
@@ -3644,7 +3717,7 @@ function sampleData(){
     { back:0, pv:926030, loan:1000000, pnl:97000 }
   ].map(h => ({
     id: uid(), m: shiftMonth(m, -h.back), v: nw - h.back * 120000,
-    pv: h.pv, pnl: h.pnl, loan: h.loan, auto: true
+    pv: h.pv, pnl: h.pnl, loan: h.loan, items: [], auto: true
   }));
   s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 1000000,
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
@@ -3834,6 +3907,7 @@ function onClick(el){
     case 'del-asset': state.assets = state.assets.filter(a => a.id !== id); break;
     case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0 }); break;
     case 'del-liab': state.liabilities = state.liabilities.filter(l => l.id !== id); break;
+    case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
     case 'del-hist': state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
     case 'snap-networth': {
       const m = thisMonth();
@@ -4031,7 +4105,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest'].includes(act)) scheduleSave();
+  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 
