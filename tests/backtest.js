@@ -14,11 +14,16 @@ global.localStorage = { _d:{}, get length(){return Object.keys(this._d).length;}
   key(i){const k=Object.keys(this._d);return i<k.length?k[i]:null;},
   getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=String(v);}, removeItem(k){delete this._d[k];} };
 
+// 開 app 時會自動抓一次報價;先把證交所冷卻設成還沒到期,讓 app 啟動時不發請求,
+// 後面節流測試才能從乾淨的狀態開始(測試自己會清掉這個 key)。
+global.localStorage.setItem('financeTwseCooldownUntil', String(Date.now() + 3600000));
+
 const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths };`);
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -153,6 +158,51 @@ console.log('completeHistoryMonths:上次只抓到一半的月份不能被當成
 })();
 console.log('  ok');
 
+(async () => {
+console.log('twseJson:對證交所的請求要排隊、間隔至少 TWSE_GAP_MS;連續失敗要停下來冷卻,冷卻期間不能再發請求');
+await (async function testTwseThrottle(){
+  // 假時鐘:sleep() 走 setTimeout,讓它直接把時間往前推,不用真的等
+  const realST = global.setTimeout, realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  global.setTimeout = (f, ms) => { now += (ms || 0); return realST(f, 0); };
+  try{
+    localStorage.removeItem('financeTwseCooldownUntil');
+    const times = [];
+    let fail = false;
+    global.fetch = async () => { times.push(now); if (fail) throw new Error('blocked');
+                                 return { ok: true, json: async () => ({ stat: 'OK', data: [] }) }; };
+    // 同時丟 4 個請求(像更新報價那樣 Promise.all),實際送出去的時間要依序隔開
+    await Promise.all([1, 2, 3, 4].map(() => A.twseJson('x')));
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
+    must(times.length === 4, `應該送出 4 個請求,得到 ${times.length}`);
+    must(gaps.every(g => g >= A.TWSE_GAP_MS), `請求間隔應該至少 ${A.TWSE_GAP_MS}ms,得到 ${JSON.stringify(gaps)}`);
+
+    fail = true;
+    times.length = 0;
+    let blockedErr = null;
+    for (let i = 0; i < A.TWSE_FAIL_LIMIT + 3; i++){
+      try{ await A.twseJson('x'); }catch(e){ if (e instanceof A.TwseBlocked){ blockedErr = e; break; } }
+    }
+    must(blockedErr, '連續失敗應該丟出 TwseBlocked,讓呼叫端停下來');
+    must(times.length === A.TWSE_FAIL_LIMIT, `連續失敗 ${A.TWSE_FAIL_LIMIT} 次就該停,實際發了 ${times.length} 個`);
+    must(A.twseCooldownLeft() > 0, '被擋之後應該進入冷卻');
+    const before = times.length;
+    let rejected = false;
+    try{ await A.twseJson('x'); }catch(e){ rejected = e instanceof A.TwseBlocked; }
+    must(rejected && times.length === before, '冷卻期間應該直接拒絕,不能再對證交所發請求');
+    now += A.twseCooldownLeft() + 1;
+    fail = false;
+    await A.twseJson('x');
+    must(times.length === before + 1, '冷卻到期後應該恢復正常送出請求');
+  }finally{
+    global.setTimeout = realST;
+    Date.now = realNow;
+  }
+})();
+console.log('  ok');
+
 console.log();
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
 process.exit(bugs.length ? 1 : 0);
+})();

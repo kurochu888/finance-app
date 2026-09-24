@@ -547,7 +547,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · e188df82cb';
+const BUILD_VERSION = '2026-09-24 · 88341cea8a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -696,6 +696,7 @@ async function pullBacktestHistoryFromCloud(){
     if (remote && remote.v === BACKTEST_HIST_VERSION && remote.data && Object.keys(remote.data).length){
       backtestFullHistory = remote.data;
       backtestSplits = remote.splits || {};
+      backtestListedFrom = remote.listedFrom || {};
       saveBacktestHistoryCache();
       backtestHistMsg = '已從雲端帶入其他裝置抓過的完整歷史,不用重抓。';
     }else if (remote && remote.data){
@@ -934,6 +935,7 @@ const BACKTEST_HIST_VERSION = 2;
 const BACKTEST_FROM = '20150601';   // 抓到這個月為止,含 240 日均線的暖身緩衝
 let backtestFullHistory = {};       // { [instrumentId]: [{d,c}, ...] }
 let backtestSplits = {};            // { [instrumentId]: [{d,ratio}, ...] },跟 backtestFullHistory 一起存,見 mergeHistory
+let backtestListedFrom = {};        // { [instrumentId]: 'YYYY-MM' } 證交所確認這個月之前查無資料(還沒上市),更新時不用再問
 let backtestHistBusy = false;
 let backtestHistMsg = '';
 let backtestResults = null;         // 上次「執行回測」的結果,重畫分頁不用重算
@@ -950,13 +952,59 @@ function monthParam(offset){
   d.setMonth(d.getMonth() + offset);
   return d.getFullYear() + pad2(d.getMonth() + 1) + '01';
 }
+/* ===================== 證交所請求節流 =====================
+   證交所會擋短時間內大量的請求(網路上常見的說法是大約每 5 秒 3 個),被擋之後這台裝置
+   要等一段時間才會恢復。以前每個請求只隔 0.3 秒,第一次抓完整歷史要發 270 個請求,
+   幾乎一定會撞上。所以所有對證交所的請求(更新報價、兩種回補)一律走 twseJson():
+   - 全部排成一列依序發,每個間隔 TWSE_GAP_MS,不管是誰發的都不會疊在一起;
+   - 連續 TWSE_FAIL_LIMIT 次失敗(網路例外、非 200、回來的不是 JSON——被擋時常見的樣子)
+     就當成被擋了,記下冷卻到期時間(存 localStorage,重新整理也記得),冷卻期間不再發任何請求,
+     直接丟 TwseBlocked,讓呼叫端停下來、把「幾分鐘後再試」告訴使用者。
+   伺服器有正常回 JSON(就算是「查無資料」)不算失敗。 */
+const TWSE_GAP_MS = 2000;
+const TWSE_FAIL_LIMIT = 5;
+const TWSE_COOLDOWN_MS = 20 * 60000;
+const TWSE_COOLDOWN_KEY = 'financeTwseCooldownUntil';
+class TwseBlocked extends Error{}
+let twseQueue = Promise.resolve();
+let twseLastAt = 0;
+let twseFails = 0;
+function twseCooldownLeft(){
+  try{ return Math.max(0, (Number(localStorage.getItem(TWSE_COOLDOWN_KEY)) || 0) - Date.now()); }catch(e){ return 0; }
+}
+function twseCooldownMsg(){
+  return `證交所暫時擋住了這台裝置的請求,已經自動停下來,請約 ${Math.max(1, Math.ceil(twseCooldownLeft() / 60000))} 分鐘後再試。`;
+}
+function twseJson(url){
+  const run = async () => {
+    if (twseCooldownLeft() > 0) throw new TwseBlocked(twseCooldownMsg());
+    const wait = twseLastAt + TWSE_GAP_MS - Date.now();
+    if (wait > 0) await sleep(Math.min(wait, TWSE_GAP_MS));
+    twseLastAt = Date.now();
+    try{
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const j = await res.json();
+      twseFails = 0;
+      return j;
+    }catch(e){
+      if (++twseFails >= TWSE_FAIL_LIMIT){
+        twseFails = 0;
+        try{ localStorage.setItem(TWSE_COOLDOWN_KEY, String(Date.now() + TWSE_COOLDOWN_MS)); }catch(_){}
+        throw new TwseBlocked(twseCooldownMsg());
+      }
+      throw e;
+    }
+  };
+  const p = twseQueue.then(run, run);
+  twseQueue = p.catch(() => {});
+  return p;
+}
 async function twseRows(url){
   // 月初當月可能還沒有資料,退回上個月再試一次
   for (const m of [monthParam(0), monthParam(-1)]){
     try{
-      const res = await fetch(url + '&date=' + m);
-      if (!res.ok) continue;
-      const j = await res.json();
+      const j = await twseJson(url + '&date=' + m);
       if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length) return j.data;
     }catch(e){ /* 換下一個月 */ }
   }
@@ -1036,6 +1084,10 @@ function needsBackfill(){
 }
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
+  if (twseCooldownLeft() > 0){
+    if (manual){ quoteMsg = twseCooldownMsg(); renderAll(); }
+    return;
+  }
   quoteBusy = true;
   quoteMsg = '更新報價中…';
   if (manual) renderAll();
@@ -1096,7 +1148,7 @@ function maybeAutoQuote(){
   if (!QUOTES_ENABLED) return;
   let last = 0;
   try{ last = Number(localStorage.getItem(QUOTE_TS_KEY)) || 0; }catch(e){}
-  if (Date.now() - last > 3600000) fetchQuotes(false);   // 一小時內不重覆抓
+  if (Date.now() - last > 3600000 && !twseCooldownLeft()) fetchQuotes(false);   // 一小時內不重覆抓;被擋冷卻中也不抓
 }
 
 /* 回補約 14 個月(涵蓋 240 日均線)的歷史收盤價,給趨勢訊號用。
@@ -1113,29 +1165,30 @@ async function backfillHistory(){
   const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
     .map(it => ({ key: it.key, id: it.id }));
   const incomplete = [];
+  let blocked = null;
   for (const target of targets){
-    backfillMsg = `回補中…${target.id}`;
-    renderAll();
     let monthsOk = 0;
     for (let offset = 0; offset > -BACKFILL_MONTHS; offset--){
+      backfillMsg = `回補中…${target.id} ${-offset + 1}/${BACKFILL_MONTHS} 個月(每個月間隔 ${TWSE_GAP_MS / 1000} 秒,避免被證交所擋)`;
+      renderAll();
       try{
-        const m = monthParam(offset);
-        const res = await fetch(TWSE_STOCK + encodeURIComponent(target.id) + '&date=' + m);
-        if (res.ok){
-          const j = await res.json();
-          if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-            const live = findInstrumentByKey(target.key);
-            if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []));
-            monthsOk++;
-          }
+        const j = await twseJson(TWSE_STOCK + encodeURIComponent(target.id) + '&date=' + monthParam(offset));
+        if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
+          const live = findInstrumentByKey(target.key);
+          if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []));
+          monthsOk++;
         }
-      }catch(e){ /* 這個月抓不到就跳過,繼續抓下一個月 */ }
-      await sleep(300);
+      }catch(e){
+        if (e instanceof TwseBlocked){ blocked = e; break; }   // 被擋了就整個停下來,不要繼續硬撞
+        /* 其他錯誤:這個月抓不到就跳過,繼續抓下一個月 */
+      }
     }
-    if (monthsOk < BACKFILL_MONTHS) incomplete.push(target.id + '(' + monthsOk + '/' + BACKFILL_MONTHS + ' 個月)');
     scheduleSave();   // 抓完一檔就存一次,不要等全部做完才存,縮短被雲端同步蓋掉的時間窗
+    if (blocked) break;
+    if (monthsOk < BACKFILL_MONTHS) incomplete.push(target.id + '(' + monthsOk + '/' + BACKFILL_MONTHS + ' 個月)');
   }
-  backfillMsg = incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '回補完成';
+  backfillMsg = blocked ? blocked.message
+    : (incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '回補完成');
   backfillBusy = false;
   renderAll();
 }
@@ -1146,10 +1199,11 @@ function loadBacktestHistoryCache(){
     const raw = JSON.parse(localStorage.getItem(BACKTEST_HIST_KEY)) || {};
     backtestFullHistory = raw.hist || {};
     backtestSplits = raw.splits || {};
-  }catch(e){ backtestFullHistory = {}; backtestSplits = {}; }
+    backtestListedFrom = raw.listedFrom || {};
+  }catch(e){ backtestFullHistory = {}; backtestSplits = {}; backtestListedFrom = {}; }
 }
 function saveBacktestHistoryCache(){
-  try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify({ hist: backtestFullHistory, splits: backtestSplits })); }catch(e){ /* 存不下就算了,下次按重抓 */ }
+  try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify({ hist: backtestFullHistory, splits: backtestSplits, listedFrom: backtestListedFrom })); }catch(e){ /* 存不下就算了,下次按重抓 */ }
 }
 
 /* 「抓完整歷史」可以跳過哪些月份。光看「這個月有沒有資料」不夠:上次按的時候還沒過完的
@@ -1181,49 +1235,56 @@ async function backfillFullHistory(){
   backtestHistBusy = true;
   const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).map(it => it.id);
   const incomplete = [];
-  let consecutiveNetworkFails = 0;
-  let abortedByRateLimit = false;
-  for (const tid of targets){
-    backtestHistMsg = `回補完整歷史中…${tid}`;
-    renderAll();
+  let blocked = null;
+  if (twseCooldownLeft() > 0) blocked = new TwseBlocked(twseCooldownMsg());
+  for (const tid of blocked ? [] : targets){
     let hist = backtestFullHistory[tid] || [];
     // 已經抓齊的月份不用重抓——不然每次按都要重新跑一次完整 130 幾個月,跟第一次一樣久。
     // 當月跟上個月永遠重抓(可能還有新收盤價),更舊的月份要 completeHistoryMonths() 認定抓齊了才跳過。
     const doneMonths = completeHistoryMonths(hist);
-    const monthLog = [];   // 依時間新→舊記録每個月有沒有抓到,新到舊排(offset 0 → 最舊)
+    const months = [];   // 新→舊
     for (let offset = 0; offset > -260; offset--){
       const m = monthParam(offset);
       if (m < BACKTEST_FROM) break;
       const ym = m.slice(0, 4) + '-' + m.slice(4, 6);
-      if (offset <= -2 && doneMonths.has(ym)){
-        monthLog.push(true);
-        continue;
-      }
+      months.push({ m, skip: offset <= -2 && (doneMonths.has(ym) || (backtestListedFrom[tid] && ym < backtestListedFrom[tid])) });
+    }
+    const toFetch = months.filter(x => !x.skip).length;
+    let fetched = 0;
+    const monthLog = [];   // 依時間新→舊記録每個月有沒有抓到,新到舊排(offset 0 → 最舊)
+    const emptyMonths = new Set();   // 證交所正常回應但查無資料的月份(還沒上市),跟抓失敗分開
+    for (const { m, skip } of months){
+      if (skip){ monthLog.push(true); continue; }
+      fetched++;
+      const leftMin = Math.ceil((toFetch - fetched) * TWSE_GAP_MS / 60000);
+      backtestHistMsg = `回補完整歷史中…${tid} ${fetched}/${toFetch} 個月` + (leftMin > 1 ? `(這檔還要約 ${leftMin} 分鐘)` : '')
+        + `——每個月間隔 ${TWSE_GAP_MS / 1000} 秒,避免被證交所擋,可以先切去別的分頁,不要關掉 app。`;
+      renderAll();
       let ok = false;
       try{
-        const res = await fetch(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
-        if (res.ok){
-          const j = await res.json();
-          if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-            hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []));
-            ok = true;
-          }
-          consecutiveNetworkFails = 0;   // 伺服器有正常回應(不管這個月有沒有資料),不算網路失敗
+        const j = await twseJson(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
+        if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
+          hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []));
+          ok = true;
         }else{
-          consecutiveNetworkFails++;
+          emptyMonths.add(m);
         }
       }catch(e){
-        // fetch 本身丟出例外(離線、被 CORS/限流擋掉):連續好幾次代表可能被證交所暫時
-        // 限流了,不要傻傻把剩下上百個月的請求硬發完,先停下來讓使用者知道、也讓限流冷卻。
-        consecutiveNetworkFails++;
+        // 被擋了(twseJson 連續失敗好幾次、進入冷卻)就整個停下來,不要把剩下上百個月硬發完。
+        if (e instanceof TwseBlocked){ blocked = e; break; }
       }
       monthLog.push(ok);
-      if (consecutiveNetworkFails >= 5){ abortedByRateLimit = true; break; }
-      await sleep(300);
     }
     backtestFullHistory[tid] = hist;
+    // 最舊那筆資料之前的月份,如果證交所每個都明確回「查無資料」(不是抓失敗),代表那時還沒上市,
+    // 記下來,之後更新不用每次再花 2 秒一個月去問(00675L 就有 16 個月這種)。
+    if (!blocked && hist.length){
+      const firstYm = hist[0].d.slice(0, 7);
+      const older = months.filter(x => (x.m.slice(0, 4) + '-' + x.m.slice(4, 6)) < firstYm);
+      if (older.every(x => x.skip || emptyMonths.has(x.m))) backtestListedFrom[tid] = firstYm;
+    }
     saveBacktestHistoryCache();
-    if (abortedByRateLimit) break;
+    if (blocked) break;
     // monthLog 是新→舊。「最舊的那次成功」之前(更舊)如果也抓不到,代表那時候這標的
     // 還沒上市,是預期中的事,不算異常(00675L 2016 年 10 月才掛牌,更早的月份本來就查無資料)。
     // 只有「最舊成功月」之後(較新)出現的空月,才是真的漏抓——那段時間標的明明已經在交易了。
@@ -1231,13 +1292,13 @@ async function backfillFullHistory(){
     const realGaps = oldestOkIdx <= 0 ? 0 : monthLog.slice(0, oldestOkIdx).filter(v => !v).length;
     if (realGaps > 0) incomplete.push(tid + '(' + realGaps + ' 個月沒抓到,可以再按一次重試)');
   }
-  backtestHistMsg = abortedByRateLimit
-    ? '連續好幾個月都抓不到資料,證交所可能暫時限流了——建議休息 15-30 分鐘再試,不要連續按。'
+  backtestHistMsg = blocked
+    ? blocked.message + '已經抓到的月份都有存起來,下次按會從沒抓到的地方接著抓。'
     : (incomplete.length ? '部分月份沒抓到:' + incomplete.join('、') : '完整歷史回補完成');
   // 推一份到雲端,其他裝置下次打開就能直接讀,不用再等一次逐月抓。失敗(沒登入/沒網路)就算了,
   // 本機的資料不受影響,不影響這次回補的結果。
   if (cloudBacktestDoc){
-    try{ await cloudBacktestDoc.set({ v: BACKTEST_HIST_VERSION, data: backtestFullHistory, splits: backtestSplits, updatedAt: Date.now() }); }catch(e){ /* 推不上去,本機還是有資料 */ }
+    try{ await cloudBacktestDoc.set({ v: BACKTEST_HIST_VERSION, data: backtestFullHistory, splits: backtestSplits, listedFrom: backtestListedFrom, updatedAt: Date.now() }); }catch(e){ /* 推不上去,本機還是有資料 */ }
   }
   backtestHistBusy = false;
   renderAll();
@@ -3016,7 +3077,7 @@ function renderBacktestCard(){
         這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
       </div></details>
       ${QUOTES_ENABLED ? `
-        <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 1-2 分鐘)')}</button>
+        <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 10 分鐘)')}</button>
         <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : (cloudBacktestDoc ? '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不會拖慢平常記帳/存檔的同步速度。第一次按這顆之後會存一份到雲端,其他裝置打開就會自動帶入,不用再等一次。' : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存。第一次要先按這顆才有資料可以跑回測——登入雲端同步的話,其他裝置就不用再重抓一次。')}</div>
         <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
