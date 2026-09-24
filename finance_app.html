@@ -602,8 +602,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · f3ee6a72f9';
-const BUILD_HASH = 'f3ee6a72f9';
+const BUILD_VERSION = '2026-09-24 · 82796c37b7';
+const BUILD_HASH = '82796c37b7';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -623,6 +623,10 @@ let lastPushed = '';
 let recentPushed = [];
 let pendingRemote = null;
 let saveTimer = null;
+/* 上一次確認「本機跟雲端一致」的內容(canon 字串):成功推上去、或套用了雲端那份之後才更新。
+   收到別台的改動時拿它當共同基準,判斷本機有哪些還沒推上去的修改(見 mergeLocalEdits)。
+   跟 lastPushed 分開:lastPushed 在推之前就先設(為了認得回音),推失敗時它並不代表雲端有這份。 */
+let syncBase = '';
 
 function readLocal(){
   try{
@@ -672,7 +676,9 @@ async function save(){
     try{
       lastPushed = canon(data);
       recentPushed = recentPushed.concat(lastPushed).slice(-8);
+      const pushing = lastPushed;
       await cloud.set(data);
+      syncBase = pushing;
       storageMode = 'cloud';
       updateStorageStatus();
       return;
@@ -732,10 +738,75 @@ function applyRemote(data){
   const prev = state;
   state = normalize(data);
   const restored = keepFieldsOldVersionsDrop(prev, data, state);
-  lastPushed = canon(JSON.parse(JSON.stringify(state)));
+  const remoteC = canon(JSON.parse(JSON.stringify(state)));
+  const kept = mergeLocalEdits(prev, state);
+  syncBase = remoteC;
+  lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
-  if (restored) scheduleSave();   // 補回來的東西推回雲端,不然雲端那份一直是缺的
+  if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
   renderAll();
+}
+/* 收到別台裝置的改動時,本機可能有還沒推上去的修改:打字中收到的會先擱著、離開欄位才套用(那時剛打的字
+   已經在 state 裡,但存檔還在 400ms 延遲裡),或是按鈕剛按完就收到。以前整份換成雲端那份,這些修改就不見了。
+   以 syncBase(上次兩邊一致的內容)當共同基準做三方合併(merge3):只有本機改的用本機、只有雲端改的用雲端;
+   清單逐筆用 id 對應(本機新增/修改/刪除的照本機,雲端新增/修改的照雲端),兩邊改到同一個值時以眼前這台為準。
+   不能整個清單二選一:別台自動記的房貸利息(交易 + interestPosted)會被這台剛新增的交易整批蓋掉,
+   interestPosted 卻留著,那筆利息就永遠不會再補記。回傳有沒有留下本機的東西。 */
+function mergeLocalEdits(local, next){
+  if (!syncBase || !local) return false;
+  const localData = JSON.parse(JSON.stringify(local));
+  if (canon(localData) === syncBase) return false;   // 本機沒有未推上去的修改
+  let base;
+  try{ base = JSON.parse(syncBase); }catch(e){ return false; }
+  const remoteData = JSON.parse(JSON.stringify(next));
+  const merged = merge3(localData, base, remoteData);
+  if (canon(merged) === canon(remoteData)) return false;
+  const norm = normalize(merged);
+  Object.keys(next).forEach(k => delete next[k]);
+  Object.assign(next, norm);
+  return true;
+}
+const mergeKey = x => (x && typeof x === 'object' && !Array.isArray(x))
+  ? (x.id != null ? 'i:' + x.id : x.key != null ? 'k:' + x.key : x.d != null ? 'd:' + x.d : x.m != null ? 'm:' + x.m : null)
+  : typeof x === 'string' ? 's:' + x : null;
+function merge3(local, base, remote){
+  const cl = canon(local), cb = canon(base), cr = canon(remote);
+  if (cl === cb || cl === cr) return remote;
+  if (cr === cb) return local;
+  const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+  if (Array.isArray(local) && Array.isArray(remote)){
+    const b = Array.isArray(base) ? base : [];
+    const all = local.concat(remote, b);
+    const keys = all.map(mergeKey);
+    // 每一筆都認得出身分(id/key/日期/月份,或字串清單)才逐筆合併;數字清單(例如各層曝險目標)是照位置的,以本機為準
+    if (!all.length || keys.some(k => k === null)) return local;
+    const L = new Map(local.map(x => [mergeKey(x), x])), B = new Map(b.map(x => [mergeKey(x), x]));
+    const out = [], seen = new Set();
+    remote.forEach(r => {
+      const k = mergeKey(r);
+      if (seen.has(k)) return;
+      seen.add(k);
+      if (L.has(k)) out.push(B.has(k) ? merge3(L.get(k), B.get(k), r) : L.get(k));
+      else if (!B.has(k)) out.push(r);            // 雲端新增的
+      /* 本機刪掉的:不放回來 */
+    });
+    local.forEach(x => {
+      const k = mergeKey(x);
+      if (!seen.has(k) && !B.has(k)){ seen.add(k); out.push(x); }   // 本機新增的
+    });
+    return out;
+  }
+  if (isObj(local) && isObj(remote)){
+    const b = isObj(base) ? base : {};
+    const out = {};
+    new Set([...Object.keys(remote), ...Object.keys(local)]).forEach(k => {
+      if (!(k in local)) { if (!(k in b)) out[k] = remote[k]; return; }
+      if (!(k in remote)) { if (!(k in b)) out[k] = local[k]; else if (canon(local[k]) !== canon(b[k])) out[k] = local[k]; return; }
+      out[k] = merge3(local[k], b[k], remote[k]);
+    });
+    return out;
+  }
+  return local;
 }
 /* 還開著的舊版分頁存檔時,會把它不認得的欄位整個丟掉再寫回雲端(見 CLAUDE.md「常見的坑」)。
    每月快照的細項(items)丟了就補不回來,分割記錄(splits)丟了新版會把歷史價格清掉重抓——

@@ -42,7 +42,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v},
   get storageMode(){return storageMode}, get lastPushed(){return lastPushed},
   get pendingRemote(){return pendingRemote},
-  connectCloud, save, onRemote, emptyState, sampleData, normalize, renderAll,
+  connectCloud, save, onRemote, applyRemote, scheduleSave, emptyState, sampleData, normalize, renderAll,
   importJSON, todayISO, shiftMonth
 };`);
 
@@ -82,7 +82,38 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   const held = A.state.assets[0].name !== '打字中來的' && A.pendingRemote;
   console.log('4. 打字中:先擱著?', !!held);
   if (!held) bugs.push('打字時遠端資料直接覆蓋,會把輸入到一半的內容洗掉');
-  focused = null;
+
+  // 4b) 擱著的遠端改動在離開欄位時套用:本機剛打的、剛按的都不能被整份蓋掉
+  //     遠端:改了資產名稱、自動記了一筆利息(交易 + interestPosted);本機:改了同一筆資產的金額、新增一筆交易、刪掉一筆交易
+  {
+    const pend = A.pendingRemote;
+    pend.transactions = (pend.transactions || []).concat({ id:'rint', date:'2026-09-01', cat:'房貸利息', desc:'自動', amount:-100 });
+    pend.leverage = Object.assign({}, pend.leverage, { interestPosted: ['2026-09'] });
+    A.state.assets[0].amount = 4321;
+    A.state.transactions.push({ id:'ltx', date:'2026-09-02', cat:'餐飲', desc:'本機', amount:-50 });
+    A.scheduleSave();
+    focused = null;
+    A.applyRemote(pend);
+    const st = A.state;
+    const got = { name: st.assets[0].name, amount: st.assets[0].amount, tx: st.transactions.map(t => t.id).sort().join(','), posted: (st.leverage.interestPosted || []).join(',') };
+    console.log('4b. 離開欄位套用遠端:', JSON.stringify(got));
+    if (got.name !== '打字中來的') bugs.push('遠端改的資產名稱沒套用');
+    if (got.amount !== 4321) bugs.push('本機剛打的金額被遠端蓋掉(' + got.amount + ')');
+    if (!got.tx.includes('rint') || !got.tx.includes('ltx')) bugs.push('兩邊各自新增的交易沒有都留下:' + got.tx);
+    if (got.posted !== '2026-09') bugs.push('遠端記過的利息月份不見了');
+    await wait(500);
+    const cd = cloudDocs['state/finance'];
+    if (!cd.transactions.some(t => t.id === 'ltx') || cd.assets[0].amount !== 4321) bugs.push('合併後的結果沒有推回雲端');
+    // 本機刪掉一筆,雲端那邊沒動它:要維持刪掉
+    A.state.transactions = A.state.transactions.filter(t => t.id !== 'ltx');
+    A.scheduleSave();
+    const remote2 = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    remote2.liabilities = [{ id:'rl', name:'遠端新增的負債', amount:10 }];
+    A.applyRemote(remote2);
+    if (A.state.transactions.some(t => t.id === 'ltx')) bugs.push('本機刪掉的交易被遠端那份加回來');
+    if (!A.state.liabilities.some(l => l.id === 'rl')) bugs.push('遠端新增的負債沒套用');
+    await wait(500);
+  }
 
   // 5) 雲端寫入失敗 → 本機要留得住,狀態要誠實
   failNextWrite = true;
