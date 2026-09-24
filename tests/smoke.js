@@ -497,7 +497,11 @@ if (A.state.dailyHistory.length > 1000) throw new Error('沒有裁掉過舊的�
 A.chartRange = 30;
 console.log('  範圍 1 個月 →', A.dailySlice().length, '筆 | 全部 →', (A.chartRange = 0, A.dailySlice().length), '筆');
 A.chartRange = 30;
-if (A.dailySlice().length !== 30) throw new Error('範圍選擇沒生效');
+{ // 範圍照日期算:1 個月內的都要在、更早的都不能在(以前是「最後 30 筆」,開 app 不頻繁時會畫出好幾個月)
+  const sl = A.dailySlice(), d0 = new Date(A.todayISO() + 'T00:00:00'); d0.setDate(d0.getDate() - 31);
+  const cut = d0.getFullYear() + '-' + String(d0.getMonth()+1).padStart(2,'0') + '-' + String(d0.getDate()).padStart(2,'0');
+  if (!sl.length || sl.some(h => h.d < cut) || sl.length !== A.state.dailyHistory.filter(h => h.d >= cut).length) throw new Error('範圍選擇沒生效');
+}
 A.chartRange = 90;
 
 A.currentTab = 'leverage';
