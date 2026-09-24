@@ -598,8 +598,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 98b542af2e';
-const BUILD_HASH = '98b542af2e';
+const BUILD_VERSION = '2026-09-24 · 3cc9e4f499';
+const BUILD_HASH = '3cc9e4f499';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1893,7 +1893,25 @@ function monthNav(){
     </div>`;
 }
 
+/* 狀態改變提醒要有「上次看過的狀態」當比較基準,但以前只有按提醒上的「知道了」才會寫入,提醒又要有基準才會出現
+   ——雞生蛋,基準永遠是空的,提醒從來沒出現過(壓測時追到 55aae11 加這個功能起就是這樣)。
+   第一次算得出某檔的訊號時,安靜地把目前狀態記成基準(不跳提醒),之後狀態一變就會提醒。
+   已經有基準的(按過「知道了」或「已調整完成」)不動。回傳有沒有寫入。 */
+function seedTrendBaselines(){
+  let changed = false;
+  state.instruments.forEach(it => {
+    if (!it.trend || it.trend.lastSeenStatus) return;
+    const t = computeTrend(it);
+    if (t.barsAvailable < t.barsNeeded) return;       // 歷史還不夠,算出來的 WATCH 不算數
+    it.trend.lastSeenStatus = t.status;
+    it.trend.lastSeenDate = todayISO();
+    changed = true;
+  });
+  return changed;
+}
+
 function renderAll(){
+  if (seedTrendBaselines()) scheduleSave();   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();

@@ -1875,7 +1875,25 @@ function monthNav(){
     </div>`;
 }
 
+/* 狀態改變提醒要有「上次看過的狀態」當比較基準,但以前只有按提醒上的「知道了」才會寫入,提醒又要有基準才會出現
+   ——雞生蛋,基準永遠是空的,提醒從來沒出現過(壓測時追到 55aae11 加這個功能起就是這樣)。
+   第一次算得出某檔的訊號時,安靜地把目前狀態記成基準(不跳提醒),之後狀態一變就會提醒。
+   已經有基準的(按過「知道了」或「已調整完成」)不動。回傳有沒有寫入。 */
+function seedTrendBaselines(){
+  let changed = false;
+  state.instruments.forEach(it => {
+    if (!it.trend || it.trend.lastSeenStatus) return;
+    const t = computeTrend(it);
+    if (t.barsAvailable < t.barsNeeded) return;       // 歷史還不夠,算出來的 WATCH 不算數
+    it.trend.lastSeenStatus = t.status;
+    it.trend.lastSeenDate = todayISO();
+    changed = true;
+  });
+  return changed;
+}
+
 function renderAll(){
+  if (seedTrendBaselines()) scheduleSave();   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
