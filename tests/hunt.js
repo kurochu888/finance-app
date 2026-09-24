@@ -412,6 +412,19 @@ check('曝險目標卡:歷史不夠時不能叫你把整個部位賣掉;只有�
   return '';
 });
 
+check('標的改代號:舊代號「看過的狀態」要清掉;代號格式不對時說明要講代號,不是叫你去按更新', () => {
+  A.state = A.emptyState();
+  const it = A.state.instruments[0];
+  it.trend.lastSeenStatus = 'HOLD'; it.trend.lastSeenDate = '2026-01-01';
+  A.onField('in-id-' + it.key, { value: '0050' });
+  if (it.trend.lastSeenStatus) return '改代號後還留著舊代號的狀態 ' + it.trend.lastSeenStatus;
+  A.onField('in-id-' + it.key, { value: '台灣50' });
+  A.currentTab = 'leverage'; A.levTab = 'signal'; A.renderAll();
+  const h = document.getElementById('content').innerHTML;
+  if (!h.includes('3~8 碼英數字')) return '代號不是證交所格式時沒有說明';
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;

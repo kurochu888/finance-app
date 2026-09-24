@@ -629,8 +629,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 08e20aa9e8';
-const BUILD_HASH = '08e20aa9e8';
+const BUILD_VERSION = '2026-09-24 · 4af32e91aa';
+const BUILD_HASH = '4af32e91aa';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3534,7 +3534,10 @@ function renderTrendTab(){
           return `
           <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
             <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
-            <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${QUOTES_ENABLED ? '按「設定」分頁的「從證交所更新收盤價」就會自動一併回補,不用另外按下面的「回補歷史價格」。' : '這個版本不能連線抓報價。'}</div>
+            <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${!QUOTES_ENABLED ? '這個版本不能連線抓報價。'
+              : !/^[0-9A-Za-z]{3,8}$/.test(it.id) ? '代號要是 3~8 碼英數字(例如 00631L)才抓得到證交所的資料,請到「設定」分頁確認代號。'
+              : !it.auto ? '這檔設定成不自動抓報價,不會回補歷史價格。'
+              : '按「設定」分頁的「從證交所更新收盤價」就會自動一併回補,不用另外按下面的「回補歷史價格」。'}</div>
           </div>`;
         }
         return `
@@ -3842,6 +3845,9 @@ function onField(key, el){
           it.id = next;
           it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
           it.splits = [];
+          // 「上次看過的狀態」也是舊代號的:留著的話,新代號的歷史補齊後會跳「狀態從(舊代號的)X 變成 Y」的提醒
+          it.trend.lastSeenStatus = '';
+          it.trend.lastSeenDate = '';
           levMsg = '';
           structural = true;
         }else if (taken){
