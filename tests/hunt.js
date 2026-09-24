@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO, renderExposurePlanCard,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -390,6 +390,25 @@ check('走勢圖範圍照日期算:一個月內只有一筆時,範圍按鈕要�
   const h2 = document.getElementById('content').innerHTML;
   if (h2.includes('這段期間只有')) return '選「全部」還說只有一筆';
   A.chartRange = 90;
+  return '';
+});
+
+check('曝險目標卡:歷史不夠時不能叫你把整個部位賣掉;只有一檔正2 時不能寫「各半」', () => {
+  A.state = A.emptyState();
+  A.state.instruments.forEach(it => { it.price = 50; it.priceHistory = []; });
+  A.state.trades = [{ id:'t', date:'2025-01-01', symbol:'00631L', action:'buy', shares:1000, price:40, fee:0, amount:0, source:'cash', note:'' }];
+  const h1 = A.renderExposurePlanCard();
+  if (/減碼/.test(h1) && !/不給加碼\/減碼金額/.test(h1)) return '歷史不夠(算出來是 WATCH)卻建議減碼:' + h1.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+  if (!h1.includes('歷史價格還不夠')) return '沒有說明在等歷史資料';
+  // 只留一檔正2、歷史夠長
+  A.state.instruments = A.state.instruments.filter(it => it.id === '00631L');
+  const it = A.state.instruments[0], hist = [];
+  const d = new Date(2024, 0, 1);
+  for (let i = 0; hist.length < 400; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0) continue;
+    hist.push({ d: d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'), c: 30 + i * 0.05 }); }
+  it.priceHistory = hist; it.splits = [];
+  const h2 = A.renderExposurePlanCard();
+  if (h2.includes('各半') || h2.includes('00675L')) return '只有一檔正2 還寫「各半」或 00675L:' + h2.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160);
   return '';
 });
 
