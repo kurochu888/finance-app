@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, adjustForSplits, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -173,6 +173,37 @@ console.log('normalize():舊版存下來、沒有 splits 欄位的自動報價�
   must(s.instruments[1].priceHistory.length === 2, '新版(有 splits)的歷史不該被清掉');
   must(s.instruments[2].priceHistory.length === 2, '手動(不自動抓報價)標的的歷史不是從證交所回補的,不該被清掉');
   must(s.instruments.every(it => Array.isArray(it.splits)), 'normalize 之後每個標的都要有 splits 陣列');
+})();
+console.log('  ok');
+
+console.log('00631L 分割用公告比例 1 拆 22,分割當天的真實漲跌要保留(反推比例會把那天吃掉)');
+(function testKnownSplitRatio(){
+  const rocRow = (iso, close) => [(Number(iso.slice(0,4)) - 1911) + '/' + iso.slice(5,7) + '/' + iso.slice(8), '0','0','0','0','0', close.toFixed(4), '0','0'];
+  // 分割前 440 → 分割當天大盤跌,淨值跌 5%:440/22*0.95 = 19
+  const pre  = [['2026-03-12', 430], ['2026-03-13', 440]];
+  const post = [['2026-03-16', 19], ['2026-03-17', 19.19]];
+  for (const [id, expectRatio] of [['00631L', 1 / 22], ['XXXX', 19 / 440]]){
+    const splits = [];
+    let hist = A.mergeHistory([], post.map(r => rocRow(...r)), Infinity, splits, id);
+    hist = A.mergeHistory(hist, pre.map(r => rocRow(...r)), Infinity, splits, id);   // 跟回補一樣從新到舊
+    must(splits.length === 1 && Math.abs(splits[0].ratio - expectRatio) < 1e-12,
+         `${id} 記錄的分割比例應該是 ${expectRatio},得到 ${JSON.stringify(splits)}`);
+    if (id === '00631L'){
+      const day = hist[2].c / hist[1].c - 1;
+      must(Math.abs(day - (-0.05)) < 0.001, `00631L 分割當天應該保留 -5% 的真實漲跌,得到 ${(day * 100).toFixed(2)}%`);
+    }
+  }
+  // 已經用反推比例存下來的歷史:換成公告比例,分割前的價格整段跟著校正,再跑一次不會再動
+  const obs = 19 / 440;
+  const old = [{ d:'2026-03-13', c: 440 * obs }, { d:'2026-03-16', c: 19 }];
+  const sp = [{ d:'2026-03-16', ratio: obs }];
+  must(A.applyKnownSplitRatios('00631L', old, sp) === true, '反推比例應該被校正');
+  must(Math.abs(old[0].c - 20) < 1e-3 && sp[0].ratio === 1 / 22, `校正後分割前一天應該是 440/22=20,得到 ${old[0].c} / ${sp[0].ratio}`);
+  must(A.applyKnownSplitRatios('00631L', old, sp) === false && Math.abs(old[0].c - 20) < 1e-3, '已經是公告比例時再呼叫不該再改');
+  // normalize 載入時就會校正(使用者已經抓好的資料不用重抓)
+  const s = A.normalize({ instruments: [{ key:'k', id:'00631L', leverage:2, auto:true,
+    priceHistory: [{ d:'2026-03-13', c: 440 * obs }, { d:'2026-03-16', c: 19 }], splits: [{ d:'2026-03-16', ratio: obs }] }] });
+  must(Math.abs(s.instruments[0].priceHistory[0].c - 20) < 1e-3, `normalize 應該把舊的反推比例校正成 1/22,得到 ${s.instruments[0].priceHistory[0].c}`);
 })();
 console.log('  ok');
 
