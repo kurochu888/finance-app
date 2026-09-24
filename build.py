@@ -25,14 +25,14 @@ NOTE_CLOUD = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude
 # --- Artifact 版:沒有 <!doctype>/<head>/<body>,由平台包起來 ---
 # Artifact 的 CSP 擋掉對外部網域的請求,證交所報價只在網頁版/單檔版可用
 artifact = (tpl.replace('/*STORAGE_NOTE*/', NOTE_CLOUD).replace('/*QUOTES_ENABLED*/', 'false')
-            .replace('/*BUILD_VERSION*/', BUILD_VERSION))
+            .replace('/*BUILD_VERSION*/', BUILD_VERSION).replace('/*BUILD_HASH*/', BUILD_HASH))
 (ROOT / 'finance_app_artifact.html').write_text(artifact, encoding='utf-8')
 
 # --- 獨立版:補回完整文件外殼與離線用的 icon ---
 icon_b64 = base64.b64encode((ROOT / 'icon-180.png').read_bytes()).decode()
 fav_b64 = base64.b64encode((ROOT / 'favicon-32.png').read_bytes()).decode()
 body = (tpl.replace('/*STORAGE_NOTE*/', NOTE_LOCAL).replace('/*QUOTES_ENABLED*/', 'true')
-        .replace('/*BUILD_VERSION*/', BUILD_VERSION))
+        .replace('/*BUILD_VERSION*/', BUILD_VERSION).replace('/*BUILD_HASH*/', BUILD_HASH))
 title = re.search(r'<title>(.*?)</title>', body).group(1)
 # 模板開頭是 <title> + <style>,把這段放進 <head>,其餘放進 <body>
 cut = body.index('</style>') + len('</style>')
@@ -186,5 +186,7 @@ self.addEventListener('fetch', e => {{
 """
 (SITE / 'sw.js').write_text(sw, encoding='utf-8')
 (SITE / '.nojekyll').write_text('', encoding='utf-8')
+# 開著不關的舊分頁拿這個跟自己的 BUILD_HASH 比,不一樣就跳「有新版」提示(見 checkForUpdate)。
+(SITE / 'version.json').write_text(json.dumps({'hash': BUILD_HASH}), encoding='utf-8')
 
 print('docs/                     ', len(site_html), 'bytes  (PWA,cache', BUILD_HASH + ')')
