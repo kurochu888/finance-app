@@ -613,8 +613,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · a3f1addeda';
-const BUILD_HASH = 'a3f1addeda';
+const BUILD_VERSION = '2026-09-24 · ed12eb4cf8';
+const BUILD_HASH = 'ed12eb4cf8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2916,11 +2916,12 @@ function periodStats(curve, fromD, toD, key = 'strat'){
   const seg = curve.filter(pt => pt.d >= fromD && pt.d < toD);
   if (seg.length < 2) return null;
   const years = (new Date(seg[seg.length - 1].d) - new Date(seg[0].d)) / (365.25 * 86400000);
-  const cagr = years > 0 ? (Math.pow(seg[seg.length - 1][key] / seg[0][key], 1 / years) - 1) * 100 : 0;
+  // 未滿一年不年化(門檻 0.95 年:一整個日曆年從第一個到最後一個交易日本來就不到 365 天):剛上市幾個月、或分段只剩幾天時,一天 -0.1% 年化成 -39%,「年化÷MDD」變成 -287 這種數字(壓測抓到)
+  const cagr = years >= 0.95 ? (Math.pow(seg[seg.length - 1][key] / seg[0][key], 1 / years) - 1) * 100 : null;
   let peak = -Infinity, worst = 0;
   seg.forEach(pt => { peak = Math.max(peak, pt[key]); worst = Math.min(worst, (pt[key] - peak) / peak); });
   const mdd = worst * 100;
-  return { cagr, mdd, calmar: mdd < 0 ? cagr / -mdd : null };
+  return { cagr, mdd, calmar: cagr != null && mdd < 0 ? cagr / -mdd : null };
 }
 const splitStats = (curve, key) => ({
   all: periodStats(curve, '0000', '9999', key),
@@ -3518,10 +3519,14 @@ function renderTrendTab(){
 /* 策略 vs 買進持有,全期/前段/後段各自的年化、MDD、年化÷MDD。策略那格的顏色是跟同一段的買進持有比。 */
 function renderBacktestPeriods(r){
   const y = BACKTEST_SPLIT_DATE.slice(0, 4);
-  const cols = [['all', '全期'], ['early', `${r.from.slice(0, 4)}~${Number(y) - 1}`], ['late', `${y}~${r.to.slice(0, 4)}`]];
+  // 整段都在切分日之後(或之前)時,另一段沒有資料,標題不能用資料的年份硬湊出「2022~2020」
+  const cols = [['all', '全期'],
+    ['early', r.from >= BACKTEST_SPLIT_DATE ? `${y} 前` : `${r.from.slice(0, 4)}~${Math.min(Number(y) - 1, Number(r.to.slice(0, 4)))}`],
+    ['late', r.to < BACKTEST_SPLIT_DATE ? `${y} 後` : `${Math.max(Number(y), Number(r.from.slice(0, 4)))}~${r.to.slice(0, 4)}`]];
   const cls = (diff, eps) => Math.abs(diff) < eps ? '' : (diff > 0 ? 'pos' : 'neg');
   const cellOf = (st, vs) => !st ? '<td>—</td>' : `<td>`
-    + `<span class="${vs ? cls(st.cagr - vs.cagr, 0.5) : ''}">${st.cagr >= 0 ? '+' : ''}${st.cagr.toFixed(1)}%</span>`
+    + (st.cagr == null ? '<span>—</span>'
+       : `<span class="${vs && vs.cagr != null ? cls(st.cagr - vs.cagr, 0.5) : ''}">${st.cagr >= 0 ? '+' : ''}${st.cagr.toFixed(1)}%</span>`)
     + `<span class="${vs ? cls(st.mdd - vs.mdd, 0.5) : ''}">${st.mdd.toFixed(1)}%</span>`
     + `<span class="${vs && st.calmar != null && vs.calmar != null ? cls(st.calmar - vs.calmar, 0.02) : ''}">${st.calmar == null ? '—' : st.calmar.toFixed(2)}</span></td>`;
   return `
@@ -3530,7 +3535,7 @@ function renderBacktestPeriods(r){
       <tr><th>策略</th>${cols.map(([k]) => cellOf(r.periods.strat[k], r.periods.bh[k])).join('')}</tr>
       <tr><th>買進持有</th>${cols.map(([k]) => cellOf(r.periods.bh[k], null)).join('')}</tr>
     </table>
-    <div class="muted" style="font-size:11px; margin-top:4px;">每格:年化報酬 / MDD / 年化÷MDD。策略綠色 = 比同一段的買進持有好。
+    <div class="muted" style="font-size:11px; margin-top:4px;">每格:年化報酬 / MDD / 年化÷MDD(未滿一年不年化,顯示 —)。策略綠色 = 比同一段的買進持有好。
     分段的數字只在同一段內算,前後段可以互相比,不要拿去跟全期比。</div>`;
 }
 

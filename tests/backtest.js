@@ -164,6 +164,9 @@ console.log('periodStats:前後段各自算年化跟段內 MDD(原策略、買�
   const bh = A.periodStats(curve, '2020-01-01', '2021-01-01', 'bh');
   must(bh && Math.abs(bh.mdd - (-50)) < 1e-9 && Math.abs(bh.cagr) < 0.5, `買進持有那條線也要能算:${JSON.stringify(bh)}`);
   must(A.periodStats(curve, '2030-01-01', '2031-01-01') === null, '區間內沒有資料時回傳 null');
+  // 未滿一年不年化:一天 -0.1% 以前年化成 -39%,「年化÷MDD」-287
+  const short = A.periodStats([{ d:'2024-12-02', strat:100, bh:100 }, { d:'2024-12-03', strat:99.9, bh:100 }], '0000', '9999');
+  must(short && short.cagr === null && short.calmar === null, `未滿一年不該年化:${JSON.stringify(short)}`);
 })();
 console.log('  ok');
 
