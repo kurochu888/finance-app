@@ -366,6 +366,16 @@ check('匯入的快照帶極端數字(1e308):走勢圖座標不能變 NaN', () =
   return bad ? bad[0] : '';
 });
 
+check('歷史不夠時按「知道了」/「已調整完成」:不能把算不出來的 WATCH 記成看過的狀態', () => {
+  A.state = A.emptyState();
+  A.state.instruments.forEach(it => { it.priceHistory = []; it.trend.lastSeenStatus = ''; });
+  const it = A.state.instruments[0];
+  A.onClick({ dataset:{ act:'ack-trend', id: it.key } });
+  A.onClick({ dataset:{ act:'ack-hold' } });
+  const seen = A.state.instruments.map(x => x.trend.lastSeenStatus).filter(Boolean);
+  return seen.length ? '記下了 ' + seen.join(',') : '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
@@ -394,6 +404,20 @@ check('匯入的快照帶極端數字(1e308):走勢圖座標不能變 NaN', () =
     if (p1.some(p => p !== 102)) bugs.push('證交所最後一列收盤價是「--」 → 股價變成 ' + p1 + '(應該用前一天的 102)');
     const p2 = await run(false, true);
     if (p2.some(p => p !== 103)) bugs.push('抓報價途中 state 被雲端同步換掉 → 新的 state 股價是 ' + p2 + '(應該是 103)');
+    // 歷史永遠不夠(剛上市)時,自動更新報價一天只順便回補一次,不能每次都再補 14 個月
+    let reqs = 0;
+    global.fetch = async () => { reqs++; return { ok: true, json: async () => ({ stat: 'OK', data: [[roc(1), '1', '1', '1', '1', '1', '100.00', '+1', '1']] }) }; };
+    A.state = A.emptyState();
+    A.state.instruments.forEach(it => { it.auto = true; });
+    localStorage.removeItem('financeAutoBackfillDay');
+    await A.fetchQuotes(false); await waitIdle();
+    const first = reqs; reqs = 0;
+    await A.fetchQuotes(false); await waitIdle();
+    if (!(first > 10)) bugs.push('歷史不夠時第一次更新報價應該順便回補(只發了 ' + first + ' 個請求)');
+    if (reqs > 6) bugs.push('同一天第二次自動更新報價又回補了一次(' + reqs + ' 個請求)');
+    reqs = 0;
+    await A.fetchQuotes(true); await waitIdle();
+    if (!(reqs > 10)) bugs.push('手動按更新報價應該照樣回補(只發了 ' + reqs + ' 個請求)');
   }catch(e){ bugs.push('抓報價測試例外:' + e.message); }
   global.setTimeout = realST;
 

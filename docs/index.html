@@ -629,8 +629,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 7d5183359a';
-const BUILD_HASH = '7d5183359a';
+const BUILD_VERSION = '2026-09-24 · a3f1addeda';
+const BUILD_HASH = 'a3f1addeda';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1396,7 +1396,12 @@ async function fetchQuotes(manual){
     quoteMsg = '抓不到報價(可能沒有網路),維持原本的數字';
   }
   quoteBusy = false;
-  if (needsBackfill() && !backfillBusy){
+  // 自動補一天最多一次:剛上市幾個月的標的、或快線/慢線設得比 14 個月還長,補完歷史還是不夠,
+  // 以前每小時更新報價就再補一次 14 個月(每次十幾個請求、一半是「查無資料」)。手動按回補不受限。
+  let autoDay = '';
+  try{ autoDay = localStorage.getItem(AUTO_BACKFILL_KEY) || ''; }catch(e){}
+  if (needsBackfill() && !backfillBusy && (manual || autoDay !== todayISO())){
+    try{ localStorage.setItem(AUTO_BACKFILL_KEY, todayISO()); }catch(e){}
     await backfillHistory();   // 歷史不夠就順便補,不用再多按一次
     // 這是在「設定」分頁按的,回補結果原本只會顯示在「訊號」分頁,這裡順便帶一份過來
     if (backfillMsg && backfillMsg !== '回補完成'){
@@ -1421,6 +1426,7 @@ function maybeAutoQuote(){
    刻意逐月「依序」抓、每次間隔一下,不要 Promise.all 對證交所同時發一串請求。
    單一月份抓失敗就跳過繼續,不中止整個回補;最後回報哪些標的/月份沒抓到。 */
 const BACKFILL_MONTHS = 14;
+const AUTO_BACKFILL_KEY = 'financeAutoBackfillDay';   // 更新報價時順便自動回補,最後一次是哪天
 async function backfillHistory(){
   if (!QUOTES_ENABLED || backfillBusy) return;
   backfillBusy = true;
@@ -2023,6 +2029,15 @@ function monthNav(){
    ——雞生蛋,基準永遠是空的,提醒從來沒出現過(壓測時追到 55aae11 加這個功能起就是這樣)。
    第一次算得出某檔的訊號時,安靜地把目前狀態記成基準(不跳提醒),之後狀態一變就會提醒。
    已經有基準的(按過「知道了」或「已調整完成」)不動。回傳有沒有寫入。 */
+/* 把目前的狀態記成「看過了」。歷史還不夠算慢線時算出來的 WATCH 不是真的狀態,不記——以前按「已調整完成」
+   時某檔歷史還沒補齊,就記成 WATCH,補齊後跳「狀態從 WATCH 變成 HOLD」的假提醒(跟 seedTrendBaselines 同一條規則) */
+function ackTrend(it){
+  if (!it || !it.trend) return;
+  const t = computeTrend(it);
+  if (t.barsAvailable < t.barsNeeded) return;
+  it.trend.lastSeenStatus = t.status;
+  it.trend.lastSeenDate = todayISO();
+}
 function seedTrendBaselines(){
   let changed = false;
   state.instruments.forEach(it => {
@@ -3645,7 +3660,7 @@ function renderLeverage(){
         <button class="btn quiet" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 從證交所更新收盤價'}</button>
         <div class="muted" style="margin-top:6px;">${quoteMsg ? esc(quoteMsg)
           : L.quoteDate ? '報價日期 ' + esc(L.quoteDate) + '(收盤價,非即時)。上市櫃代號都查得到。'
-          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。「訊號」分頁均線需要的歷史價格不夠時也會自動一併回補。'}</div>
+          : '可自動帶入各標的收盤價與大盤點位。股數請自己填,或用買賣紀錄自動算。「訊號」分頁均線需要的歷史價格不夠時也會自動一併回補(自動的一天最多一次,按這個按鈕則每次都會補)。'}</div>
         ${(L.quoteDate && daysSince(L.quoteDate) > 5) ? `
           <div class="alert amber" style="margin-top:10px;">
             <span class="ai">🕘</span>
@@ -4309,18 +4324,11 @@ function onClick(el){
       break;
     }
     case 'ack-hold':   // 曝險卡片的「已調整完成」:兩檔正2 一起確認,跟按提醒的「知道了」效果一樣
-      state.instruments.filter(it => it.leverage === 2).forEach(it => {
-        it.trend.lastSeenStatus = computeTrend(it).status;
-        it.trend.lastSeenDate = todayISO();
-      });
+      state.instruments.filter(it => it.leverage === 2).forEach(ackTrend);
       break;
     case 'ack-trend': {
       const it = findInstrumentByKey(id);
-      if (it){
-        const t = computeTrend(it);
-        it.trend.lastSeenStatus = t.status;
-        it.trend.lastSeenDate = todayISO();
-      }
+      if (it) ackTrend(it);
       break;
     }
     case 'show-backups':
