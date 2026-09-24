@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest
+  cashFlows, accruedInterest, stateCSV
 };`);
 
 const draw = i => {
@@ -160,6 +160,23 @@ check('損益快取不能用到過期結果(改買賣日期的月份、改股價
   const p1 = A.computePosition();
   A.state.leverage.annualRate += 1;
   if (A.computePosition() === p1) return '改了利率,損益卻沒有重算';
+  return '';
+});
+
+check('CSV:公式注入要擋、逗號/引號/換行(含 \\r)要正確加引號、負數金額照常、每月細項有匯出', () => {
+  A.state = A.sampleData();
+  A.state.transactions = [
+    { id:'c1', date:'2026-09-01', cat:'=HYPERLINK("http://x","點我")', desc:'+1+1', amount:-100 },
+    { id:'c2', date:'2026-09-02', cat:'餐飲', desc:'a,b "c"\r\nd', amount:-200 },
+    { id:'c3', date:'2026-09-03', cat:'@SUM(A1)', desc:'-5% 折扣', amount:300 },
+  ];
+  A.state.netWorthHistory[A.state.netWorthHistory.length - 1].items = [{ id:'a1', name:'活存', amount:1234, t:'a' }];
+  const csv = A.stateCSV();
+  if (/(^|,)[=+@]/m.test(csv.replace(/"[^"]*"/g, '""'))) return 'CSV 裡還有以 = + @ 開頭的儲存格(Excel 會當公式)';
+  if (!csv.includes(`"'=HYPERLINK(""http://x"",""點我"")"`)) return '公式開頭的類別沒有被加上 \' 跟正確跳脫';
+  if (!csv.includes(`"a,b ""c""\r\nd"`)) return '含逗號/引號/\\r\\n 的說明沒有正確加引號';
+  if (!csv.includes(",-200")) return '負數金額不該被加上 \'';
+  if (!csv.includes('# 每月資產負債細項') || !csv.includes(',資產,活存,1234')) return '每月細項沒有匯出';
   return '';
 });
 

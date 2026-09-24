@@ -124,6 +124,18 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   console.log('6c. 收到壞掉的雲端資料:交易剩', A.state.transactions.length, '筆');
   if (A.state.transactions.length !== keep) bugs.push('壞掉的雲端資料把本機蓋掉了');
 
+  // 8) 連續存了兩次(A、B),A 的回音延遲到 B 之後才到 → 不能把狀態倒回 A(B 的修改會被弄丟)
+  A.state = A.sampleData();
+  A.state.assets[0].amount = 111;
+  await A.save();
+  const echoA = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+  A.state.assets[0].amount = 222;
+  await A.save();
+  snapCb({ exists:true, data: () => JSON.parse(JSON.stringify(echoA)) });   // 遲到的舊回音
+  await wait(10);
+  console.log('8. 舊回音遲到:資產金額', A.state.assets[0].amount, '(應該還是 222)');
+  if (A.state.assets[0].amount !== 222) bugs.push('自己較早一次寫入的回音遲到,把狀態倒回去了(後來的修改會被弄丟)');
+
   // 7) 跨年的月份運算
   const ym = ['2026-01','2026-12'];
   console.log('7. 月份運算:', ym[0], '往前一個月 =', A.shiftMonth(ym[0], -1),

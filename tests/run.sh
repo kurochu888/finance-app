@@ -24,6 +24,12 @@ echo
 echo "=== 資產/負債細項每月留存 ==="
 node items.js || fail=1
 echo
+echo "=== 計算正確性(隨機 400 組:會計恆等式、XIRR 是真的解、同日買賣順序) ==="
+node semantic.js || fail=1
+echo
+echo "=== 瀏覽器空間快滿 ==="
+node storage.js || fail=1
+echo
 echo "=== 隨機操作壓力測試(3 組 × 800 步) ==="
 node fuzz.js 800 || fail=1
 echo
