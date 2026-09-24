@@ -602,8 +602,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 07b047ecca';
-const BUILD_HASH = '07b047ecca';
+const BUILD_VERSION = '2026-09-24 · d6c595aeca';
+const BUILD_HASH = 'd6c595aeca';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1540,7 +1540,9 @@ function effectiveRepayments(item){
 }
 const repaidOf = item => Math.min(item.amount, sum(effectiveRepayments(item), r => r.amount));
 function outstanding(item){
-  if (!item.useDate) return 0;
+  // 動用日期在未來(先記下預定要借的)到那天才算借款——跟未來日期的還款一樣。以前當下就算進餘額,
+  // 當月還照整筆記一筆房貸利息,錢還沒借就先付利息;accrue()/balanceAt() 本來就是從動用日才開始算
+  if (!item.useDate || item.useDate > todayISO()) return 0;
   return Math.max(0, item.amount - repaidOf(item));
 }
 
@@ -1808,23 +1810,17 @@ function computeStress(d){
   const L = state.leverage;
   if (!(k.pv > 0) || !decline) return null;
 
-  let newPv = 0;
+  // 用 holdings 算好的 value:代號重複的那列 computeLeverage 已經算成 0 股,這裡自己重算 heldShares 的話
+  // 會把同一批持股算兩次(以前兩列同代號時,跌 20% 反而顯示賺錢)
+  let newPv = 0, newExposure = 0;
   r.holdings.forEach(h => {
-    const shares = hasTrades() ? heldShares(h.id) : h.shares;
     const drop = decline * (h.leverage || 1) / 100;
-    newPv += shares * h.price * Math.max(0, 1 - drop);
+    const v = h.value * Math.max(0, 1 - drop);
+    newPv += v;
+    newExposure += v * (h.leverage || 1);
   });
   const loss = k.pv - newPv;
   const newEquity = newPv - k.loan;
-  const newExposure = (() => {
-    let e = 0;
-    r.holdings.forEach(h => {
-      const shares = hasTrades() ? heldShares(h.id) : h.shares;
-      const drop = decline * (h.leverage || 1) / 100;
-      e += shares * h.price * Math.max(0, 1 - drop) * (h.leverage || 1);
-    });
-    return e;
-  })();
   const newCapacity = newEquity + L.creditLimit;
 
   return {
@@ -2474,7 +2470,7 @@ function renderHelp(){
       <div class="formula">借款餘額 = 各筆動用記錄的金額 − 已還款
 每月利息 = 借款餘額 × 年利率 ÷ 12</div>
       <p>看到買進訊號、實際動用房貸買進之後,到<strong>「紀錄」分頁的「房貸動用記錄」</strong>
-      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息。
+      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。
       減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也會失真。
       還款一樣記在「紀錄」分頁:選哪一筆動用記錄、填日期與金額,下面會列出所有還款,
       可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
@@ -3199,10 +3195,12 @@ function renderDrawRecords(){
     <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
       <div class="row">
         <input class="f-name" style="font-weight:700; color:var(--text); max-width:60%;" data-k="draw-label-${t.id}" value="${esc(t.label)}">
-        <span class="badge ${t.useDate ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
-          t.useDate ? (t.balance ? '動用中' : '已還清') : '未動用'}</span>
+        <span class="badge ${t.useDate && t.useDate <= todayISO() ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
+          !t.useDate ? '未動用' : t.useDate > todayISO() ? '預定' : t.balance ? '動用中' : '已還清'}</span>
       </div>
-      ${t.useDate ? `
+      ${t.useDate > todayISO() ? `
+        <div class="muted" style="margin:4px 0 6px;">未來日期,到 ${esc(t.useDate)} 才計入借款餘額、利息與曝險。</div>
+      ` : t.useDate ? `
         <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
           <span class="val ${t.balance ? '' : 'pos'}" id="out-balance-${t.id}">${t.balance ? 'NT$ ' + fmt(t.balance) : '已還清'}</span></div>
         <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
@@ -3238,7 +3236,7 @@ function renderRepayments(){
       ${items.length ? `
         <div class="field"><label>還哪一筆</label>
           <select data-k="rd-target">
-            ${items.map(it => `<option value="${it.id}" ${repayDraft.target === it.id ? 'selected' : ''}>${esc(it.label)}(尚欠 ${fmt(outstanding(it))})</option>`).join('')}
+            ${items.map(it => `<option value="${it.id}" ${repayDraft.target === it.id ? 'selected' : ''}>${esc(it.label)}(${it.useDate > todayISO() ? '預定 ' + esc(it.useDate) + ' 動用' : '尚欠 ' + fmt(outstanding(it))})</option>`).join('')}
           </select>
         </div>
         <div class="grid2">
@@ -3254,7 +3252,7 @@ function renderRepayments(){
       <h3>還款紀錄</h3>
       ${items.map(it => `
         <div class="row"><span class="label">${esc(it.label)}</span>
-          <span class="val ${outstanding(it) ? '' : 'pos'}">${outstanding(it) ? '尚欠 NT$ ' + fmt(outstanding(it)) : '已還清'}</span></div>
+          <span class="val ${outstanding(it) || it.useDate > todayISO() ? '' : 'pos'}">${it.useDate > todayISO() ? '預定 ' + esc(it.useDate) + ' 動用' : outstanding(it) ? '尚欠 NT$ ' + fmt(outstanding(it)) : '已還清'}</span></div>
         <div class="row"><span class="muted">動用 ${fmt(it.amount)} · 已還 ${fmt(repaidOf(it))}</span><span class="muted"></span></div>
       `).join('')}
       ${rows.length ? `<div style="margin-top:10px;">${rows.map(({ it, r }) => `
@@ -3911,13 +3909,11 @@ function stateCSV(){
                  t.action === 'buy' ? (t.source === 'loan' ? '房貸借款' : '自有資金') : '',
                  t.note]));
 
-  out += csvTable('# 持股', ['代號', '名稱', '槓桿倍數', '股數', '股價', '市值'],
-    state.instruments.map(it => {
-      const sh = hasTrades() ? heldShares(it.id) : it.shares;
-      return [it.id, it.name, it.leverage, sh, it.price, Math.round(sh * it.price)];
-    }));
-
   const r = computeLeverage();
+  // 用 holdings:代號重複的那列算 0 股,跟畫面上的市值一致,不會同一批持股列兩次
+  out += csvTable('# 持股', ['代號', '名稱', '槓桿倍數', '股數', '股價', '市值'],
+    r.holdings.map(h => [h.id, h.name, h.leverage, h.shares, h.price, Math.round(h.value)]));
+
   out += csvTable('# 房貸動用',
     ['項目', '動用日期', '動用金額', '已還', '餘額', '備註'],
     r.draws.filter(t => t.useDate)
@@ -4099,7 +4095,9 @@ function onClick(el){
     case 'del-instrument': {
       const it = findInstrumentByKey(id);
       if (!it) break;
-      const used = state.trades.filter(t => t.symbol === it.id).length;
+      // 還有另一列同代號(重複列)的話,刪掉這列紀錄還是有地方算,不用擋——不然畫面叫你處理重複列,卻刪不掉
+      const twin = state.instruments.some(x => x.key !== it.key && x.id === it.id);
+      const used = twin ? 0 : state.trades.filter(t => t.symbol === it.id).length;
       if (used){
         levMsg = '「' + (it.id || '未命名') + '」還有 ' + used + ' 筆買賣紀錄,先把那些紀錄刪掉或改成別的代號。';
         break;
