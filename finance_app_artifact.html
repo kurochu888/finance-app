@@ -584,8 +584,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 5d0224f78b';
-const BUILD_HASH = '5d0224f78b';
+const BUILD_VERSION = '2026-09-24 · 07b047ecca';
+const BUILD_HASH = '07b047ecca';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1050,7 +1050,7 @@ function monthParam(offset){
    不自動重新整理:使用者可能正在輸入,由他自己決定什麼時候換。
    單檔版(file://)沒有 version.json 可以問、Artifact 版不能連外,這兩個版本不檢查。 */
 const UPDATE_CHECK_ENABLED = QUOTES_ENABLED && typeof location !== 'undefined' && location.protocol === 'https:';
-const UPDATE_CHECK_GAP_MS = 10 * 60000;
+const UPDATE_CHECK_GAP_MS = 60000;   // 只是抓一個幾十 byte 的檔,10 分鐘太久:部署前剛檢查過的話,切回來要等很久才看到提示
 let lastUpdateCheck = 0;
 async function checkForUpdate(){
   if (!UPDATE_CHECK_ENABLED || Date.now() - lastUpdateCheck < UPDATE_CHECK_GAP_MS) return;
@@ -1066,7 +1066,8 @@ async function applyUpdate(){
   // 還在 400ms 延遲裡沒存出去的編輯,先存完再重新整理,不要因為換版掉資料
   clearTimeout(saveTimer);
   try{ await save(); }catch(e){}
-  location.reload();
+  // 換一個網址載入,不走 location.reload():還沒換成新 service worker 的分頁,reload 可能拿到瀏覽器快取裡的舊版
+  location.replace(location.pathname + '?v=' + Date.now());
 }
 
 /* ===================== 證交所請求節流 =====================

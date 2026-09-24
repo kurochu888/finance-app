@@ -15,7 +15,8 @@ function boot(file, { protocol = 'https:', onlineHash } = {}){
     querySelectorAll:()=>[], querySelector:()=>null, addEventListener(t, f){ docHandlers[t] = f; } };
   global.window = { claude: undefined };
   const env = { reloaded: false, savedBeforeReload: null, versionRequests: 0 };
-  global.location = { protocol, reload(){ env.reloaded = true; env.savedBeforeReload = global.localStorage._d.financeData_v1 !== undefined || Object.keys(global.localStorage._d).length > 0; } };
+  const nav = () => { env.reloaded = true; env.savedBeforeReload = global.localStorage._d.financeData_v1 !== undefined || Object.keys(global.localStorage._d).length > 0; };
+  global.location = { protocol, pathname: '/finance-app/', reload: nav, replace(u){ env.navigatedTo = u; nav(); } };
   global.fetch = async (url) => {
     if (String(url).startsWith('version.json')){
       env.versionRequests++;
@@ -52,6 +53,8 @@ const tick = () => new Promise(r => setTimeout(r, 20));
     U.scheduleSave();                       // 模擬剛改完、還在 400ms 延遲裡沒存出去
     await banner._handlers.click();
     must(env.reloaded, '點提示應該重新整理頁面');
+    // 換網址載入才不會拿到瀏覽器快取的舊版(GitHub Pages 網頁快取 10 分鐘)
+    must(/^\/finance-app\/\?v=\d+$/.test(env.navigatedTo || ''), '點提示應該換一個網址載入,實際:' + env.navigatedTo);
     const saved = Object.values(localStorage._d).some(v => String(v).includes('edited-before-update'));
     must(saved, '重新整理之前應該先把剛剛的編輯存下來,不然換版會掉資料');
   }
@@ -67,7 +70,7 @@ const tick = () => new Promise(r => setTimeout(r, 20));
   }
   console.log('  ok');
 
-  console.log('回到前景時會再問一次,但 10 分鐘內不重複問');
+  console.log('回到前景時會再問一次,但 1 分鐘內不重複問');
   {
     const { env, docHandlers } = boot(docs, { onlineHash: 'x' });
     await tick();
