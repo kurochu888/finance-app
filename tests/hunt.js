@@ -448,6 +448,19 @@ check('買賣日期在未來要提示;第一筆投入未滿一年不年化(以�
   return '';
 });
 
+check('事後在清單上把還款改成超過尚欠、或把日期清空:要標出來「不會計入」', () => {
+  A.state = A.emptyState();
+  A.state.leverage.draws = [{ id:'d1', label:'第一筆', amount:100000, useDate:'2025-01-01', note:'', repayments:[
+    { id:'r1', date:'2025-06-01', amount:30000 }, { id:'r2', date:'2025-07-01', amount:30000 }, { id:'r3', date:'2025-08-01', amount:30000 }] }];
+  A.onField('rp-amt-d1-r2', { value:'300000' });   // 手滑多打一個 0
+  A.onField('rp-date-d1-r3', { value:'' });
+  A.currentTab = 'leverage'; A.levTab = 'log'; A.renderAll();
+  const h = document.getElementById('content').innerHTML;
+  if (!h.includes('超過當時尚欠 NT$ 230,000')) return '還款改成超過尚欠,清單上沒有標出多的 230,000';
+  if (!h.includes('沒有日期,這筆不會計入')) return '日期清空的還款沒有標示';
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
