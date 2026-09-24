@@ -580,8 +580,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 3cc9e4f499';
-const BUILD_HASH = '3cc9e4f499';
+const BUILD_VERSION = '2026-09-24 · 1efa105f79';
+const BUILD_HASH = '1efa105f79';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2164,9 +2164,13 @@ function refreshAssets(){
 
 /* 買賣草稿的「成交金額」預估:只改這一小塊 DOM,不整頁重畫,
    不然打字打到一半、input 被整個換掉就會失焦。 */
+/* 成交價欄位空白時用目前股價(欄位裡灰色顯示的那個數字)——跟手續費欄位空白就自動算一致。
+   以前灰字只是提示,空白按新增會跳「請填股數與成交價」,看起來像有填卻不算。 */
+const draftPrice = d => Math.abs(num(d.price)) || (String(d.price).trim() === '' ? symbolPrice(d.symbol) : 0);
+
 function refreshTradeDraft(){
   const d = tradeDraft;
-  const gross = num(d.shares) * num(d.price);
+  const gross = num(d.shares) * draftPrice(d);
   const box = document.getElementById('pd-gross');
   if (box){
     box.style.display = (gross && d.action !== 'dividend') ? '' : 'none';
@@ -3070,7 +3074,7 @@ function renderPnL(){
 function renderTrades(){
   const trades = state.trades.slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   const d = tradeDraft;
-  const gross = num(d.shares) * num(d.price);
+  const gross = num(d.shares) * draftPrice(d);
   return `
     <div class="card">
       <h3>記一筆買賣</h3>
@@ -3224,7 +3228,9 @@ function renderRepayments(){
           <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
           <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
         </div>
-        <div class="muted" style="margin-top:2px;">${esc(it.label)}</div>`).join('')}</div>`
+        <div class="muted" style="margin-top:2px;">${esc(it.label)}${
+          !r.date ? '' : r.date < it.useDate ? `<span class="neg"> · 早於動用日 ${esc(it.useDate)},這筆不會計入</span>`
+          : r.date > todayISO() ? ' · 未來日期,到那天才會扣掉餘額' : ''}</div>`).join('')}</div>`
         : (items.length ? `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '')}
     </div>`;
 }
@@ -4092,7 +4098,7 @@ function onClick(el){
         state.trades.push(Object.assign(base, { shares:0, price:0, amount, fee: Math.abs(num(d0.fee)) }));
       }else{
         const shares = Math.abs(num(d0.shares));
-        const price = Math.abs(num(d0.price));
+        const price = draftPrice(d0);
         if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
         const gross = shares * price;
         state.trades.push(Object.assign(base, {
@@ -4125,8 +4131,14 @@ function onClick(el){
       const amt = Math.abs(num(repayDraft.amount));
       if (!target || !target.useDate){ repayError = '請先選一筆動用中的記錄'; renderAll(); return; }
       if (!amt){ repayError = '請填還款金額'; renderAll(); return; }
+      const rdate = repayDraft.date || todayISO();
+      // 早於動用日的還款會被 effectiveRepayments() 整筆忽略、超過尚欠的部分也會被默默吃掉——
+      // 使用者看不出來打錯了,所以在這裡直接擋下並說明
+      if (rdate < target.useDate){ repayError = `還款日期不能早於這筆的動用日期(${target.useDate})`; renderAll(); return; }
+      const owe = balanceAt(target, rdate);
+      if (amt > owe + 0.5){ repayError = `還款金額超過 ${rdate} 當時尚欠的 NT$ ${fmt(owe)},請確認金額`; renderAll(); return; }
       if (!Array.isArray(target.repayments)) target.repayments = [];
-      target.repayments.push({ id: uid(), date: repayDraft.date || todayISO(), amount: amt });
+      target.repayments.push({ id: uid(), date: rdate, amount: amt });
       repayError = '';
       repayDraft = { target: tid, date: repayDraft.date, amount:'' };
       break;
