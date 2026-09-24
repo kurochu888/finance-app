@@ -425,6 +425,29 @@ check('標的改代號:舊代號「看過的狀態」要清掉;代號格式不�
   return '';
 });
 
+check('匯入的資料 id 重複:刪一筆不能兩筆一起刪、資產跟負債 id 不能撞', () => {
+  A.state = A.normalize({ transactions:[{ id:'dup', date:'2026-09-01', cat:'餐飲', desc:'午餐', amount:-100 }, { id:'dup', date:'2026-09-02', cat:'交通', desc:'捷運', amount:-30 }],
+    assets:[{ id:'a', name:'現金', amount:1 }], liabilities:[{ id:'a', name:'房貸', amount:2 }] });
+  if (A.state.assets[0].id === A.state.liabilities[0].id) return '資產跟負債還是同一個 id';
+  A.onClick({ dataset:{ act:'del-tx', id: A.state.transactions[0].id } }); A.onClick({ dataset:{ act:'del-tx', id: A.state.transactions[0].id } });
+  if (A.state.transactions.length !== 1) return '刪一筆後剩 ' + A.state.transactions.length + ' 筆(應該是 1)';
+  return '';
+});
+
+check('買賣日期在未來要提示;第一筆投入未滿一年不年化(以前兩週漲 10% 那行直接消失)', () => {
+  A.state = A.emptyState();
+  A.state.instruments[0].price = 22;
+  const back = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
+  A.state.trades = [{ id:'t', date: back(14), symbol:'00631L', action:'buy', shares:1000, price:20, fee:0, amount:0, source:'cash', note:'' }];
+  A.currentTab = 'leverage'; A.levTab = 'overview'; A.renderAll();
+  const h1 = document.getElementById('content').innerHTML;
+  if (!h1.includes('未滿一年,不年化')) return '兩週前才買,年化報酬那行沒有說明不年化';
+  A.state.trades.push({ id:'f', date:'2062-01-01', symbol:'00631L', action:'buy', shares:10, price:20, fee:0, amount:0, source:'cash', note:'' });
+  A.levTab = 'log'; A.renderAll();
+  if (!document.getElementById('content').innerHTML.includes('日期在未來')) return '2062 年的買賣沒有提示';
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
