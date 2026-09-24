@@ -595,8 +595,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · c9c7b09db6';
-const BUILD_HASH = 'c9c7b09db6';
+const BUILD_VERSION = '2026-09-24 · 216220abb1';
+const BUILD_HASH = '216220abb1';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -620,6 +620,22 @@ let saveTimer = null;
    收到別台的改動時拿它當共同基準,判斷本機有哪些還沒推上去的修改(見 mergeLocalEdits)。
    跟 lastPushed 分開:lastPushed 在推之前就先設(為了認得回音),推失敗時它並不代表雲端有這份。 */
 let syncBase = '';
+/* 本機有還沒推上去的修改時,把當時的 syncBase 存進 localStorage(推成功就刪),下次打開時拿來當合併基準。
+   以前 syncBase 只在記憶體裡:離線時記的帳存進了本機、推不上去(Firestore 沒開離線持久化,待送的寫入關掉就沒了),
+   下次打開第一次同步是「雲端那份整份蓋掉本機」,離線記的就不見了(壓測重現)。記下帳號,換帳號登入時不套用。 */
+const SYNC_BASE_KEY = 'financeSyncBase';
+let cloudUid = '';
+function rememberPendingBase(){
+  if (!syncBase) return;
+  try{ if (!localStorage.getItem(SYNC_BASE_KEY)) localStorage.setItem(SYNC_BASE_KEY, JSON.stringify({ uid: cloudUid, base: syncBase })); }catch(e){}
+}
+function forgetPendingBase(){ try{ localStorage.removeItem(SYNC_BASE_KEY); }catch(e){} }
+function loadPendingBase(){
+  try{
+    const p = JSON.parse(localStorage.getItem(SYNC_BASE_KEY) || 'null');
+    return p && p.uid === cloudUid && typeof p.base === 'string' ? p.base : '';
+  }catch(e){ return ''; }
+}
 
 function readLocal(){
   try{
@@ -654,6 +670,10 @@ function writeLocal(data){
         localStorage.removeItem(keys.shift());
         try{ localStorage.setItem(STORAGE_KEY, json); return true; }catch(e2){ /* 再砍一份 */ }
       }
+      // 最後才放掉離線修改的合併基準(見 SYNC_BASE_KEY):放掉的話下次打開是雲端整份蓋過來,但主資料這次一定要存得住
+      localStorage.removeItem(SYNC_BASE_KEY);
+      localStorage.setItem(STORAGE_KEY, json);
+      return true;
     }catch(e3){ /* 連清都清不了 */ }
     return false;
   }
@@ -664,6 +684,7 @@ function scheduleSave(){
 }
 async function save(){
   const data = JSON.parse(JSON.stringify(state));
+  if (canon(data) !== syncBase) rememberPendingBase();   // 推成功之前,這份修改只在本機
   const ok = writeLocal(data);
   if (cloud){
     try{
@@ -672,6 +693,7 @@ async function save(){
       const pushing = lastPushed;
       await cloud.set(data);
       syncBase = pushing;
+      if (canon(JSON.parse(JSON.stringify(state))) === pushing) forgetPendingBase();   // 推上去之後又改了的話先留著
       storageMode = 'cloud';
       updateStorageStatus();
       return;
@@ -734,6 +756,7 @@ function applyRemote(data){
   const remoteC = canon(JSON.parse(JSON.stringify(state)));
   const kept = mergeLocalEdits(prev, state);
   syncBase = remoteC;
+  if (!kept) forgetPendingBase();   // 本機沒有另外的修改了,這份就是雲端那份
   lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
   if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
@@ -832,6 +855,7 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
 /* 第一次連上雲端:雲端有資料就拉下來,沒有就把本機的推上去 */
 async function syncFirstTime(){
   try{
+    if (!syncBase) syncBase = loadPendingBase();   // 上次關掉前有沒推上去的修改:拿當時的基準合併,不要整份被雲端蓋掉
     const remote = await cloud.get();
     storageMode = 'cloud';
     if (remote && !looksLikeState(remote)){
@@ -938,6 +962,8 @@ async function connectCloud(){
         authUser = user;
         authBusy = false;
         if (user){
+          if (cloudUid && cloudUid !== user.uid) syncBase = '';   // 換了帳號:上一個帳號的基準不能拿來合併
+          cloudUid = user.uid;
           cloud = fb.docApi();
           cloudBacktestDoc = fb.namedDoc('backtestHistory');
           syncFirstTime();
