@@ -18,7 +18,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap };`);
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -115,6 +115,41 @@ console.log('findHistoryGap:抓到真的漏資料的大缺口,不誤判週末/�
   must(gap && gap.from === '2020-05-04' && gap.to === '2020-08-10',
        `應該抓到 2020-05-04 ~ 2020-08-10 這段缺口,得到 ${JSON.stringify(gap)}`);
   console.log(`  抓到缺口:${gap.from} ~ ${gap.to},約 ${gap.days} 天`);
+})();
+console.log('  ok');
+
+console.log('RECOVER 全押時,加碼已經買進的張數不能再被當成重買一次、多扣一次手續費');
+(function testRecoverFee(){
+  // 價格固定 100、手續費固定:先 ADD 一層(用掉一半現金),再 RECOVER 把剩下的現金買滿。
+  // 兩次買進的總手續費應該就是「第一次買的金額的手續費 + 第二次買的金額的手續費」,
+  // 淨值 = 初始資金 − 這兩筆手續費。舊版 RECOVER 會把手上全部張數當成重買一次再扣一次。
+  const p = { maFast:2, maSlow:3, exitBuffer:0.5, recoverSlopeThreshold:1.0,
+              recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2 };
+  const r = A.runBacktest(mkHist([100, 100, 100, 85, 100, 100]), p);
+  const qty1 = Math.floor(500000 / (85 * 1.001425) / 1000) * 1000;
+  const cash1 = 1000000 - qty1 * 85 - A.defaultFee('buy', qty1 * 85);
+  const qty2 = Math.floor(cash1 / (100 * 1.001425) / 1000) * 1000;
+  const expected = cash1 - qty2 * 100 - A.defaultFee('buy', qty2 * 100) + (qty1 + qty2) * 100;
+  const last = r.curve[r.curve.length - 1].strat;
+  must(r.status === 'HOLD', `這段價格最後應該是 HOLD,得到 ${r.status}`);
+  must(Math.abs(last - expected) < 1e-6, `RECOVER 後淨值應該是 ${expected},得到 ${last}`);
+})();
+console.log('  ok');
+
+console.log('completeHistoryMonths:上次只抓到一半的月份不能被當成已經抓齊而永遠跳過');
+(function testCompleteMonths(){
+  const daily = (dates) => dates.map(d => ({ d, c: 100 }));
+  // 上次在 2026-07-10 按過:7 月只有前半,最新一筆在 7 月 → 7 月不算抓齊,要重抓
+  const h1 = daily(['2026-05-29','2026-06-01','2026-06-15','2026-06-30','2026-07-01','2026-07-10']);
+  const d1 = A.completeHistoryMonths(h1);
+  must(!d1.has('2026-07'), '最新資料所在的月份(可能只抓到一半)不該算抓齊');
+  must(d1.has('2026-06') && d1.has('2026-05'), '更早、沒有缺口的月份應該算抓齊');
+  // 舊版已經留下的半個月:7 月停在 07-10,接著直接跳到 8 月 → 缺口兩端的 7、8 月都要重抓
+  const h2 = daily(['2026-06-30','2026-07-01','2026-07-10','2026-08-03','2026-08-17','2026-08-31','2026-09-01']);
+  const d2 = A.completeHistoryMonths(h2);
+  must(!d2.has('2026-07') && !d2.has('2026-08'), `缺口兩端的月份不該算抓齊,得到 ${JSON.stringify([...d2])}`);
+  must(d2.has('2026-06'), '缺口以外的月份應該還是算抓齊');
+  must(A.completeHistoryMonths([]).size === 0, '沒有資料時沒有任何月份算抓齊');
 })();
 console.log('  ok');
 

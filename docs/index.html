@@ -578,7 +578,7 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-23 · d8696809b1';
+const BUILD_VERSION = '2026-09-24 · 117946b542';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1150,6 +1150,27 @@ function saveBacktestHistoryCache(){
   try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify(backtestFullHistory)); }catch(e){ /* 存不下就算了,下次按重抓 */ }
 }
 
+/* 「抓完整歷史」可以跳過哪些月份。光看「這個月有沒有資料」不夠:上次按的時候還沒過完的
+   那個月只抓到當天為止,之後它變成「兩個月前」就會被當成已經有資料而跳過,剩下的交易日
+   永遠補不回來——findHistoryGap() 會一直報缺口,使用者怎麼重按都一樣卡住。所以只有
+   (1) 比已存資料最新那筆所在月份更早(那個月一定是在它過完之後才被抓的),而且
+   (2) 不是缺口兩端的月份(舊版已經留下的半個月,用同一個 HISTORY_GAP_DAYS 門檻判斷)
+   才算抓齊。 */
+function completeHistoryMonths(hist){
+  const done = new Set();
+  if (!hist || !hist.length) return done;
+  const latestYm = hist[hist.length - 1].d.slice(0, 7);
+  hist.forEach(h => { const ym = h.d.slice(0, 7); if (ym < latestYm) done.add(ym); });
+  for (let i = 1; i < hist.length; i++){
+    const days = (new Date(hist[i].d) - new Date(hist[i - 1].d)) / 86400000;
+    if (days > HISTORY_GAP_DAYS){
+      done.delete(hist[i - 1].d.slice(0, 7));
+      done.delete(hist[i].d.slice(0, 7));
+    }
+  }
+  return done;
+}
+
 /* 回測要看的歷史比「訊號」用的 14 個月長得多,從 BACKTEST_FROM 那個月開始逐月往回抓到現在,
    一樣逐月序列、每次間隔一下,不要一次對證交所發一串請求。抓完一檔就存一次,中途中斷
    (使用者切分頁、關頁面)也不會整包資料不見。 */
@@ -1164,15 +1185,15 @@ async function backfillFullHistory(){
     backtestHistMsg = `回補完整歷史中…${tid}`;
     renderAll();
     let hist = backtestFullHistory[tid] || [];
-    // 已經有資料的月份不用重抓——不然每次按都要重新跑一次完整 130 幾個月,跟第一次一樣久。
-    // 當月跟上個月永遠重抓(可能還有新收盤價/上次只抓到一半),更舊的月份只要已經有資料就跳過。
-    const haveMonths = new Set(hist.map(h => h.d.slice(0, 7)));
+    // 已經抓齊的月份不用重抓——不然每次按都要重新跑一次完整 130 幾個月,跟第一次一樣久。
+    // 當月跟上個月永遠重抓(可能還有新收盤價),更舊的月份要 completeHistoryMonths() 認定抓齊了才跳過。
+    const doneMonths = completeHistoryMonths(hist);
     const monthLog = [];   // 依時間新→舊記録每個月有沒有抓到,新到舊排(offset 0 → 最舊)
     for (let offset = 0; offset > -260; offset--){
       const m = monthParam(offset);
       if (m < BACKTEST_FROM) break;
       const ym = m.slice(0, 4) + '-' + m.slice(4, 6);
-      if (offset <= -2 && haveMonths.has(ym)){
+      if (offset <= -2 && doneMonths.has(ym)){
         monthLog.push(true);
         continue;
       }
@@ -2356,12 +2377,12 @@ function runBacktest(priceHistory, trendParams){
       }
 
       if (action === 'RECOVER'){
-        const totalValue = cash + shares * close;
-        const qty = Math.floor(totalValue / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
+        // 全押 = 把剩下的現金買滿;加碼時已經買進的張數本來就在手上,不能當成重買一次再扣一次手續費。
+        const qty = Math.floor(cash / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
         if (qty > 0){
           const fee = defaultFee('buy', qty * close);
-          cash = totalValue - qty * close - fee;
-          shares = qty;
+          cash -= qty * close + fee;
+          shares += qty;
         }
         basePrice = close; pyramidCount = 0; status = 'HOLD';
       }else if (action === 'ADD'){
