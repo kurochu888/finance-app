@@ -125,6 +125,57 @@ console.log('mergeHistory:分割造成的假斷崖要被還原成連續序列(�
 })();
 console.log('  ok');
 
+console.log('mergeHistory:從最新月份往回逐月合併時,分割前每個月的交界不能被誤判成分割(迴歸測試:抹掉 130 幾天漲跌、回測數字失真)');
+(function testBackwardMergeKeepsReturns(){
+  // 每天漲 1%,分割(1 拆 20)發生在 4 月第一個交易日。照回補的順序從新到舊逐月合併:
+  // 4 月 → 3 月 → 2 月 → 1 月。正確的還原結果,每一天對前一天都應該是 +1%——
+  // 只有分割當天會被偵測時的比例吃掉(那天漲跌變 0),其他月份交界不能再被抹掉。
+  const rocRow = (iso, close) => [(Number(iso.slice(0,4)) - 1911) + '/' + iso.slice(5,7) + '/' + iso.slice(8), '0','0','0','0','0', close.toFixed(4), '0','0'];
+  const days = [];
+  for (let d = new Date('2026-01-05'); d <= new Date('2026-04-30'); d.setDate(d.getDate() + 1)){
+    if (d.getDay() === 0 || d.getDay() === 6) continue;
+    days.push(d.toISOString().slice(0, 10));
+  }
+  let p = 100;
+  const raw = days.map(d => { p *= 1.01; return { d, c: d >= '2026-04-01' ? p / 20 : p }; });
+  const splits = [];
+  let hist = [];
+  for (const m of ['2026-04', '2026-03', '2026-02', '2026-01']){
+    hist = A.mergeHistory(hist, raw.filter(r => r.d.startsWith(m)).map(r => rocRow(r.d, r.c)), Infinity, splits);
+  }
+  must(hist.length === days.length, `合併後筆數不對:${hist.length} vs ${days.length}`);
+  must(splits.length === 1 && splits[0].d === days.find(d => d >= '2026-04-01'),
+       `應該只記到一次分割(在 4 月第一個交易日),得到 ${JSON.stringify(splits)}`);
+  const flat = [];
+  for (let i = 1; i < hist.length; i++){
+    if (Math.abs(hist[i].c / hist[i - 1].c - 1.01) > 0.001) flat.push(hist[i].d);
+  }
+  must(flat.length <= 1, `除了分割當天,每天都應該是 +1%,但這些天的漲跌被改掉了:${flat.join(', ')}`);
+  // 之後再重抓一次 2 月(模擬補缺口/重按回補),已記錄的分割要直接套用,不能再動到其他天
+  hist = A.mergeHistory(hist, raw.filter(r => r.d.startsWith('2026-02')).map(r => rocRow(r.d, r.c)), Infinity, splits);
+  const flat2 = [];
+  for (let i = 1; i < hist.length; i++){
+    if (Math.abs(hist[i].c / hist[i - 1].c - 1.01) > 0.001) flat2.push(hist[i].d);
+  }
+  must(splits.length === 1 && flat2.length <= 1, `重抓已有的月份後資料被改掉了:${flat2.join(', ')} / ${JSON.stringify(splits)}`);
+})();
+console.log('  ok');
+
+console.log('normalize():舊版存下來、沒有 splits 欄位的自動報價歷史要清掉重抓(已經被假分割抹過,無從還原)');
+(function testSplitMigration(){
+  const ph = [{ d:'2026-01-02', c:10 }, { d:'2026-01-05', c:11 }];
+  const s = A.normalize({ instruments: [
+    { key:'a', id:'00631L', leverage:2, auto:true, priceHistory: ph },
+    { key:'b', id:'00675L', leverage:2, auto:true, priceHistory: ph, splits: [] },
+    { key:'c', id:'MYFUND', leverage:1, auto:false, priceHistory: ph }
+  ]});
+  must(s.instruments[0].priceHistory.length === 0, '舊版(沒有 splits)的自動報價歷史應該被清掉');
+  must(s.instruments[1].priceHistory.length === 2, '新版(有 splits)的歷史不該被清掉');
+  must(s.instruments[2].priceHistory.length === 2, '手動(不自動抓報價)標的的歷史不是從證交所回補的,不該被清掉');
+  must(s.instruments.every(it => Array.isArray(it.splits)), 'normalize 之後每個標的都要有 splits 陣列');
+})();
+console.log('  ok');
+
 console.log('adjustForSplits:資料缺口造成的真實累積漲跌,不該被誤判成分割(迴歸測試:實際發生過,把 2015 年的資料錯誤打折)');
 (function testGapNotSplit(){
   // 模擬回補時中間漏了好幾個月:前段資料在 2015-06 附近,下一筆卻直接跳到 2016-01——
@@ -146,7 +197,7 @@ console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄
     key:'k1', id:'00631L', name:'測試', leverage:2, price:10, shares:0, auto:true,
     trend: { maFast:Infinity, maSlow:-Infinity, exitBuffer:Infinity, recoverSlopeThreshold:Infinity,
              recoverStrongRebound:Infinity, pyramidGap:Infinity, pyramidLevels:Infinity },
-    priceHistory: [{ d:'2026-01-01', c:Infinity }, { d:'2026-01-02', c:50 }]
+    priceHistory: [{ d:'2026-01-01', c:Infinity }, { d:'2026-01-02', c:50 }], splits: []
   }]});
   const t = s.instruments[0].trend;
   ['maFast','maSlow','exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','pyramidLevels']

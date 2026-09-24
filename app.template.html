@@ -371,8 +371,8 @@ const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的
 
 /* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
-  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] },
-  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[] }
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[] },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[] }
 ];
 // trend/priceHistory 是巢狀物件,Object.assign 只會淺拷貝參照 —— 每個新 instrument
 // 都要有自己獨立的 trend/priceHistory,不能共用同一份 DEFAULT_INSTRUMENTS 底下的物件,
@@ -422,12 +422,15 @@ function normalize(raw){
           lastSeenStatus: String(t.lastSeenStatus || ''),
           lastSeenDate: String(t.lastSeenDate || '')
         },
-        priceHistory: (Array.isArray(x.priceHistory) ? x.priceHistory : [])
+        // 沒有 splits 欄位 = 舊版存下來的歷史:舊版逐月回補時會把分割前每個月的交界誤判成分割、
+        // 抹掉那一天的真實漲跌(見 adjustForSplits),資料已經歪了又無從還原,只能清掉讓它自動重抓。
+        priceHistory: (Array.isArray(x.priceHistory) && (Array.isArray(x.splits) || x.auto === false) ? x.priceHistory : [])
           .map(h => ({ d: String(h.d || '').slice(0, 10), c: Math.max(0, finiteNum(h.c, 0)) }))
           .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0 && Number.isFinite(h.c))
           .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
           .filter((h, i, arr) => i === arr.length - 1 || h.d !== arr[i + 1].d)   // 同一天重複只留最後一筆
-          .slice(-PRICE_HIST_KEEP)
+          .slice(-PRICE_HIST_KEEP),
+        splits: normalizeSplits(x.splits)
       };
     });
   }
@@ -690,10 +693,13 @@ async function pullBacktestHistoryFromCloud(){
   if (!cloudBacktestDoc || Object.keys(backtestFullHistory).length) return;
   try{
     const remote = await cloudBacktestDoc.get();
-    if (remote && remote.data && Object.keys(remote.data).length){
+    if (remote && remote.v === BACKTEST_HIST_VERSION && remote.data && Object.keys(remote.data).length){
       backtestFullHistory = remote.data;
+      backtestSplits = remote.splits || {};
       saveBacktestHistoryCache();
       backtestHistMsg = '已從雲端帶入其他裝置抓過的完整歷史,不用重抓。';
+    }else if (remote && remote.data){
+      backtestHistMsg = '雲端存的是舊版抓的完整歷史(分割前的價格有誤,回測數字會失真),請按下面的按鈕重新抓一次。';
     }else{
       backtestHistMsg = '雲端還沒有存過完整歷史(可能是還沒有任何裝置成功按過「抓完整歷史」並推上雲端),請按下面的按鈕抓一次。';
     }
@@ -921,9 +927,13 @@ let backfillMsg = '';
 /* 回測用的完整歷史價格,跟「訊號」用的 priceHistory(4 年上限,會隨 state 同步)分開存——
    回測要看 2015 年至今,量大很多,沒必要每次跨裝置同步都帶著這包資料跑。
    存在自己的 localStorage key,按「抓完整歷史」才會去抓/更新,不會自動觸發。 */
-const BACKTEST_HIST_KEY = 'financeBacktestHistory_v1';
+// v2:舊版(v1)存下來的完整歷史被逐月交界的假分割抹掉了 130 幾天的漲跌(見 adjustForSplits),
+// 無從還原,換 key 讓它作廢重抓。雲端那份用 BACKTEST_HIST_VERSION 判斷,舊版推上去的不帶入。
+const BACKTEST_HIST_KEY = 'financeBacktestHistory_v2';
+const BACKTEST_HIST_VERSION = 2;
 const BACKTEST_FROM = '20150601';   // 抓到這個月為止,含 240 日均線的暖身緩衝
 let backtestFullHistory = {};       // { [instrumentId]: [{d,c}, ...] }
+let backtestSplits = {};            // { [instrumentId]: [{d,ratio}, ...] },跟 backtestFullHistory 一起存,見 mergeHistory
 let backtestHistBusy = false;
 let backtestHistMsg = '';
 let backtestResults = null;         // 上次「執行回測」的結果,重畫分頁不用重算
@@ -967,29 +977,53 @@ async function twseRows(url){
    之後補齊缺口也不會自動修正回來。所以前後兩筆的「實際日期」隔太久時,不當成分割處理,
    寧可漏抓真分割也不要誤傷正常缺口——門檻跟 findHistoryGap() 共用同一個
    HISTORY_GAP_DAYS,兩處判斷「正常間斷 vs 真的斷了」的標準要一致。 */
+/* 2026-09 又抓到一個更根本的問題:回補是從最新的月份往回逐月合併,已經還原過的歷史(分割後
+   尺度,例如 1.3)旁邊接上一個剛抓來、還沒還原的分割前原始月份(例如 30)——月份交界看起來
+   就像又分割了一次,於是用「這個月最後一天 → 下個月第一天」的比例把舊資料換算過去,
+   等於把每個月交界那天的真實漲跌抹成 0。00631L 分割前有 130 幾個月,回測就少了 130 幾天的
+   報酬,整條淨值曲線歪掉。
+
+   所以偵測到的分割要記下來(splits:[{d: 分割後第一天, ratio}]),之後從證交所抓進來的
+   原始價格一律先用記下的比例換算成同一個尺度再合併,月份交界就不會再出現假斷崖。
+   偵測只負責「第一次」看到某個分割;已記錄的分割不重複記。存起來的歷史永遠滿足
+   「價格 = 原始收盤 × 該日之後所有已記錄分割的比例」,不管抓的順序、重抓幾次都一樣。 */
 const HISTORY_GAP_DAYS = 16;   // 比農曆年封關(約 9-10 天)還寬鬆,不會誤判正常長假
-function adjustForSplits(rows){
+function adjustForSplits(rows, splits = null){
   for (let i = 1; i < rows.length; i++){
     const dayGap = (new Date(rows[i].d) - new Date(rows[i - 1].d)) / 86400000;
     if (dayGap > HISTORY_GAP_DAYS) continue;   // 中間隔太久,大波動是真實累積漲跌或資料缺口,不是分割
     const ratio = rows[i - 1].c > 0 ? rows[i].c / rows[i - 1].c : 1;
     if (ratio > 0 && (ratio < 0.6 || ratio > 1.6)){
       for (let j = 0; j < i; j++) rows[j].c = Math.round(rows[j].c * ratio * 10000) / 10000;
+      if (splits && !splits.some(sp => sp.d === rows[i].d)) splits.push({ d: rows[i].d, ratio });
     }
   }
   return rows;
 }
-function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP){
+function splitFactor(d, splits){
+  let f = 1;
+  (splits || []).forEach(sp => { if (d < sp.d) f *= sp.ratio; });
+  return f;
+}
+function normalizeSplits(v){
+  return (Array.isArray(v) ? v : [])
+    .map(sp => ({ d: String((sp && sp.d) || '').slice(0, 10), ratio: finiteNum(sp && sp.ratio, 0) }))
+    .filter(sp => /^\d{4}-\d{2}-\d{2}$/.test(sp.d) && sp.ratio > 0);
+}
+/* splits 傳入時會被就地更新(偵測到新的分割就記進去),呼叫端要把它存回去。 */
+function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null){
   const byDate = new Map((hist || []).map(h => [h.d, h.c]));
   (rows || []).forEach(row => {
     const d = rocToISO(row[0]);
-    if (d) byDate.set(d, cleanNum(row[6]));
+    if (!d) return;
+    const raw = cleanNum(row[6]), f = splitFactor(d, splits);
+    byDate.set(d, f === 1 ? raw : Math.round(raw * f * 10000) / 10000);
   });
   const merged = [...byDate.entries()]
     .map(([d, c]) => ({ d, c }))
     .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
     .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
-  return adjustForSplits(merged).slice(-keep);
+  return adjustForSplits(merged, splits).slice(-keep);
 }
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
    使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
@@ -1018,7 +1052,7 @@ async function fetchQuotes(manual){
       if (rows && rows.length){
         const row = rows[rows.length - 1];
         it.price = cleanNum(row[6]);      // 收盤價
-        it.priceHistory = mergeHistory(it.priceHistory, rows);   // 順便把整月資料併進歷史,累積均線用的資料
+        it.priceHistory = mergeHistory(it.priceHistory, rows, PRICE_HIST_KEEP, it.splits || (it.splits = []));   // 順便把整月資料併進歷史,累積均線用的資料
         date = rocToISO(row[0]) || date;
         got++;
       }else{
@@ -1091,7 +1125,7 @@ async function backfillHistory(){
           const j = await res.json();
           if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
             const live = findInstrumentByKey(target.key);
-            if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data);
+            if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []));
             monthsOk++;
           }
         }
@@ -1108,12 +1142,14 @@ async function backfillHistory(){
 
 function loadBacktestHistoryCache(){
   try{
-    const raw = localStorage.getItem(BACKTEST_HIST_KEY);
-    backtestFullHistory = raw ? (JSON.parse(raw) || {}) : {};
-  }catch(e){ backtestFullHistory = {}; }
+    localStorage.removeItem('financeBacktestHistory_v1');   // 舊版資料已經歪了,留著只是佔空間
+    const raw = JSON.parse(localStorage.getItem(BACKTEST_HIST_KEY)) || {};
+    backtestFullHistory = raw.hist || {};
+    backtestSplits = raw.splits || {};
+  }catch(e){ backtestFullHistory = {}; backtestSplits = {}; }
 }
 function saveBacktestHistoryCache(){
-  try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify(backtestFullHistory)); }catch(e){ /* 存不下就算了,下次按重抓 */ }
+  try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify({ hist: backtestFullHistory, splits: backtestSplits })); }catch(e){ /* 存不下就算了,下次按重抓 */ }
 }
 
 /* 「抓完整歷史」可以跳過哪些月份。光看「這個月有沒有資料」不夠:上次按的時候還沒過完的
@@ -1169,7 +1205,7 @@ async function backfillFullHistory(){
         if (res.ok){
           const j = await res.json();
           if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-            hist = mergeHistory(hist, j.data, Infinity);
+            hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []));
             ok = true;
           }
           consecutiveNetworkFails = 0;   // 伺服器有正常回應(不管這個月有沒有資料),不算網路失敗
@@ -1201,7 +1237,7 @@ async function backfillFullHistory(){
   // 推一份到雲端,其他裝置下次打開就能直接讀,不用再等一次逐月抓。失敗(沒登入/沒網路)就算了,
   // 本機的資料不受影響,不影響這次回補的結果。
   if (cloudBacktestDoc){
-    try{ await cloudBacktestDoc.set({ data: backtestFullHistory, updatedAt: Date.now() }); }catch(e){ /* 推不上去,本機還是有資料 */ }
+    try{ await cloudBacktestDoc.set({ v: BACKTEST_HIST_VERSION, data: backtestFullHistory, splits: backtestSplits, updatedAt: Date.now() }); }catch(e){ /* 推不上去,本機還是有資料 */ }
   }
   backtestHistBusy = false;
   renderAll();
@@ -3216,6 +3252,7 @@ function onField(key, el){
           if (tradeDraft.symbol === prev) tradeDraft.symbol = next;
           it.id = next;
           it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
+          it.splits = [];
           levMsg = '';
           structural = true;
         }else if (taken){
@@ -3384,11 +3421,11 @@ function sampleData(){
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
   s.instruments = [
     { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
-      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260) },
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260), splits:[] },
     { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true,
-      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260) },
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260), splits:[] },
     { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
-      trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220) }
+      trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[] }
   ];
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
@@ -3610,7 +3647,7 @@ function onClick(el){
     }
     case 'add-instrument':
       state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true,
-        trend: defaultTrendParams(1), priceHistory:[] });
+        trend: defaultTrendParams(1), priceHistory:[], splits:[] });
       levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
     case 'del-instrument': {
