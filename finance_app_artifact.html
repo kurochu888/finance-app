@@ -554,8 +554,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 0ca7c727d9';
-const BUILD_HASH = '0ca7c727d9';
+const BUILD_VERSION = '2026-09-24 · b01dcc5e71';
+const BUILD_HASH = 'b01dcc5e71';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2255,6 +2255,9 @@ function renderHelp(){
       <p>同樣的目標曝險比例,方案A 因為部位淨值也跟著墊高,分母跟著變大,要投入的金額會比方案B 多——
       不是算錯,是這兩種資金對「自己在這個部位裡佔多少」的影響本來就不一樣。實際要用哪個、還是兩個混著用,
       自己決定,這個分頁不會幫你自動借款或下單。差額算出來是負的,代表目前曝險已經超過目標,顯示成「可考慮減碼」。</p>
+      <p><strong>HOLD 的目標只在剛轉成 HOLD 時調整一次。</strong>兩檔都轉成 HOLD 時,卡片會顯示調整到目標要投入(或減碼)多少,
+      調整完按「已調整完成」(或狀態提醒上的「知道了」)。之後整段續抱期間<strong>不做再平衡</strong>——漲上去曝險會跟著變高、
+      跌下來會變低,都不提示加碼或減碼,只顯示目前的曝險比例,等出場訊號(EXIT)再動作。</p>
     </div>
 
     <div class="sect">借款與還款</div>
@@ -2626,8 +2629,12 @@ function computeExposurePlan(){
   const R = targetRatio / 100, L = 2;
   const denomCash = L - R;
   const raw = R * (risk.equity + risk.creditLimit) - risk.exposure;   // 為負代表已經超過目標,該減碼
+  // HOLD 的目標(hold)只在「剛轉成 HOLD」時調整一次,之後續抱期間漲跌造成的曝險變化都不再平衡,
+  // 等出場訊號。「剛轉成」= 使用者還沒確認過這次 HOLD(沿用狀態改變提醒的 lastSeenStatus,
+  // 按提醒的「知道了」或曝險卡片的「已調整完成」都算確認)。
+  const holdAdjustPending = progress > N && lev2.some(it => it.trend.lastSeenStatus !== 'HOLD');
   return {
-    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio,
+    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio, holdAdjustPending,
     deltaCash: denomCash > 0.0001 ? raw / denomCash : null,   // null = 這個目標純用現金到不了
     deltaLoan: raw / L,
     instruments: lev2.map(it => it.key)
@@ -3055,10 +3062,19 @@ function renderExposurePlanCard(){
     : p.progress > p.layerCount ? '兩檔都 HOLD'
     : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`;
   const overTarget = p.deltaLoan < -0.5;   // 現值超過目標,允許一點點浮點誤差
+  if (p.progress > p.layerCount && !p.holdAdjustPending){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="row"><span class="label">目前階段</span><span class="val">續抱中(兩檔都 HOLD)</span></div>
+      <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
+      <div class="muted" style="margin-top:6px;">續抱期間不做再平衡:${p.targetRatio}% 只在剛轉成 HOLD 時調整一次,之後漲跌造成的曝險變化都不加碼也不減碼,等出場訊號。</div>
+    </div>`;
+  }
   return `
     <div class="card">
       <h3>正2 曝險目標</h3>
-      <div class="row"><span class="label">目前階段</span><span class="val">${esc(stageLabel)}</span></div>
+      <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
       ${overTarget ? `
@@ -3070,6 +3086,10 @@ function renderExposurePlanCard(){
         <div class="row sub"><span class="label">方案B:直接借房貸額度買(不拿新錢)</span>
           <span class="val">NT$ ${fmt(p.deltaLoan)}(各半 NT$ ${fmt(p.deltaLoan/n)})</span></div>
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
+      ${p.holdAdjustPending ? `
+        <div class="muted" style="margin-top:6px;">這是轉成 HOLD 時唯一一次調整;調整完按下面這顆,之後續抱期間不再提示加碼/減碼。</div>
+        <button class="btn" data-act="ack-hold" style="margin-top:8px;">✓ 已調整完成</button>
+      ` : ''}
       <details class="tip" style="margin-bottom:0;"><summary>這些數字是什麼意思</summary><div class="body">
         ${(!overTarget && p.deltaLoan > 0.5) ? `方案A、方案B買到的部位一樣,但要花的錢不一樣:自己拿現金出來,等於幫這個部位多墊了一筆本金(像買房付頭期款),要花比較多錢才能把曝險比例撐到目標;直接借房貸,買的東西跟欠的錢一起增加、互相抵銷,不用墊本金,同樣的目標只要比較少的錢。實際要用哪個、還是兩個混著用,自己決定。${p.deltaCash == null ? '這次的目標純用現金到不了,至少要用方案B補足缺口。' : ''}<br><br>` : ''}
         目標依「兩檔裡比較保守的那個」決定,不是各自獨立算。
@@ -3092,7 +3112,7 @@ function renderTrendChangeAlerts(){
         <span class="ai">🔔</span>
         <div>
           <div class="at">${esc(it.id || it.name)} 狀態變成${t.status === 'HOLD' ? '續抱(HOLD)' : t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}</div>
-          <div class="ad">原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。</div>
+          <div class="ad">原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。${t.status === 'HOLD' && it.leverage === 2 ? '兩檔都轉成 HOLD 時,先照「正2 曝險目標」調整完再按知道了——按了之後續抱期間就不再提示加碼/減碼。' : ''}</div>
           <button class="go" data-act="ack-trend" data-id="${it.key}">知道了</button>
         </div>
       </div>`;
@@ -3867,6 +3887,12 @@ function onClick(el){
       if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenDate: it.trend.lastSeenDate });
       break;
     }
+    case 'ack-hold':   // 曝險卡片的「已調整完成」:兩檔正2 一起確認,跟按提醒的「知道了」效果一樣
+      state.instruments.filter(it => it.leverage === 2).forEach(it => {
+        it.trend.lastSeenStatus = computeTrend(it).status;
+        it.trend.lastSeenDate = todayISO();
+      });
+      break;
     case 'ack-trend': {
       const it = findInstrumentByKey(id);
       if (it){

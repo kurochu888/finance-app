@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -290,6 +290,23 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
   must(p.targetRatio === 130, 'target 應該是 hold=130,得到 ' + p.targetRatio);
   must(p.deltaCash === null || p.deltaCash > 10000000, '這個目標純現金到不了(需要的現金遠超過已有的385萬),deltaCash 應該是 null 或很大的數字,得到 ' + p.deltaCash);
   must(Math.abs(p.deltaLoan - 3851852) < 5000, '全部用房貸的邊界值應該 ≈385萬(跟 deltaCash 那組不同,是另一個邊界),得到 ' + Math.round(p.deltaLoan));
+
+  // HOLD 的 130% 只在剛轉成 HOLD 時調整一次:還沒確認時給調整建議,確認之後續抱期間不再平衡——
+  // 就算漲上去曝險超過 130%,也不能出現「可考慮減碼」(使用者的策略設計,不是漏算)
+  A.state = setupState(78, 78, 20000000);   // equity 2000 萬、額度 800 萬 → 曝險 ≈143%,超過 130%
+  p = A.computeExposurePlan();
+  must(p.currentRatio > 130, `這組設定曝險應該超過 130%,得到 ${p.currentRatio}`);
+  must(p.holdAdjustPending === true, '剛轉成 HOLD、還沒確認過,應該要提示調整');
+  let card = A.renderExposurePlanCard();
+  must(card.includes('已調整完成') && card.includes('可考慮減碼'), '剛轉成 HOLD 時卡片要給調整建議跟「已調整完成」按鈕');
+  A.onClick({ dataset: { act: 'ack-hold' } });
+  p = A.computeExposurePlan();
+  must(p.holdAdjustPending === false, '按了「已調整完成」之後就不該再提示');
+  card = A.renderExposurePlanCard();
+  must(!card.includes('可考慮減碼') && !card.includes('方案A') && card.includes('續抱期間不做再平衡'),
+       '續抱期間曝險超過 130% 也不該提示減碼,只顯示目前曝險:' + card.replace(/\s+/g, ' ').slice(0, 200));
+  A.state.instruments.find(x => x.id === '00675L').trend.lastSeenStatus = 'WAIT_RECOVER';   // 只有一檔確認過也還算「剛轉成」
+  must(A.computeExposurePlan().holdAdjustPending === true, '兩檔要都確認過 HOLD 才算調整完');
 
   // 兩檔進度不同:00631L 在 n=78(HOLD),00675L 在 n=49(第1層)→ 取較小的 progress=1
   A.state = setupState(78, 49, 0);
