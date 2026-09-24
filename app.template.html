@@ -2782,8 +2782,9 @@ function runAllBacktests(){
       mddStrat: res.mddStrat, mddBh: res.mddBh,
       periods: { strat: splitStats(res.curve, 'strat'), bh: splitStats(res.curve, 'bh') },
       labels: sampled.map(pt => pt.d.slice(0, 7)),
-      stratSeries: sampled.map(pt => pt.strat / BACKTEST_INITIAL_CASH * 100),
-      bhSeries: sampled.map(pt => pt.bh / BACKTEST_INITIAL_CASH * 100),
+      // 圖上畫累積報酬率(%),跟上面「總報酬」同一個單位;以前畫淨值指數(起點=100),圖例的 9076 跟上面的 +8976% 看起來像對不起來
+      stratSeries: sampled.map(pt => (pt.strat / BACKTEST_INITIAL_CASH - 1) * 100),
+      bhSeries: sampled.map(pt => (pt.bh / BACKTEST_INITIAL_CASH - 1) * 100),
     };
   });
 }
@@ -3381,7 +3382,8 @@ function renderBacktestCard(){
           ${lineChart('bt-' + r.id, r.labels, [
             { name:'策略', color:'var(--s1)', values:r.stratSeries },
             { name:'買進持有', color:'var(--sub)', values:r.bhSeries }
-          ], { label: r.id + ' 回測淨值指數(起點=100)', height:150, fmtVal: v => v.toFixed(0) })}
+          ], { label: r.id + ' 回測累積報酬率', height:150, zero:true,
+               fmtVal: v => (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('zh-Hant-TW') + '%' })}
           ${renderBacktestPeriods(r)}
         </div>
       `).join('')}
