@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -313,6 +313,35 @@ check('預設標的刪掉後記一筆買賣:選單畫面上是第一檔,要記�
   A.onClick({ dataset:{ act:'add-trade' } });
   if (A.tradeError) return '被擋下來:' + A.tradeError;
   if (!A.state.trades.length || A.state.trades[0].symbol !== shown) return '記到的標的不對:' + JSON.stringify(A.state.trades.map(t => t.symbol));
+  return '';
+});
+
+check('兩列同代號:壓力測試、CSV 持股不能把同一批持股算兩次,重複列要刪得掉', () => {
+  A.state = A.normalize({ instruments:[{ key:'a', id:'00631L', leverage:2, price:100 }, { key:'b', id:'00631L', leverage:2, price:100 }],
+    trades:[{ id:'t', date:'2026-01-01', symbol:'00631L', action:'buy', shares:1000, price:90, fee:0, source:'cash' }] });
+  const st = A.computeStress(20);
+  if (Math.round(st.newPv) !== 60000) return '跌 20%(2 倍)後市值應該是 60000,實際 ' + st.newPv + '(loss ' + st.loss + ')';
+  const csv = A.stateCSV();
+  const rows = csv.split('# 持股')[1].split('\n\n')[0].split('\n').filter(l => l.startsWith('00631L'));
+  const total = rows.reduce((s, l) => s + Number(l.split(',')[5]), 0);
+  if (total !== 100000) return 'CSV 持股市值加總 ' + total + ',應該是 100000';
+  A.onClick({ dataset:{ act:'del-instrument', id:'b' } });
+  if (A.state.instruments.length !== 1) return '重複的那列刪不掉';
+  A.onClick({ dataset:{ act:'del-instrument', id:'a' } });
+  if (A.state.instruments.length !== 1) return '最後一列還有買賣紀錄,不該被刪掉';
+  return '';
+});
+
+check('動用日期填未來:到那天才算借款,當月不能先記一筆利息', () => {
+  A.state = A.emptyState();
+  const future = String(Number(A.todayISO().slice(0, 4)) + 1) + '-01-15';
+  A.state.leverage.draws = [{ id:'d1', label:'預定', amount:1000000, useDate: future, note:'', repayments:[] }];
+  A.state.leverage.interestPosted = [];
+  const r = A.computeLeverage();
+  if (r.usedAmount !== 0) return '還沒到動用日,借款餘額就是 ' + r.usedAmount;
+  A.maybePostInterest();
+  const posted = A.state.transactions.filter(t => t.cat === '房貸利息');
+  if (posted.length) return '錢還沒借就記了利息 ' + posted.map(t => t.date + ' ' + t.amount).join('、');
   return '';
 });
 
