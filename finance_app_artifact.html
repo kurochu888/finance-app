@@ -563,8 +563,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 24b5781493';
-const BUILD_HASH = '24b5781493';
+const BUILD_VERSION = '2026-09-24 · 6c1bc30233';
+const BUILD_HASH = '6c1bc30233';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1411,12 +1411,12 @@ function defaultFee(action, gross){
   const broker = Math.max(20, gross * 0.001425);
   return Math.round(action === 'sell' ? broker + gross * 0.001 : broker);
 }
-/* 一筆借款從動用日到今天,依「實際餘額」分段累積。
+/* 一筆借款從動用日到 until(預設今天),依「實際餘額」分段累積。
    還款之後只對剩下的餘額繼續算。 */
-function accrue(item, annualPct){
-  if (!item.useDate) return 0;
-  const today = todayISO();
-  const events = effectiveRepayments(item);
+function accrue(item, annualPct, until = todayISO()){
+  if (!item.useDate || until <= item.useDate) return 0;
+  const today = until;
+  const events = effectiveRepayments(item).filter(r => r.date <= until);
   let balance = item.amount;
   let cursor = item.useDate;
   let total = 0;
@@ -1485,12 +1485,15 @@ function cashFlows(){
     (item.repayments || []).forEach(r => {
       if (r.date && r.date >= item.useDate && r.date <= today) add(r.date, -r.amount);
     });
-    // 利息按月流出,以當月底的餘額計算
-    let cursor = item.useDate.slice(0, 7);
+    // 利息按月流出,金額跟「借款利息」同一套算法(照天數、照當時的餘額):每個月付的是
+    // 「到月底為止累積的利息 − 到上個月底為止累積的利息」。以前用「月底餘額 × 年利率 / 12」,
+    // 月中才動用、或當月才過一半,都會被算成一整個月,XIRR 會被低估。
+    let cursor = item.useDate.slice(0, 7), paid = 0;
     for (let guard = 0; cursor <= thisMonth() && guard < 600; guard++){
-      const end = monthEndISO(cursor);
-      const bal = balanceAt(item, end > today ? today : end);
-      add(end > today ? today : end, -(bal * (L.annualRate / 100) / 12));
+      const end = monthEndISO(cursor), upTo = end > today ? today : end;
+      const acc = accrue(item, L.annualRate, upTo);
+      add(upTo, -(acc - paid));
+      paid = acc;
       cursor = shiftMonth(cursor, 1);
     }
   });
@@ -3499,8 +3502,6 @@ function onField(key, el){
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = Math.max(0, num(el.value)); }
-  // 細項一改就更新本月快照——不然月底最後一天改的數字,要等下個月打開才會存,那時已經算到下個月了
-  if (['an', 'aa', 'ln', 'la'].includes(kind)) maybeSnapshot();
   else if (kind === 'nh'){
     const h = findById(state.netWorthHistory, rest);
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
@@ -3615,6 +3616,8 @@ function onField(key, el){
     structural = true;
   }
 
+  // 資產/負債細項一改就更新本月快照——不然月底最後一天改的數字,要等下個月打開才會存,那時已經算到下個月了
+  if (['an', 'aa', 'ln', 'la'].includes(kind)) maybeSnapshot();
   scheduleSave();
   if (kind === 'tr' && rest.startsWith('date-')){
     maybePostInterest();
@@ -3635,7 +3638,7 @@ function genSamplePriceHistory(endPrice, tradingDays){
   while (dates.length < tradingDays - 1){
     d.setDate(d.getDate() - 1);
     const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) dates.push(d.toISOString().slice(0, 10));
+    if (dow !== 0 && dow !== 6) dates.push(d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()));   // 本地日期,不用 toISOString(UTC,台灣早上 8 點前會差一天)
   }
   dates.reverse();
   dates.push(todayISO());
@@ -3679,13 +3682,15 @@ function sampleData(){
     { back:4, pv:328000, loan:0,       pnl:13400 },
     { back:3, pv:494000, loan:0,       pnl:18500 },
     { back:2, pv:520000, loan:0,       pnl:44500 },
-    { back:1, pv:884000, loan:1000000, pnl:56000 },
-    { back:0, pv:926030, loan:1000000, pnl:97000 }
+    { back:1, pv:884000, loan:350000, pnl:56000 },
+    { back:0, pv:926030, loan:350000, pnl:97000 }
   ].map(h => ({
     id: uid(), m: shiftMonth(m, -h.back), v: nw - h.back * 120000,
     pv: h.pv, pnl: h.pnl, loan: h.loan, items: [], auto: true
   }));
-  s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 1000000,
+  // 動用金額要跟「用房貸買的那筆」(00631L 10,000 股 @34.8,含手續費約 34.8 萬)對得上——
+  // 以前寫 100 萬,多借的 65 萬沒買任何東西,範例一載入「自己的錢」就是負的,設定頁也跳金額對不起來的警告
+  s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 350000,
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
   s.instruments = [
     { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
@@ -4063,6 +4068,8 @@ function onClick(el){
       if (needsConfirm('load-sample')) return;
       state = sampleData();
       viewMonth = thisMonth();
+      maybeSnapshot();          // 範例裡本月那筆快照是寫死的數字,載入後跟實際算出來的對齊(不然走勢圖最後一點跟上面的總數不一樣)
+      maybeDailySnapshot();
       break;
     case 'clear-all':
       if (needsConfirm('clear-all')) return;
