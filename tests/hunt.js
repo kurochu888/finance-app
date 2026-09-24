@@ -17,7 +17,8 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes,
+  get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
 const draw = i => {
@@ -290,4 +291,61 @@ check('刪掉沒有紀錄的標的', () => {
   return '';
 });
 
+check('配息紀錄要能改金額(以前編輯只給股數/成交價,改了也不影響配息)', () => {
+  A.state = A.emptyState();
+  A.state.trades = [{ id:'t1', date:'2026-01-01', symbol:'00631L', action:'dividend', shares:0, price:0, fee:0, amount:1000, source:'cash', note:'' }];
+  A.onClick({ dataset:{ act:'edit-trade', id:'t1' } });
+  const html = A.renderTrades();
+  if (!html.includes('data-k="pt-amount-t1"')) return '編輯畫面沒有配息金額欄位';
+  if (html.includes('data-k="pt-shares-t1"')) return '配息的編輯畫面還在顯示股數';
+  A.onField('pt-amount-t1', { value:'1200' });
+  if (A.state.trades[0].amount !== 1200) return '改了配息金額沒存進去(' + A.state.trades[0].amount + ')';
+  A.onClick({ dataset:{ act:'close-trade' } });
+  return '';
+});
+
+check('預設標的刪掉後記一筆買賣:選單畫面上是第一檔,要記得進去', () => {
+  A.state = A.emptyState();
+  A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });
+  const shown = A.state.instruments[0].id;
+  A.renderTrades();
+  A.tradeDraft.action = 'buy'; A.tradeDraft.shares = '100'; A.tradeDraft.price = '20';
+  A.onClick({ dataset:{ act:'add-trade' } });
+  if (A.tradeError) return '被擋下來:' + A.tradeError;
+  if (!A.state.trades.length || A.state.trades[0].symbol !== shown) return '記到的標的不對:' + JSON.stringify(A.state.trades.map(t => t.symbol));
+  return '';
+});
+
+(async () => {
+  // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
+  const realST = global.setTimeout;
+  global.setTimeout = (f) => realST(f, 0);
+  const waitIdle = async () => { for (let i = 0; i < 2000 && A.quoteBusy; i++) await new Promise(r => realST(r, 1)); };
+  const roc = (d) => '115/09/' + String(d).padStart(2, '0');
+  let lastDash = false, swap = false;
+  global.fetch = async () => {
+    const rows = [1, 2, 3].map(d => [roc(d), '1', '1', '1', '1', '1', (100 + d).toFixed(2), '+1', '1']);
+    if (lastDash) rows[2][6] = '--';
+    if (swap) A.state = A.normalize(JSON.parse(JSON.stringify(A.state)));
+    return { ok: true, json: async () => ({ stat: 'OK', data: rows }) };
+  };
+  await waitIdle();
+  const run = async (dash, sw) => {
+    localStorage.removeItem('financeTwseCooldownUntil');
+    lastDash = dash; swap = sw;
+    A.state = A.emptyState();
+    A.state.instruments.forEach(it => { it.auto = true; it.price = 50; });
+    await A.fetchQuotes(false); await waitIdle();
+    lastDash = swap = false;
+    return A.state.instruments.filter(it => it.auto).map(it => it.price);
+  };
+  try{
+    const p1 = await run(true, false);
+    if (p1.some(p => p !== 102)) bugs.push('證交所最後一列收盤價是「--」 → 股價變成 ' + p1 + '(應該用前一天的 102)');
+    const p2 = await run(false, true);
+    if (p2.some(p => p !== 103)) bugs.push('抓報價途中 state 被雲端同步換掉 → 新的 state 股價是 ' + p2 + '(應該是 103)');
+  }catch(e){ bugs.push('抓報價測試例外:' + e.message); }
+  global.setTimeout = realST;
+
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i) => '  ' + (i+1) + '. ' + b).join('\n') : '沒有發現問題');
+})();
