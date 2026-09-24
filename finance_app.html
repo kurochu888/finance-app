@@ -613,8 +613,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 428d404f3d';
-const BUILD_HASH = '428d404f3d';
+const BUILD_VERSION = '2026-09-24 · 08e20aa9e8';
+const BUILD_HASH = '08e20aa9e8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3428,6 +3428,21 @@ function renderExposurePlanCard(){
   const p = computeExposurePlan();
   if (!p) return '';
   const n = p.instruments.length;
+  const lev2 = p.instruments.map(findInstrumentByKey).filter(Boolean);
+  // 歷史價格還不夠算慢線的那檔,computeTrend 回的 WATCH 不是真的出場訊號——照算的話目標變 0%,
+  // 卡片會叫你把整個部位賣掉(新增標的、回補失敗時就會這樣)。先說清楚在等資料,不給金額。
+  const short = lev2.filter(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded; });
+  if (short.length){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
+      <div class="muted" style="margin-top:6px;">${short.map(it => esc(it.id || '未命名')).join('、')} 的歷史價格還不夠算均線,
+        算不出目前在第幾層,先不給加碼/減碼金額。到「設定」分頁按「從證交所更新收盤價」會自動回補。</div>
+    </div>`;
+  }
+  // 各檔平分的說明照實際的代號跟檔數寫(以前寫死「00631L/00675L 各半」,只有一檔正2 時金額卻是整筆)
+  const split = amt => n > 1 ? `(${lev2.map(it => esc(it.id)).join('/')} ${n === 2 ? '各半' : '每檔'}約 NT$ ${fmt(amt / n)})` : '';
   const stageLabel = p.progress === 0 ? '尚未進場'
     : p.progress > p.layerCount ? '兩檔都 HOLD'
     : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`;
@@ -3449,12 +3464,12 @@ function renderExposurePlanCard(){
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
       ${overTarget ? `
         <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
-          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}(00631L/00675L 各半約 NT$ ${fmt(Math.abs(p.deltaLoan)/n)})</span></div>
+          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${split(Math.abs(p.deltaLoan))}</span></div>
       ` : (p.deltaLoan > 0.5 ? `
         <div class="row sub"><span class="label">方案A:自己拿新的錢出來買(現金)</span>
-          <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + '(各半 NT$ ' + fmt(p.deltaCash/n) + ')'}</span></div>
+          <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + split(p.deltaCash)}</span></div>
         <div class="row sub"><span class="label">方案B:直接借房貸額度買(不拿新錢)</span>
-          <span class="val">NT$ ${fmt(p.deltaLoan)}(各半 NT$ ${fmt(p.deltaLoan/n)})</span></div>
+          <span class="val">NT$ ${fmt(p.deltaLoan)}${split(p.deltaLoan)}</span></div>
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
       ${p.holdAdjustPending ? `
         <div class="muted" style="margin-top:6px;">這是轉成 HOLD 時唯一一次調整;調整完按下面這顆,之後續抱期間不再提示加碼/減碼。</div>
