@@ -21,6 +21,9 @@ echo
 echo "=== 新版提示(checkForUpdate) ==="
 node update.js || fail=1
 echo
+echo "=== 資產/負債細項每月留存 ==="
+node items.js || fail=1
+echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo

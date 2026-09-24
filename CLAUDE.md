@@ -71,6 +71,11 @@ id 沿用舊值以確保重複呼叫不會飄動。
 抓報價還在偷偷把大盤點位寫進 `marketCurrent`,寫了但完全沒人讀——已經刪掉那行寫入。
 以後如果要確認某個欄位是不是真的死了,`grep` 整個欄位名稱時**讀跟寫都要查**,不要只查其中一種。
 
+**`state.netWorthHistory[]`(每月快照)**——每月一筆 `{m, v, pv, pnl, loan, items, auto}`。`items` 是 2026-09 起
+才有的當月資產/負債細項 `[{id, name, amount, t:'a'|'l'}]`(更早的月份是空陣列,補不回來):`maybeSnapshot()` 在開 app
+跟改資產/負債細項時更新當月那筆,過了月份就固定;`auto:false`(使用者手動改過)整筆不再被覆蓋。資產頁的「比上月」
+跟「每月紀錄」用 `prevItemAmount()`/`itemHistory()` 讀這個,用細項 id 對應,所以改名也接得起來。
+
 **`backtestFullHistory`(2026-09 新增,均線策略回測)**——刻意放在 `state` 之外的模組級變數,
 存在自己的 `localStorage` key(`financeBacktestHistory_v2`,內容是 `{hist, splits, listedFrom}`),
 不是 `state.instruments[].priceHistory` 的一部分。原因:回測要看 2015 年至今的完整歷史(~2500 筆/檔),`priceHistory` 只留 4 年
