@@ -22,7 +22,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths, periodStats,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT };`);
 
 const bugs = [];
@@ -197,6 +197,16 @@ console.log('高檔處理實驗(只在回測):實驗1 高點回落出場、實�
   const ratio = part80.mddStrat / full.mddStrat;
   must(ratio > 0.7 && ratio < 0.85, `同一段下跌,只投入 80% 的回撤應該約是全押的 0.8 倍,得到 ${part80.mddStrat.toFixed(1)}% vs ${full.mddStrat.toFixed(1)}%`);
   must(last > 0 && lastClose > 0, 'sanity');
+
+  // 前後分段:只看區間內的點,段內自己算年化跟 MDD(高點從段的起點重新算)
+  const seg = A.periodStats([
+    { d:'2019-12-31', strat: 999 },                       // 區間外,不算
+    { d:'2020-01-01', strat: 100 }, { d:'2020-06-01', strat: 150 }, { d:'2020-09-01', strat: 120 },
+    { d:'2020-12-31', strat: 200 }, { d:'2021-01-01', strat: 1 },   // 區間外(分界日屬於後段)
+  ], '2020-01-01', '2021-01-01');
+  must(seg && Math.abs(seg.mdd - (-20)) < 1e-9, `段內 MDD 應該是 150→120 的 −20%,得到 ${seg && seg.mdd}`);
+  must(seg && Math.abs(seg.cagr - 100) < 0.5, `段內 100→200 約一年,年化應該約 100%,得到 ${seg && seg.cagr}`);
+  must(seg && Math.abs(seg.calmar - seg.cagr / 20) < 1e-9, '段內年化÷MDD 算法不對');
 
   // 年化÷MDD 的算法
   must(a.calmar === null || Math.abs(a.calmar - a.cagr / -a.mddStrat) < 1e-9, '年化÷MDD 應該等於年化報酬 ÷ |MDD|');
