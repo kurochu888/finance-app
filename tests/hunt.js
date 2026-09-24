@@ -112,10 +112,54 @@ check('XIRR 現金流裡的利息加總要等於「借款利息」(月中動用�
   A.state = A.sampleData();
   // 範例資料「今天結清的價值」(市值 − 借款)是正的,所以負的現金流只有買進跟利息;扣掉買進那幾天就是利息
   const tradeDates = new Set(A.state.trades.map(t => t.date));
-  const paid = -A.cashFlows().filter(f => f.amount < 0 && !tradeDates.has(f.date)).reduce((a, f) => a + f.amount, 0);
+  const paid = -A.cashFlows(false).filter(f => f.amount < 0 && !tradeDates.has(f.date)).reduce((a, f) => a + f.amount, 0);
   const accrued = A.accruedInterest();
   if (!(accrued > 0)) return '範例資料應該有借款利息';
   if (Math.abs(paid - accrued) > 0.01) return `XIRR 利息 ${paid.toFixed(2)} ≠ 借款利息 ${accrued.toFixed(2)}`;
+  return '';
+});
+
+check('匯入/雲端資料的 id 帶 HTML 不能原樣進 state(會被塞進 data-id 屬性執行程式)', () => {
+  const evil = 'x"><img src=x onerror=alert(1)>';
+  const s = A.normalize({ assets:[{ id:evil, name:'a', amount:1 }], liabilities:[{ id:evil, name:'l', amount:1 }],
+    trades:[{ id:evil, date:'2026-01-01', symbol:'00631L', shares:1, price:1 }], transactions:[{ id:evil, date:'2026-01-01', amount:-1 }],
+    netWorthHistory:[{ id:evil, m:'2026-01', v:1, items:[{ id:evil, name:'x', amount:1 }] }],
+    instruments:[{ key:evil, id:'00631L', leverage:2 }],
+    leverage:{ draws:[{ id:evil, amount:1, useDate:'2026-01-01', repayments:[{ id:evil, date:'2026-01-02', amount:1 }] }] } });
+  const ids = [...s.assets, ...s.liabilities, ...s.trades, ...s.transactions, ...s.netWorthHistory, ...s.netWorthHistory[0].items,
+    ...s.leverage.draws, ...s.leverage.draws[0].repayments].map(x => x.id).concat(s.instruments.map(x => x.key));
+  const bad = ids.filter(id => !/^[A-Za-z0-9_-]+$/.test(id));
+  if (bad.length) return '還有不安全的 id:' + bad.join(', ');
+  const ok = A.normalize({ assets:[{ id:'abc123', name:'a', amount:1 }], leverage:{ draws:[{ id:'core', amount:1 }] } });
+  if (ok.assets[0].id !== 'abc123' || ok.leverage.draws[0].id !== 'core') return '正常的 id 不能被改掉';
+  return '';
+});
+
+check('壞掉的日期(匯入/同步來的)要換成合法日期,不能讓月份算出 NaN', () => {
+  const s = A.normalize({ transactions:[{ id:'t1', date:'<b>x</b>', amount:-1 }, { id:'t2', date:'2026-02-30', amount:-1 }, { id:'t3', date:'2024-02-29', amount:-1 }],
+    trades:[{ id:'p1', date:'garbage', symbol:'00631L', shares:1, price:1 }],
+    leverage:{ draws:[{ id:'d1', amount:1, useDate:'2026-13-01', repayments:[{ id:'r1', date:'nope', amount:1 }] }] } });
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(s.transactions[0].date) || !re.test(s.transactions[1].date)) return '壞日期沒有被換掉:' + s.transactions.map(t => t.date).join(',');
+  if (s.transactions[1].date === '2026-02-30') return '2 月 30 日不該被接受';
+  if (s.transactions[2].date !== '2024-02-29') return '閏年 2/29 是合法日期,不該被換掉';
+  if (!re.test(s.trades[0].date)) return '買賣紀錄的壞日期沒被換掉';
+  if (s.leverage.draws[0].useDate !== '' || s.leverage.draws[0].repayments[0].date !== '') return '動用/還款的壞日期應該清成空白';
+  return '';
+});
+
+check('損益快取不能用到過期結果(改買賣日期的月份、改股價、改利率都要重算)', () => {
+  A.state = A.sampleData();
+  const before = A.computePosition();
+  const t = A.state.trades.find(x => x.source !== 'loan');   // 自有資金買的才算自己的現金流,日期才會影響 XIRR
+  t.date = t.date.slice(0, 5) + String(Math.max(1, Number(t.date.slice(5, 7)) - 1)).padStart(2, '0') + t.date.slice(7);   // 只改月份
+  const afterDate = A.computePosition();
+  if (afterDate === before || afterDate.xirr === before.xirr) return '改了買賣日期的月份,損益/XIRR 卻沒有重算';
+  A.state.instruments[0].price *= 1.1;
+  if (A.computePosition() === afterDate) return '改了股價,損益卻沒有重算';
+  const p1 = A.computePosition();
+  A.state.leverage.annualRate += 1;
+  if (A.computePosition() === p1) return '改了利率,損益卻沒有重算';
   return '';
 });
 

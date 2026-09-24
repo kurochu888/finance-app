@@ -67,6 +67,15 @@ must(btResult.pyramidCount === trendResult.pyramidCount,
 console.log(`  最終 status=${btResult.status} pyramidCount=${btResult.pyramidCount},兩邊一致`);
 console.log('  ok');
 
+console.log('快線比慢線長時,回測跟 computeTrend 也要一致');
+(function(){
+  const p2 = Object.assign({}, trend, { maFast: 12, maSlow: 8 });
+  const a = A.computeTrend({ key:'t', id:'T', leverage:2, trend: p2, priceHistory: hist });
+  const b = A.runBacktest(hist, p2);
+  must(b && a.status === b.status && a.pyramidCount === b.pyramidCount, `快線 12 / 慢線 8:computeTrend ${a.status}/${a.pyramidCount} vs 回測 ${b && b.status}/${b && b.pyramidCount}`);
+})();
+console.log('  ok');
+
 console.log('淨值曲線基本檢查:天數對得上、起點正確、現金/股數不會算出負值、MDD 不會是正數');
 must(btResult.curve.length === hist.length - (trend.maSlow - 1),
      `曲線長度應該是 ${hist.length - (trend.maSlow - 1)},得到 ${btResult.curve.length}`);

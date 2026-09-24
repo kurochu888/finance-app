@@ -207,6 +207,17 @@ console.log('00631L 分割用公告比例 1 拆 22,分割當天的真實漲跌�
 })();
 console.log('  ok');
 
+console.log('mergeHistory:證交所回「--」或欄位不齊的列要略過,不能蓋掉已經存好的收盤價(迴歸測試:壓測看到歷史被刪)');
+(function testBadRowsDontOverwrite(){
+  // 價格放在同一個價位(1,2xx),才不會被分割偵測當成一天漲 12 倍的反向分割
+  const good = [['115/09/01','0','0','0','0','0','1,200.50','0','0'], ['115/09/02','0','0','0','0','0','1,201.00','0','0']];
+  let hist = A.mergeHistory([], good, Infinity, []);
+  hist = A.mergeHistory(hist, [['115/09/01','','','','','','--','',''], ['115/09/02','0','0','0','0'], null, 'oops', ['115/9/3','0','0','0','0','0','1,234.00','0','0']], Infinity, []);
+  must(hist.length === 3 && hist[0].c === 1200.5 && hist[1].c === 1201, `壞列不該蓋掉好資料:${JSON.stringify(hist)}`);
+  must(hist[2].d === '2026-09-03' && hist[2].c === 1234, `沒補零的日期、千分位逗號應該照樣解析:${JSON.stringify(hist[2])}`);
+})();
+console.log('  ok');
+
 console.log('adjustForSplits:資料缺口造成的真實累積漲跌,不該被誤判成分割(迴歸測試:實際發生過,把 2015 年的資料錯誤打折)');
 (function testGapNotSplit(){
   // 模擬回補時中間漏了好幾個月:前段資料在 2015-06 附近,下一筆卻直接跳到 2016-01——
@@ -217,6 +228,16 @@ console.log('adjustForSplits:資料缺口造成的真實累積漲跌,不該被�
   const hist = A.adjustForSplits([...before, ...afterGap]);
   must(hist[0].c === 23.07 && hist[1].c === 22.95,
        `資料缺口(隔了超過 16 天)不該被當成分割,更早的資料不該被打折,得到 ${JSON.stringify(hist.slice(0,2))}`);
+})();
+console.log('  ok');
+
+console.log('快線設得比慢線長:需要的天數要看比較長的那條,不能算出 null 讓訊號分頁壞掉(迴歸測試:隨機壓測抓到)');
+(function testFastLongerThanSlow(){
+  const p = Object.assign({}, trend, { maFast: 20, maSlow: 10 });
+  const short = A.computeTrend({ key:'t', id:'T', leverage:2, trend: p, priceHistory: mkHist(prices.slice(0, 15)) });
+  must(short.barsNeeded === 21 && short.status === 'WATCH', `快線 20、慢線 10 時至少要 21 天,15 天應該是 WATCH,得到 need=${short.barsNeeded} ${short.status}`);
+  const full = A.computeTrend({ key:'t', id:'T', leverage:2, trend: p, priceHistory: mkHist(prices) });
+  must(full.maFast != null && full.maSlow != null, '資料夠長時快慢線都要算得出來');
 })();
 console.log('  ok');
 

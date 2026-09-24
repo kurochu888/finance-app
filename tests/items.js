@@ -24,7 +24,7 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, maybeSnapshot,
-  onField, onClick, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets };`);
+  onField, onClick, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets, applyRemote, sampleData };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -77,6 +77,29 @@ octNow.auto = false;                                     // 使用者手動改�
 field('aa-a2', 999999);
 must(A.state.netWorthHistory.find(h => h.m === '2026-10').items.find(x => x.id === 'a2').amount === 550000,
      '手動改過的月份,細項也不該被自動覆蓋');
+console.log('  ok');
+
+console.log('還開著的舊版分頁把細項/分割記錄丟掉寫回雲端:新版收到時要保留本機的(不然每月細項會永久消失)');
+(function(){
+  const s2 = A.sampleData();
+  s2.netWorthHistory.forEach(h => { h.items = [{ id:'a1', name:'活存', amount: 123, t:'a' }]; });
+  s2.instruments[0].splits = [{ d:'2026-03-16', ratio: 1 / 22 }];
+  A.state = s2;
+  // 模擬舊版寫回來的資料:netWorthHistory 沒有 items 欄位、instruments 沒有 splits 欄位
+  const old = JSON.parse(JSON.stringify(s2));
+  old.netWorthHistory.forEach(h => { delete h.items; });
+  old.instruments.forEach(it => { delete it.splits; });
+  old.netWorthHistory[0].v = 42;          // 舊版那邊確實改了別的東西,這個要照收
+  A.applyRemote(old);
+  must(A.state.netWorthHistory.every(h => h.items.length === 1 && h.items[0].amount === 123), '舊版丟掉的細項應該用本機的補回來');
+  must(A.state.netWorthHistory[0].v === 42, '舊版改的其他欄位還是要照收');
+  must(A.state.instruments[0].splits.length === 1 && A.state.instruments[0].priceHistory.length > 200, '舊版丟掉 splits 時,本機的分割記錄跟歷史價格要保留,不能被清掉重抓');
+  // 新版寫來的資料(有 items 欄位,就算是空的)要照收,不能被本機蓋回去
+  const fresh = JSON.parse(JSON.stringify(A.state));
+  fresh.netWorthHistory[0].items = [];
+  A.applyRemote(fresh);
+  must(A.state.netWorthHistory[0].items.length === 0, '新版寫來的資料要照收');
+})();
 console.log('  ok');
 
 console.log('舊資料(沒有細項的月份)讀得進來,不會出錯,也不會被當成「上月」');
