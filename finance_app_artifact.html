@@ -563,6 +563,14 @@ function normalize(raw){
       hold: posNum(ET.hold, DEFAULT_LEVERAGE.exposureTargets.hold)
     };
   }
+  // 同一份清單裡 id 重複(匯入的備份檔、手動改過的資料)的話,後面那筆換新 id:刪除是用 id 過濾,會把兩筆一起刪掉;
+  // 編輯是找第一筆,改第二筆其實改到第一筆(壓測抓到)。資產跟負債一起查,每月細項靠 id 對應這兩張清單。
+  const dedupe = (list, field = 'id', seen = new Set()) => { list.forEach(x => { while (seen.has(x[field])) x[field] = uid(); seen.add(x[field]); }); };
+  const itemIds = new Set();
+  dedupe(s.assets, 'id', itemIds); dedupe(s.liabilities, 'id', itemIds);
+  dedupe(s.transactions); dedupe(s.trades); dedupe(s.netWorthHistory); dedupe(s.budgets);
+  dedupe(s.instruments, 'key'); dedupe(base.draws);
+  base.draws.forEach(d => dedupe(d.repayments));
   // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
   [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
     const it = s.instruments.find(x => x.id === id);
@@ -595,8 +603,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 216220abb1';
-const BUILD_HASH = '216220abb1';
+const BUILD_VERSION = '2026-09-24 · 3d01e423c2';
+const BUILD_HASH = '3d01e423c2';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2147,7 +2155,7 @@ function renderOverview(){
         <h3>投資部位</h3>
         <div class="big-num ${cls}">${sign}</div>
         <div class="big-sub">整體損益(已扣借款利息)</div>
-        ${p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : ''}
+        ${xirrRow(p)}
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">NT$ ${fmt(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
@@ -2467,7 +2475,8 @@ function renderHelp(){
 賣出、配息   → 流入
 還款、每月利息 → 流出
 今天結清     → 流入 市值 − 借款餘額</div>
-      <p>解出讓這些現金流現值歸零的年化報酬率。資料不足時顯示「—」,不會亂給數字。</p>
+      <p>解出讓這些現金流現值歸零的年化報酬率。資料不足時顯示「—」,不會亂給數字。
+      第一筆投入還不滿一年時也顯示「—」:兩週漲 10% 年化會超過 1000%、跌 10% 會變 −93%,短期間年化只會誤導,先看累計報酬。</p>
       <h4>淨投入 vs 累計投入</h4>
       <div class="formula">淨投入 = 累計自有投入 − 賣出回收 − 配息</div>
       <p>買賣來回幾次,「累計投入」會越滾越大,但你實際還放在裡面的錢沒變那麼多。
@@ -3193,6 +3202,12 @@ function pnlChartBlock(){
     </div>`;
 }
 
+/* 年化報酬(XIRR)那一行。第一筆投入未滿一年時不年化:兩週漲 10% 年化超過 1000%,二分法的上限找不到根,
+   這一行以前就直接消失;跌 10% 則顯示 −93%。跟回測分段表同一條規則(未滿 0.95 年不年化) */
+function xirrRow(p){
+  if (p.years < 0.95) return p.hasData ? `<div class="row total"><span class="label">年化報酬</span><span class="val muted">—(第一筆投入未滿一年,不年化)</span></div>` : '';
+  return p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : '';
+}
 function renderPnL(){
   const p = computePosition();
   if (!p.hasData){
@@ -3209,7 +3224,7 @@ function renderPnL(){
       <h3>整體損益</h3>
       <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
       <div class="big-sub">已扣掉借款利息</div>
-      ${p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : ''}
+      ${xirrRow(p)}
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
       <div class="row"><span class="label">未實現</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
       ${p.realized ? `<div class="row"><span class="label">已實現${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
@@ -3305,6 +3320,18 @@ function renderTrades(){
           </div>
           <div class="tx-amt ${t.action === 'buy' ? '' : 'income'}">${t.action === 'buy' ? '−' : '+'}${fmt(t.action === 'dividend' ? t.amount - t.fee : t.shares * t.price + (t.action === 'sell' ? -t.fee : t.fee))}</div>
         </div>`).join('') : `<div class="empty">還沒有紀錄。<br>每次用薪水、獎金或房貸進場都記一筆,損益就會自動算。</div>`}
+      ${(() => {
+        // 日期打成未來(2026 誤打成 2062)的買賣照樣算進持股、成本、報酬率,報酬率會變成怪數字;還款跟動用都有標示,這裡也要
+        const future = state.trades.filter(t => t.date > todayISO());
+        return future.length ? `
+        <div class="alert amber" style="margin-top:12px;">
+          <span class="ai">📅</span>
+          <div>
+            <div class="at">有 ${future.length} 筆買賣的日期在未來(${future.map(t => esc(t.date)).slice(0, 3).join('、')}${future.length > 3 ? '…' : ''})</div>
+            <div class="ad">已經算進持股跟損益,報酬率也會照那個日期折算。如果是日期打錯,點那筆改一下。</div>
+          </div>
+        </div>` : '';
+      })()}
       ${computePosition().oversold ? `
         <div class="alert amber" style="margin-top:12px;">
           <span class="ai">⚠️</span>
