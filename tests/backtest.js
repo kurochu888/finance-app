@@ -22,8 +22,8 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths, periodStats,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT };`);
+eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -141,75 +141,20 @@ console.log('RECOVER 全押時,加碼已經買進的張數不能再被當成重�
 })();
 console.log('  ok');
 
-console.log('高檔處理實驗(只在回測):實驗1 高點回落出場、實驗2 高檔減半+創新高買回');
-(function testExitExperiments(){
-  // exitBuffer 設 0.7 讓原本的出場線離遠一點,才分得出「回落出場」跟「原本的出場」
-  const p = { maFast:5, maSlow:10, exitBuffer:0.7, recoverSlopeThreshold:1.0,
-              recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2 };
-  const base = [];
-  for (let i = 0; i < 12; i++) base.push(100);
-  for (let i = 1; i <= 10; i++) base.push(100 * Math.pow(1.01, i));   // 緩漲 → HOLD
-  const climb = base.slice();
-  for (let i = 1; i <= 13; i++) climb.push(climb[climb.length - 1] * 1.03);
-  const peak = climb[climb.length - 1];
-  const trail = { kind:'trail', drop:0.20 };
-
-  // 實驗1-a:從高點回落 >20% 出場,之後創新高 → 全押再進場
-  const a = A.runBacktest(mkHist(climb.concat([150, 140, 128, 140, 155, peak + 5])), p, trail);
-  must(a.outs === 1 && a.status === 'HOLD', `回落出場後創新高應該再進場回 HOLD,得到 outs=${a.outs} status=${a.status}`);
-  must(a.events.length === 2 && a.events[0].type === 'out' && a.events[0].price === 128 && a.events[1].type === 'in' && Math.abs(a.events[1].price - (peak + 5)) < 1e-9,
-       `出場應該在 128(第一個跌破高點 ×0.8 的收盤),再進場在創新高那天:${JSON.stringify(a.events)}`);
-  // 實驗1-b:回落出場後繼續崩到原本的出場線以下 → 接回原本的 WAIT_RECOVER(已經空手,不用再賣)
-  const b = A.runBacktest(mkHist(climb.concat([150, 140, 128, 100, 80, 60])), p, trail);
-  // (跌到 60 時比出場那天的 80 又跌了 10% 以上,照原本的規則會加碼一層,所以手上有股票是對的)
-  must(b.status === 'WAIT_RECOVER' && b.pyramidCount === 1 && b.events[b.events.length - 1].type === 'exit' && b.events[b.events.length - 1].price === 80,
-       `回落出場後跌破出場線應該接回 WAIT_RECOVER,之後照原本規則加碼:status=${b.status} pyramid=${b.pyramidCount} ${JSON.stringify(b.events)}`);
-
-  // 實驗2:急漲到快線 1.3 倍以上賣一半
-  const oh = { kind:'overheat', trigger:1.3, reentry:1.1 };
-  const spikeUp = base.concat([160, 165]);          // 隔天又漲過賣出價 → 行情沒回頭,馬上買回
-  const c = A.runBacktest(mkHist(spikeUp), p, oh), cBase = A.runBacktest(mkHist(spikeUp), p);
-  must(c.outs === 1 && c.status === 'HOLD' && c.shares === cBase.shares,
-       `減半後隔天創新高應該買回原股數:outs=${c.outs} status=${c.status} shares=${c.shares} vs ${cBase.shares}`);
-  must(c.cash < cBase.cash, '賣 160 買回 165,現金應該比一直抱著少');
-  const spikeFlat = base.concat([160, 158, 158, 158, 158, 158]);   // 沒再創新高,快線追上來 → 在 158 買回
-  const d = A.runBacktest(mkHist(spikeFlat), p, oh), dBase = A.runBacktest(mkHist(spikeFlat), p);
-  must(d.outs === 1 && d.status === 'HOLD' && d.shares === dBase.shares && d.cash > dBase.cash,
-       `回到快線 1.1 倍以內應該用 158 買回、賺到價差:outs=${d.outs} status=${d.status} cash ${d.cash} vs ${dBase.cash}`);
-
-  // 沒觸發的路徑,開不開實驗結果要完全一樣
-  for (const e of [trail, oh]){
-    const x = A.runBacktest(mkHist(base), p, e), y = A.runBacktest(mkHist(base), p);
-    must(x.outs === 0 && x.curve[x.curve.length - 1].strat === y.curve[y.curve.length - 1].strat, `${e.kind} 沒觸發時應該跟原策略完全一樣`);
-  }
-  // 對照組:只投入 80%。進場後股票市值應該約佔總資產 80%;同一段下跌,回撤約是全押的 0.8 倍
-  const part = { kind:'partial', invest:0.8 };
-  const up = A.runBacktest(mkHist(climb), p, part);
-  const last = up.curve[up.curve.length - 1].strat, lastClose = climb[climb.length - 1];
-  const w0 = A.runBacktest(mkHist(base), p, part);
-  const w0Close = base[base.length - 1];
-  const weight = w0.shares * w0Close / w0.curve[w0.curve.length - 1].strat;
-  // 這組測試價格一張(1000 股)就值總資產一成左右,整張買會往下取整,所以容許少到一張的價值
-  const lotShare = 1000 * w0Close / w0.curve[w0.curve.length - 1].strat;
-  must(weight <= 0.85 && weight > 0.8 - lotShare, `只投入 80% 時股票應該約佔總資產 80%(整張買最多少一張),得到 ${(weight * 100).toFixed(1)}%`);
-  const crash = climb.concat([150, 130, 115]);
-  const full = A.runBacktest(mkHist(crash), p), part80 = A.runBacktest(mkHist(crash), p, part);
-  const ratio = part80.mddStrat / full.mddStrat;
-  must(ratio > 0.7 && ratio < 0.85, `同一段下跌,只投入 80% 的回撤應該約是全押的 0.8 倍,得到 ${part80.mddStrat.toFixed(1)}% vs ${full.mddStrat.toFixed(1)}%`);
-  must(last > 0 && lastClose > 0, 'sanity');
-
-  // 前後分段:只看區間內的點,段內自己算年化跟 MDD(高點從段的起點重新算)
-  const seg = A.periodStats([
-    { d:'2019-12-31', strat: 999 },                       // 區間外,不算
-    { d:'2020-01-01', strat: 100 }, { d:'2020-06-01', strat: 150 }, { d:'2020-09-01', strat: 120 },
-    { d:'2020-12-31', strat: 200 }, { d:'2021-01-01', strat: 1 },   // 區間外(分界日屬於後段)
-  ], '2020-01-01', '2021-01-01');
-  must(seg && Math.abs(seg.mdd - (-20)) < 1e-9, `段內 MDD 應該是 150→120 的 −20%,得到 ${seg && seg.mdd}`);
+console.log('periodStats:前後段各自算年化跟段內 MDD(原策略、買進持有都要能算)');
+(function testPeriodStats(){
+  const curve = [
+    { d:'2019-12-31', strat: 999, bh: 999 },                       // 區間外,不算
+    { d:'2020-01-01', strat: 100, bh: 100 }, { d:'2020-06-01', strat: 150, bh: 100 }, { d:'2020-09-01', strat: 120, bh: 50 },
+    { d:'2020-12-31', strat: 200, bh: 100 }, { d:'2021-01-01', strat: 1, bh: 1 },   // 區間外(分界日屬於後段)
+  ];
+  const seg = A.periodStats(curve, '2020-01-01', '2021-01-01');
+  must(seg && Math.abs(seg.mdd - (-20)) < 1e-9, `段內 MDD 應該是 150→120 的 −20%(高點從段的起點重新算),得到 ${seg && seg.mdd}`);
   must(seg && Math.abs(seg.cagr - 100) < 0.5, `段內 100→200 約一年,年化應該約 100%,得到 ${seg && seg.cagr}`);
   must(seg && Math.abs(seg.calmar - seg.cagr / 20) < 1e-9, '段內年化÷MDD 算法不對');
-
-  // 年化÷MDD 的算法
-  must(a.calmar === null || Math.abs(a.calmar - a.cagr / -a.mddStrat) < 1e-9, '年化÷MDD 應該等於年化報酬 ÷ |MDD|');
+  const bh = A.periodStats(curve, '2020-01-01', '2021-01-01', 'bh');
+  must(bh && Math.abs(bh.mdd - (-50)) < 1e-9 && Math.abs(bh.cagr) < 0.5, `買進持有那條線也要能算:${JSON.stringify(bh)}`);
+  must(A.periodStats(curve, '2030-01-01', '2031-01-01') === null, '區間內沒有資料時回傳 null');
 })();
 console.log('  ok');
 
