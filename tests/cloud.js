@@ -177,4 +177,5 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   console.log();
   console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n')
                           : '沒有發現問題');
+  if (bugs.length) process.exitCode = 1;
 })();

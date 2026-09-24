@@ -14,7 +14,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html','utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
-  get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
+  get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
   cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO,
@@ -356,6 +356,16 @@ check('先記了一筆超賣、之後才買:持股、市值、報酬率要跟損
   return '';
 });
 
+check('匯入的快照帶極端數字(1e308):走勢圖座標不能變 NaN', () => {
+  A.state = A.normalize({ assets:[{ id:'a', name:'x', amount:5 }],
+    netWorthHistory:[{ id:'h1', m:'2026-07', v:1e308, pv:1e308, pnl:-1e308, loan:1e308 }, { id:'h2', m:'2026-08', v:-1e308, pv:0, pnl:1e308, loan:0 }],
+    dailyHistory:[{ d:'2026-09-01', pv:1e308, loan:0, eq:-1e308, pnl:1e308 }, { d:'2026-09-02', pv:-1e308, loan:1e308, eq:1e308, pnl:-1e308 }] });
+  let html = '';
+  for (const [t, l] of [['overview'], ['leverage', 'overview']]){ A.currentTab = t; if (l) A.levTab = l; A.renderAll(); html += document.getElementById('content').innerHTML; }
+  const bad = html.match(/.{0,30}(NaN|Infinity).{0,10}/);
+  return bad ? bad[0] : '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
@@ -388,4 +398,5 @@ check('先記了一筆超賣、之後才買:持股、市值、報酬率要跟損
   global.setTimeout = realST;
 
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i) => '  ' + (i+1) + '. ' + b).join('\n') : '沒有發現問題');
+if (bugs.length) process.exitCode = 1;
 })();

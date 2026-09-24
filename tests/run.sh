@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 跑完整測試。改完 app.template.html 之後先 python3 build.py 再跑這個。
 set -u
+set -o pipefail   # 下面有些測試接 | tail 截短輸出,不加這個的話測試失敗的結束碼會被 tail 吃掉
 cd "$(dirname "$0")"
 fail=0
 
@@ -39,20 +40,23 @@ echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo
+echo "=== 壞掉的匯入資料(型別錯亂隨機 2 組 × 150) ==="
+node malformed.js || fail=1
+echo
 echo "=== 圖表(各種資料形狀與點擊) ==="
-node charts.js | tail -3
+node charts.js | tail -3 || fail=1
 echo
 echo "=== 雲端同步(假後端) ==="
-node cloud.js | tail -3
+node cloud.js | tail -3 || fail=1
 echo
 echo "=== 說明頁與程式是否一致 ==="
 node help.js | tail -2 || fail=1
 echo
 echo "=== id 與樣板完整性 ==="
-node ids.js | tail -2
-node stress-live.js | tail -1
+node ids.js | tail -2 || fail=1
+node stress-live.js | tail -1 || fail=1
 echo
 echo "=== 15 年長期使用 ==="
-node longrun.js | tail -10
+node longrun.js | tail -10 || fail=1
 
 exit $fail

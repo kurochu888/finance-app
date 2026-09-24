@@ -317,7 +317,14 @@
 const uid = () => Math.random().toString(36).slice(2,9);
 // 非有限值(NaN、Infinity、超出範圍的 1e309)一律當 0。以前只擋 NaN,隨機壓測抓到在淨資產歷史填 1e309
 // 會把 Infinity 存進 state,整條走勢跟淨資產計算都壞掉;程式裡沒有任何欄位需要 Infinity,所以直接在這裡擋。
-const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+// 另外夾在 ±1 兆以內:1e308 這種有限但極大的值,乘上股數/槓桿就溢位成 Infinity,畫面出現「NaN%」
+// (型別錯亂隨機測試抓到)。1 兆元/股遠超過任何實際數字,兩個相乘也不會溢位。
+const NUM_MAX = 1e12;
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? Math.max(-NUM_MAX, Math.min(NUM_MAX, n)) : 0; };
+// 快照裡存的是加總出來的值(淨資產、市值…),由已經夾過的輸入算出來,本身不會溢位,但可能超過 1 兆(負債填 1 兆
+// 再加別的項目);讀回來時如果用 1 兆再夾一次,當下跟重新整理後的數字就對不起來。這些欄位用寬很多的 ±1000 兆:
+// 輸入都在 1 兆以內,要上千項都填滿上限才碰得到;又不會讓匯入的 1e308 把走勢圖的範圍算成 Infinity、座標變 NaN。
+const finNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? Math.max(-1e15, Math.min(1e15, n)) : 0; };
 // finiteNum:同上,但可以指定不合法時的預設值(normalize() 補均線參數這類欄位用)。
 const finiteNum = (v, fallback) => { const n = num(v); return Number.isFinite(n) ? n : fallback; };
 const fmt = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
@@ -420,21 +427,25 @@ function normalize(raw){
   const s = emptyState();
   if (!raw || typeof raw !== 'object') return s;
   const arr = v => Array.isArray(v) ? v : [];
-  s.assets = arr(raw.assets).map(a => ({ id:safeId(a.id), name:String(a.name||''), amount:num(a.amount) }));
-  s.liabilities = arr(raw.liabilities).map(a => ({ id:safeId(a.id), name:String(a.name||''), amount:num(a.amount) }));
+  // 清單裡只收物件:匯入的備份檔/雲端資料只要有一筆是 null 或字串,以前讀 x.id 就丟例外,整份資料讀不進來
+  // (型別錯亂隨機測試抓到);文字欄位只收字串或數字,不然物件會變成畫面上的「[object Object]」
+  const objs = v => arr(v).filter(x => x && typeof x === 'object' && !Array.isArray(x));
+  const str = v => typeof v === 'string' ? v : (typeof v === 'number' && Number.isFinite(v)) ? String(v) : '';
+  s.assets = objs(raw.assets).map(a => ({ id:safeId(a.id), name:str(a.name), amount:num(a.amount) }));
+  s.liabilities = objs(raw.liabilities).map(a => ({ id:safeId(a.id), name:str(a.name), amount:num(a.amount) }));
   // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
-  if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:safeId(b.id), name:String(b.name||''), budget:num(b.budget) }));
+  if (Array.isArray(raw.budgets)) s.budgets = objs(raw.budgets).map(b => ({ id:safeId(b.id), name:str(b.name), budget:num(b.budget) }));
   // 有這個欄位就照收(包括使用者自己刪光的空清單);只有舊資料完全沒有這個欄位才補預設的兩檔。
   // 以前空清單也補預設,刪光標的之後重新整理又冒出 00631L/00675L(壓測比對「當下 vs 重新整理後」抓到的)
   if (Array.isArray(raw.instruments)){
-    s.instruments = raw.instruments.map(x => {
+    s.instruments = objs(raw.instruments).map(x => {
       const leverage = x.leverage === undefined ? 1 : num(x.leverage);
       const def = defaultTrendParams(leverage);
       const t = x.trend && typeof x.trend === 'object' ? x.trend : {};
       const out = {
         key: safeId(x.key),
-        id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
-        name: String(x.name || ''),
+        id: str(x.id).trim(),          // 代號可以先留空,不要亂數化
+        name: str(x.name),
         leverage,
         price: Math.max(0, num(x.price)),
         shares: Math.max(0, num(x.shares)),
@@ -447,13 +458,13 @@ function normalize(raw){
           recoverStrongRebound: finiteNum(t.recoverStrongRebound, 0) > 0 ? finiteNum(t.recoverStrongRebound, def.recoverStrongRebound) : def.recoverStrongRebound,
           pyramidGap: finiteNum(t.pyramidGap, 0) > 0 ? finiteNum(t.pyramidGap, def.pyramidGap) : def.pyramidGap,
           pyramidLevels: Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels)),
-          lastSeenStatus: String(t.lastSeenStatus || ''),
-          lastSeenDate: String(t.lastSeenDate || '')
+          lastSeenStatus: str(t.lastSeenStatus),
+          lastSeenDate: str(t.lastSeenDate)
         },
         // 沒有 splits 欄位 = 舊版存下來的歷史:舊版逐月回補時會把分割前每個月的交界誤判成分割、
         // 抹掉那一天的真實漲跌(見 adjustForSplits),資料已經歪了又無從還原,只能清掉讓它自動重抓。
-        priceHistory: (Array.isArray(x.priceHistory) && (Array.isArray(x.splits) || x.auto === false) ? x.priceHistory : [])
-          .map(h => ({ d: String(h.d || '').slice(0, 10), c: Math.max(0, finiteNum(h.c, 0)) }))
+        priceHistory: objs(Array.isArray(x.splits) || x.auto === false ? x.priceHistory : [])
+          .map(h => ({ d: isoDate(str(h.d), ''), c: Math.max(0, finiteNum(h.c, 0)) }))
           .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0 && Number.isFinite(h.c))
           .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
           .filter((h, i, arr) => i === arr.length - 1 || h.d !== arr[i + 1].d)   // 同一天重複只留最後一筆
@@ -464,47 +475,47 @@ function normalize(raw){
       return out;
     });
   }
-  s.trades = arr(raw.trades).map(t => ({
+  s.trades = objs(raw.trades).map(t => ({
     id: safeId(t.id),
     date: isoDate(t.date, todayISO()),
-    symbol: String(t.symbol || '00631L'),
+    symbol: str(t.symbol) || '00631L',
     action: ['sell', 'dividend'].includes(t.action) ? t.action : 'buy',
     shares: Math.max(0, num(t.shares)),
     price: Math.max(0, num(t.price)),
     amount: Math.max(0, num(t.amount)),      // 配息領到的金額
     fee: Math.max(0, num(t.fee)),
     source: t.source === 'loan' ? 'loan' : 'cash',
-    note: String(t.note || '')
+    note: str(t.note)
   }));
-  s.transactions = arr(raw.transactions).map(t => ({
+  s.transactions = objs(raw.transactions).map(t => ({
     id:safeId(t.id), date:isoDate(t.date, todayISO()),
-    cat:String(t.cat||'其他'), desc:String(t.desc||''), amount:num(t.amount)
+    cat:str(t.cat) || '其他', desc:str(t.desc), amount:num(t.amount)
   }));
-  s.dailyHistory = arr(raw.dailyHistory)
+  s.dailyHistory = objs(raw.dailyHistory)
     .map(h => ({
-      d: String(h.d || '').slice(0, 10),
-      pv: num(h.pv), loan: num(h.loan), eq: num(h.eq),
-      pnl: h.pnl === undefined || h.pnl === null ? null : num(h.pnl)
+      d: isoDate(str(h.d), ''),
+      pv: finNum(h.pv), loan: finNum(h.loan), eq: finNum(h.eq),
+      pnl: h.pnl === undefined || h.pnl === null ? null : finNum(h.pnl)
     }))
     .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d))
     .sort((a, b) => a.d < b.d ? -1 : 1);
-  s.netWorthHistory = arr(raw.netWorthHistory)
+  s.netWorthHistory = objs(raw.netWorthHistory)
     .map(h => ({
       id: safeId(h.id),
-      m: String(h.m || '').slice(0, 7),
-      v: num(h.v),
+      m: str(h.m).slice(0, 7),
+      v: finNum(h.v),
       // 沒有資料是 null(存檔後就是 JSON 的 null,不是 undefined)——以前只認 undefined,重新整理後 null 變 0,
       // 走勢圖上沒有損益的月份變成一條 0 的線(隨機壓測比對「當下 vs 重新整理後」抓到的)
-      pv: h.pv == null ? null : num(h.pv),        // 部位市值
-      pnl: h.pnl == null ? null : num(h.pnl),     // 整體損益
-      loan: h.loan == null ? null : num(h.loan),  // 借款餘額
+      pv: h.pv == null ? null : finNum(h.pv),        // 部位市值
+      pnl: h.pnl == null ? null : finNum(h.pnl),     // 整體損益
+      loan: h.loan == null ? null : finNum(h.loan),  // 借款餘額
       // 當月資產/負債細項(2026-09 起才有;更早的月份沒存過,是空陣列)。id 對應 assets/liabilities 的 id,
       // 改名也接得起來;t:'a' 資產、'l' 負債。
-      items: arr(h.items).filter(it => it && /^[A-Za-z0-9_-]{1,64}$/.test(String(it.id || ''))).map(it => ({ id: String(it.id), name: String(it.name || ''), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
+      items: objs(h.items).filter(it => /^[A-Za-z0-9_-]{1,64}$/.test(str(it.id))).map(it => ({ id: str(it.id), name: str(it.name), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
         .filter(it => it.id),
       auto: h.auto !== false                           // 手動改過的不再被自動覆蓋
     }))
-    .filter(h => /^\d{4}-\d{2}$/.test(h.m));
+    .filter(h => isoDate(h.m + '-01', ''));   // 2026-13 這種月份不收
   const L = raw.leverage && typeof raw.leverage === 'object' ? raw.leverage : {};
   const base = s.leverage;
   ['shares675L','price675L','shares631L','price631L','marketHigh','marketCurrent',
@@ -518,26 +529,26 @@ function normalize(raw){
       label: typeof d.label === 'string' ? d.label : '動用記錄',   // 使用者清空的名稱就保持空白,不要重新整理後又冒出預設名
       amount: Math.max(0, num(d.amount)),
       useDate: isoDate(d.useDate, ''),
-      note: String(d.note || ''),
-      repayments: (Array.isArray(d.repayments) ? d.repayments : [])
+      note: str(d.note),
+      repayments: objs(d.repayments)
         .map(x => ({ id: safeId(x.id), date: isoDate(x.date, ''), amount: Math.max(0, num(x.amount)) }))
     });
     if (Array.isArray(L.draws) && L.draws.length){
-      base.draws = L.draws.map(d => mapDraw({ ...d, id: safeId(d.id) }));
+      base.draws = objs(L.draws).map(d => mapDraw({ ...d, id: safeId(d.id) }));
     } else {
       // 舊格式(tranches+core)搬過來:id 沿用舊 id,同一份舊資料重覆呼叫 normalize() 也會得到
       // 相同 id,避免存檔前 id 一直飄動。只搬「真的動用過」(有 useDate)的,從沒填過的預設
       // 空桶本來就沒帶任何使用者資料,遷移時直接捨棄。
       const legacy = [];
-      if (Array.isArray(L.tranches)) legacy.push(...L.tranches.map((t, i) => ({ ...t, id: t.id || ('t' + (i+1)) })));
+      if (Array.isArray(L.tranches)) legacy.push(...objs(L.tranches).map((t, i) => ({ ...t, id: t.id || ('t' + (i+1)) })));
       if (L.core && typeof L.core === 'object') legacy.push({ ...L.core, id: 'core' });
       base.draws = legacy.filter(d => d.useDate).map(mapDraw);
     }
   }
   base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
   base.autoInterest = L.autoInterest !== false;
-  base.interestPosted = Array.isArray(L.interestPosted) ? L.interestPosted.map(String) : [];
-  base.quoteDate = String(L.quoteDate || '');
+  base.interestPosted = arr(L.interestPosted).map(str).filter(m => isoDate(m + '-01', ''));
+  base.quoteDate = str(L.quoteDate);
   {
     // num() 把缺值/NaN 都收斂成 0,單獨用 finiteNum 沒辦法分辨「欄位不存在」跟「真的填了 0」——
     // 這裡的目標曝險是百分比,0 本來就不是有意義的設定值,乾脆兩種情況都當「沒填,用預設」處理,
@@ -584,8 +595,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 82796c37b7';
-const BUILD_HASH = '82796c37b7';
+const BUILD_VERSION = '2026-09-24 · 7d5183359a';
+const BUILD_HASH = '7d5183359a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件

@@ -193,4 +193,5 @@ console.log('\n動用記錄 ' + drawn + ' 筆 | 還款 ' +
   A.state.leverage.draws.reduce((n,t)=>n+(t.repayments||[]).length,0) + ' 筆 | ' +
   '房貸利息自動入帳 ' + A.state.transactions.filter(t=>t.cat==='房貸利息').length + ' 筆');
 console.log(problems.length ? '\n發現問題:\n' + problems.map((p,i)=>'  '+(i+1)+'. '+p).join('\n') : '\n沒有發現問題');
+if (problems.length) process.exitCode = 1;
 })();
