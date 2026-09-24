@@ -224,6 +224,23 @@ check('還款驗證:早於動用日、超過尚欠要擋下;成交價空白用�
   return '';
 });
 
+check('設定欄位填 0/空白:當下跟重新整理後要一致(不能當下照 0 算、重整又變回預設)', () => {
+  A.state = A.sampleData();
+  const before = A.state.leverage.exposureTargets.hold;
+  A.onField('expo-hold', { value: '0' });
+  const now = A.state.leverage.exposureTargets.hold;
+  const reloaded = A.normalize(JSON.parse(JSON.stringify(A.state))).leverage.exposureTargets.hold;
+  if (now !== reloaded) return `曝險目標填 0:當下是 ${now}、重新整理後是 ${reloaded}`;
+  if (now !== before) return '曝險目標填 0 應該保留原值';
+  A.onField('expo-hold', { value: '110' });
+  if (A.state.leverage.exposureTargets.hold !== 110) return '正常的數字要收';
+  const it = A.state.instruments[0];
+  A.onField('sig-exitBuffer-' + it.key, { value: '0' });
+  const eb = it.trend.exitBuffer;
+  if (A.normalize(JSON.parse(JSON.stringify(A.state))).instruments[0].trend.exitBuffer !== eb) return '出場緩衝填 0:當下跟重新整理後不一致';
+  return '';
+});
+
 check('資料完整往返(normalize 不掉東西)', () => {
   A.state = A.sampleData();
   A.state.leverage.draws[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];

@@ -1,6 +1,7 @@
 /* 隨機操作壓力測試:模擬使用者隨機點畫面上的按鈕、在欄位填各種怪值、偶爾讓日子往前跳(跨日/跨月),
    連續幾千步。每一步都檢查不變量:不能丟例外、畫面文字不能出現 NaN/undefined/Infinity、
-   state 裡的數字都要是有限值、淨資產 = 資產 − 負債、normalize 重跑一次結果不變。
+   state 裡的數字都要是有限值、淨資產 = 資產 − 負債、normalize 重跑一次結果不變、
+   當下的 state 跟存檔再載入後一模一樣。
    用法:node tests/fuzz.js [步數=2500] [亂數種子=1..3] */
 const RealDate = Date;
 let simNow = new RealDate('2026-09-20T09:00:00').getTime();
@@ -76,6 +77,17 @@ function checkInvariants(where){
   const n1 = JSON.stringify(A.normalize(JSON.parse(JSON.stringify(A.state))));
   const n2 = JSON.stringify(A.normalize(JSON.parse(n1)));
   if (n1 !== n2) probs.push('normalize 不是冪等的(重跑一次結果不同)');
+  // 當下的 state 跟「存檔再載入」(normalize)後要一模一樣,不然使用者當下看到一個值、重新整理又變另一個
+  // (抓到過:清空名稱變回預設名、快照的 null 損益變 0、刪光標的又冒出預設兩檔、填 0 的曝險目標)。欄位順序不算。
+  const canon = v => JSON.stringify(v, (k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.keys(x).sort().reduce((o, kk) => (o[kk] = x[kk], o), {}) : x);
+  if (canon(A.state) !== canon(JSON.parse(n1))){
+    const diff = [];
+    const walk = (x, y, p) => { if (diff.length > 2 || canon(x) === canon(y)) return;
+      if (x && y && typeof x === 'object' && typeof y === 'object'){ for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) walk(x[k], y[k], p + '.' + k); }
+      else diff.push(p + ': ' + JSON.stringify(x) + ' → ' + JSON.stringify(y)); };
+    walk(JSON.parse(JSON.stringify(A.state)), JSON.parse(n1), 'state');
+    probs.push('當下跟重新整理後不一致:' + diff.join(' ; '));
+  }
   return probs.map(x => `[${where}] ${x}`);
 }
 

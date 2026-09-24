@@ -424,7 +424,9 @@ function normalize(raw){
   s.liabilities = arr(raw.liabilities).map(a => ({ id:safeId(a.id), name:String(a.name||''), amount:num(a.amount) }));
   // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
   if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:safeId(b.id), name:String(b.name||''), budget:num(b.budget) }));
-  if (Array.isArray(raw.instruments) && raw.instruments.length){
+  // 有這個欄位就照收(包括使用者自己刪光的空清單);只有舊資料完全沒有這個欄位才補預設的兩檔。
+  // 以前空清單也補預設,刪光標的之後重新整理又冒出 00631L/00675L(壓測比對「當下 vs 重新整理後」抓到的)
+  if (Array.isArray(raw.instruments)){
     s.instruments = raw.instruments.map(x => {
       const leverage = x.leverage === undefined ? 1 : num(x.leverage);
       const def = defaultTrendParams(leverage);
@@ -438,8 +440,8 @@ function normalize(raw){
         shares: Math.max(0, num(x.shares)),
         auto: x.auto !== false,
         trend: {
-          maFast: Math.max(1, finiteNum(t.maFast, 0) || def.maFast),
-          maSlow: Math.max(1, finiteNum(t.maSlow, 0) || def.maSlow),
+          maFast: Math.max(1, Math.round(finiteNum(t.maFast, 0)) || def.maFast),   // 天數取整數,跟設定欄位一致
+          maSlow: Math.max(1, Math.round(finiteNum(t.maSlow, 0)) || def.maSlow),
           exitBuffer: finiteNum(t.exitBuffer, 0) > 0 ? finiteNum(t.exitBuffer, def.exitBuffer) : def.exitBuffer,
           recoverSlopeThreshold: finiteNum(t.recoverSlopeThreshold, 0) > 0 ? finiteNum(t.recoverSlopeThreshold, def.recoverSlopeThreshold) : def.recoverSlopeThreshold,
           recoverStrongRebound: finiteNum(t.recoverStrongRebound, 0) > 0 ? finiteNum(t.recoverStrongRebound, def.recoverStrongRebound) : def.recoverStrongRebound,
@@ -491,9 +493,11 @@ function normalize(raw){
       id: safeId(h.id),
       m: String(h.m || '').slice(0, 7),
       v: num(h.v),
-      pv: h.pv === undefined ? null : num(h.pv),      // 部位市值
-      pnl: h.pnl === undefined ? null : num(h.pnl),   // 整體損益
-      loan: h.loan === undefined ? null : num(h.loan),// 借款餘額
+      // 沒有資料是 null(存檔後就是 JSON 的 null,不是 undefined)——以前只認 undefined,重新整理後 null 變 0,
+      // 走勢圖上沒有損益的月份變成一條 0 的線(隨機壓測比對「當下 vs 重新整理後」抓到的)
+      pv: h.pv == null ? null : num(h.pv),        // 部位市值
+      pnl: h.pnl == null ? null : num(h.pnl),     // 整體損益
+      loan: h.loan == null ? null : num(h.loan),  // 借款餘額
       // 當月資產/負債細項(2026-09 起才有;更早的月份沒存過,是空陣列)。id 對應 assets/liabilities 的 id,
       // 改名也接得起來;t:'a' 資產、'l' 負債。
       items: arr(h.items).filter(it => it && /^[A-Za-z0-9_-]{1,64}$/.test(String(it.id || ''))).map(it => ({ id: String(it.id), name: String(it.name || ''), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
@@ -511,7 +515,7 @@ function normalize(raw){
     const mapDraw = d => ({
       id: safeId(d.id),          // 新格式跟舊格式(tranches/core)兩條路都會經過這裡,id 檢查放這才不會漏
 
-      label: String(d.label || '動用記錄'),
+      label: typeof d.label === 'string' ? d.label : '動用記錄',   // 使用者清空的名稱就保持空白,不要重新整理後又冒出預設名
       amount: Math.max(0, num(d.amount)),
       useDate: isoDate(d.useDate, ''),
       note: String(d.note || ''),
@@ -3671,7 +3675,10 @@ function onField(key, el){
     }
   }
   else if (kind === 'expo'){                     // 正2 曝險目標設定
-    const v = Math.max(0, num(el.value));
+    // 0/空白保留原值:normalize() 會把 0 當「沒填」換回預設,這裡如果收 0,當下照 0 算、重新整理又變回 130%
+    const raw = num(el.value);
+    if (!(raw > 0)) return;
+    const v = raw;
     if (rest === 'hold') state.leverage.exposureTargets.hold = v;
     else if (rest.indexOf('layer-') === 0){
       const i = Number(rest.slice(6));
@@ -3735,7 +3742,7 @@ function onField(key, el){
     if (t){
       if (kind === 'tdate') t.date = isoDate(el.value, todayISO());
       else if (kind === 'tamt') t.amount = num(el.value);
-      else if (kind === 'tcat') t.cat = el.value;
+      else if (kind === 'tcat') t.cat = el.value || '其他';   // 跟 normalize() 一致,空的類別就是「其他」
       else t.desc = el.value;
     }
     structural = true;
@@ -4084,6 +4091,8 @@ function onClick(el){
     case 'draft-source': tradeDraft.source = el.dataset.v; break;
     case 'add-trade': {
       const d0 = tradeDraft;
+      // 沒有對應標的(標的全刪光、選單是空的)時不能記:空的代號重新整理後會被補成 00631L,等於默默算到別檔頭上
+      if (!d0.symbol || !findInstrument(d0.symbol)){ tradeError = '請先選標的(「設定」分頁可以新增)'; renderAll(); return; }
       const base = {
         id: uid(),
         date: d0.date || todayISO(),
