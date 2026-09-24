@@ -278,10 +278,6 @@
     background:var(--card); border-top:1px solid var(--line);
   }
   svg text{font-family:inherit;}
-  .bt-grid{width:100%; border-collapse:collapse; font-size:11px; margin-top:6px; font-variant-numeric:tabular-nums;}
-  .bt-grid th, .bt-grid td{border:1px solid var(--line); padding:4px 3px; text-align:center; line-height:1.35;}
-  .bt-grid th{color:var(--sub); font-weight:600; background:var(--raised);}
-  .bt-grid td span{display:block;}
   .update-banner{
     flex:0 0 auto; width:100%; border:none; cursor:pointer; padding:9px 12px; text-align:center;
     background:var(--accent); color:var(--accent-ink); font-size:13px; font-weight:700;
@@ -558,8 +554,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 36398bf1b0';
-const BUILD_HASH = '36398bf1b0';
+const BUILD_VERSION = '2026-09-24 · b01dcc5e71';
+const BUILD_HASH = 'b01dcc5e71';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2477,15 +2473,7 @@ const computeAllTrends = () => state.instruments.map(computeTrend);
    資金使用效率比實際能做到的更高,長期複利下來會膨脹回測報酬。 */
 const BACKTEST_INITIAL_CASH = 1000000;
 const LOT_SIZE = 1000;
-/* OVERHEAT(高檔減半,2026-09 實驗中,只在回測,訊號分頁的 computeTrend 還沒有這個狀態):
-   HOLD 時收盤高於快線 × trigger → 賣掉 fraction 的持股(整張),轉 OVERHEAT,賣出的錢當現金留著;
-   OVERHEAT 時先檢查原本的出場線(收盤 < 快線 × exitBuffer → 剩下的也出場,轉 WAIT_RECOVER),
-   否則收盤回到快線 × reentry 以內 → 買回當初賣掉的股數(現金不夠就買到現金允許的整張),轉回 HOLD。
-   overheat 傳 null 就是原本的策略,跟 computeTrend 逐行一致(tests/backtest.js 會檢查)。
-   以後如果決定把 OVERHEAT 放進正式訊號,computeTrend 要照這裡一起改,兩邊只能有同一套規則。 */
-const OVERHEAT_GRID = { triggers: [1.25, 1.30, 1.35, 1.40], reentries: [1.05, 1.10, 1.15], fraction: 0.5 };
-const OVERHEAT_MAIN = { trigger: 1.30, reentry: 1.10, fraction: 0.5 };   // 使用者提的那組,畫在圖上
-function runBacktest(priceHistory, trendParams, overheat = null){
+function runBacktest(priceHistory, trendParams){
   const p = trendParams;
   const hist = priceHistory || [];
   const barsNeeded = p.maSlow + 1;
@@ -2499,7 +2487,6 @@ function runBacktest(priceHistory, trendParams, overheat = null){
 
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
   let cash = BACKTEST_INITIAL_CASH, shares = 0, cashAtExit = BACKTEST_INITIAL_CASH;
-  let trimmedQty = 0, trims = 0;   // OVERHEAT:這次賣掉幾股(買回時照這個數字)、總共減碼幾次
   const bhQty = Math.floor(BACKTEST_INITIAL_CASH / (closes[start] * 1.001425) / LOT_SIZE) * LOT_SIZE;
   const bhShares = bhQty;
   const bhCashLeft = BACKTEST_INITIAL_CASH - bhQty * closes[start] - (bhQty > 0 ? defaultFee('buy', bhQty * closes[start]) : 0);
@@ -2510,11 +2497,7 @@ function runBacktest(priceHistory, trendParams, overheat = null){
     if (f != null && s != null && fy != null){
       let action;
       if (status === 'HOLD'){
-        action = close < f * p.exitBuffer ? 'EXIT'
-               : (overheat && close > f * overheat.trigger) ? 'TRIM' : 'HOLD';
-      }else if (status === 'OVERHEAT'){
-        action = close < f * p.exitBuffer ? 'EXIT'
-               : close <= f * overheat.reentry ? 'REBUY' : 'OVERHEAT';
+        action = close < f * p.exitBuffer ? 'EXIT' : 'HOLD';
       }else{
         const priceStable = close > f && closes[i - 1] > maF[i - 1];
         const slopeOk = f >= fy * p.recoverSlopeThreshold;
@@ -2527,23 +2510,7 @@ function runBacktest(priceHistory, trendParams, overheat = null){
         else action = status;
       }
 
-      if (action === 'TRIM'){
-        const qty = Math.floor(shares * overheat.fraction / LOT_SIZE) * LOT_SIZE;
-        if (qty > 0){
-          const gross = qty * close;
-          cash += gross - defaultFee('sell', gross);
-          shares -= qty;
-        }
-        trimmedQty = qty; trims += 1; status = 'OVERHEAT';
-      }else if (action === 'REBUY'){
-        const affordable = Math.floor(cash / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
-        const qty = Math.min(trimmedQty, affordable);
-        if (qty > 0){
-          cash -= qty * close + defaultFee('buy', qty * close);
-          shares += qty;
-        }
-        trimmedQty = 0; status = 'HOLD';
-      }else if (action === 'RECOVER'){
+      if (action === 'RECOVER'){
         // 全押 = 把剩下的現金買滿;加碼時已經買進的張數本來就在手上,不能當成重買一次再扣一次手續費。
         const qty = Math.floor(cash / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
         if (qty > 0){
@@ -2567,7 +2534,6 @@ function runBacktest(priceHistory, trendParams, overheat = null){
         cash += gross - fee;
         shares = 0;
         cashAtExit = cash;
-        trimmedQty = 0;
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
       }
     }
@@ -2581,7 +2547,7 @@ function runBacktest(priceHistory, trendParams, overheat = null){
   };
   const final = curve[curve.length - 1];
   return {
-    curve, from: curve[0].d, to: final.d, status, pyramidCount, trims, shares, cash,
+    curve, from: curve[0].d, to: final.d, status, pyramidCount,
     returnStrat: (final.strat / BACKTEST_INITIAL_CASH - 1) * 100,
     returnBh: (final.bh / BACKTEST_INITIAL_CASH - 1) * 100,
     mddStrat: mdd(curve.map(c => c.strat)),
@@ -2628,13 +2594,6 @@ function runAllBacktests(){
     }
     const res = runBacktest(hist, p);
     const sampled = monthEndSample(res.curve);
-    // OVERHEAT 實驗:同一份歷史、同一組均線參數,掃一輪減碼/買回門檻,看是不是跨參數都穩定比較好
-    const ohMain = runBacktest(hist, p, OVERHEAT_MAIN);
-    const ohByDate = new Map(ohMain.curve.map(pt => [pt.d, pt.strat]));
-    const grid = OVERHEAT_GRID.triggers.map(trigger => OVERHEAT_GRID.reentries.map(reentry => {
-      const r = runBacktest(hist, p, { trigger, reentry, fraction: OVERHEAT_GRID.fraction });
-      return { trigger, reentry, ret: r.returnStrat, mdd: r.mddStrat, trims: r.trims };
-    }));
     return {
       id: it.id, from: res.from, to: res.to,
       returnStrat: res.returnStrat, returnBh: res.returnBh,
@@ -2642,9 +2601,6 @@ function runAllBacktests(){
       labels: sampled.map(pt => pt.d.slice(0, 7)),
       stratSeries: sampled.map(pt => pt.strat / BACKTEST_INITIAL_CASH * 100),
       bhSeries: sampled.map(pt => pt.bh / BACKTEST_INITIAL_CASH * 100),
-      ohSeries: sampled.map(pt => ohByDate.get(pt.d) / BACKTEST_INITIAL_CASH * 100),
-      ohReturn: ohMain.returnStrat, ohMdd: ohMain.mddStrat, ohTrims: ohMain.trims,
-      grid,
     };
   });
 }
@@ -3199,26 +3155,6 @@ function renderTrendTab(){
     ${renderBacktestCard()}`;
 }
 
-/* OVERHEAT 參數掃描表:每格是「總報酬 / MDD」,顏色是跟不減碼的原策略比(綠 = 比較好)。
-   要看的是「整張表是不是大多一個顏色」,不是挑出最漂亮的那一格——只有某一格特別好,
-   多半是剛好對到過去某幾次行情,換個未來就不靈了。 */
-function renderOverheatGrid(r){
-  const cls = (diff) => Math.abs(diff) < 0.5 ? '' : (diff > 0 ? 'pos' : 'neg');   // 差不到 0.5 個百分點不上色,當作一樣
-  const sign = v => (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  return `
-    <details class="tip" style="margin-top:8px; margin-bottom:0;"><summary>高檔減半:換不同門檻的結果</summary><div class="body">
-      收盤高於快線 × 減碼門檻就賣一半(當現金留著),回到快線 × 買回門檻以內買回原股數;
-      中途跌破原本的出場線照樣全部出場。每格是「總報酬 / MDD / 減碼次數」,
-      綠色代表比不減碼的原策略(${sign(r.returnStrat)} / ${r.mddStrat.toFixed(0)}%)好、紅色代表比較差,沒顏色是差不多。
-      要大部分格子都是綠的才算穩,只有一兩格特別好不算數。
-      <table class="bt-grid">
-        <tr><th>減碼↓ 買回→</th>${OVERHEAT_GRID.reentries.map(x => `<th>${x.toFixed(2)}</th>`).join('')}</tr>
-        ${r.grid.map(row => `<tr><th>${row[0].trigger.toFixed(2)}</th>${row.map(c => `
-          <td><span class="${cls(c.ret - r.returnStrat)}">${sign(c.ret)}</span><span class="${cls(c.mdd - r.mddStrat)}">${c.mdd.toFixed(0)}%</span><span class="muted">${c.trims} 次</span></td>`).join('')}</tr>`).join('')}
-      </table>
-    </div></details>`;
-}
-
 function renderBacktestCard(){
   return `
     <div class="card">
@@ -3226,10 +3162,7 @@ function renderBacktestCard(){
       <details class="tip" style="margin-bottom:12px;"><summary>這是什麼</summary><div class="body">
         拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟
         「一開始就全押買進、抱到現在都不動」誰的總報酬與最大回撤(MDD)比較好。
-        這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。<br><br>
-        「策略+高檔減半」是還在實驗的規則,<strong>只在回測裡</strong>,不影響上面的訊號:續抱時收盤高於快線 30%
-        就先賣一半(錢當現金留著),回到快線 10% 以內再買回原股數,中途跌破原本的出場線照樣全部出場。
-        每檔結果下面可以展開看換不同門檻的比較。
+        這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
       </div></details>
       ${QUOTES_ENABLED ? `
         <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 10 分鐘)')}</button>
@@ -3243,13 +3176,10 @@ function renderBacktestCard(){
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.id)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
           <div class="row sub"><span class="label">策略總報酬 / MDD</span><span class="val ${r.returnStrat >= 0 ? 'pos' : 'neg'}">${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(1)}% / ${r.mddStrat.toFixed(1)}%</span></div>
           <div class="row sub"><span class="label">買進持有總報酬 / MDD</span><span class="val ${r.returnBh >= 0 ? 'pos' : 'neg'}">${r.returnBh >= 0 ? '+' : ''}${r.returnBh.toFixed(1)}% / ${r.mddBh.toFixed(1)}%</span></div>
-          <div class="row sub"><span class="label">策略+高檔減半(${OVERHEAT_MAIN.trigger}/${OVERHEAT_MAIN.reentry})</span><span class="val ${r.ohReturn >= 0 ? 'pos' : 'neg'}">${r.ohReturn >= 0 ? '+' : ''}${r.ohReturn.toFixed(1)}% / ${r.ohMdd.toFixed(1)}%(減碼 ${r.ohTrims} 次)</span></div>
           ${lineChart('bt-' + r.id, r.labels, [
             { name:'策略', color:'var(--s1)', values:r.stratSeries },
-            { name:'策略+高檔減半', color:'var(--s2)', values:r.ohSeries },
             { name:'買進持有', color:'var(--sub)', values:r.bhSeries }
           ], { label: r.id + ' 回測淨值指數(起點=100)', height:150, fmtVal: v => v.toFixed(0) })}
-          ${renderOverheatGrid(r)}
         </div>
       `).join('')}
     </div>`;
