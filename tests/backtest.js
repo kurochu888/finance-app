@@ -182,6 +182,22 @@ console.log('高檔處理實驗(只在回測):實驗1 高點回落出場、實�
     const x = A.runBacktest(mkHist(base), p, e), y = A.runBacktest(mkHist(base), p);
     must(x.outs === 0 && x.curve[x.curve.length - 1].strat === y.curve[y.curve.length - 1].strat, `${e.kind} 沒觸發時應該跟原策略完全一樣`);
   }
+  // 對照組:只投入 80%。進場後股票市值應該約佔總資產 80%;同一段下跌,回撤約是全押的 0.8 倍
+  const part = { kind:'partial', invest:0.8 };
+  const up = A.runBacktest(mkHist(climb), p, part);
+  const last = up.curve[up.curve.length - 1].strat, lastClose = climb[climb.length - 1];
+  const w0 = A.runBacktest(mkHist(base), p, part);
+  const w0Close = base[base.length - 1];
+  const weight = w0.shares * w0Close / w0.curve[w0.curve.length - 1].strat;
+  // 這組測試價格一張(1000 股)就值總資產一成左右,整張買會往下取整,所以容許少到一張的價值
+  const lotShare = 1000 * w0Close / w0.curve[w0.curve.length - 1].strat;
+  must(weight <= 0.85 && weight > 0.8 - lotShare, `只投入 80% 時股票應該約佔總資產 80%(整張買最多少一張),得到 ${(weight * 100).toFixed(1)}%`);
+  const crash = climb.concat([150, 130, 115]);
+  const full = A.runBacktest(mkHist(crash), p), part80 = A.runBacktest(mkHist(crash), p, part);
+  const ratio = part80.mddStrat / full.mddStrat;
+  must(ratio > 0.7 && ratio < 0.85, `同一段下跌,只投入 80% 的回撤應該約是全押的 0.8 倍,得到 ${part80.mddStrat.toFixed(1)}% vs ${full.mddStrat.toFixed(1)}%`);
+  must(last > 0 && lastClose > 0, 'sanity');
+
   // 年化÷MDD 的算法
   must(a.calmar === null || Math.abs(a.calmar - a.cagr / -a.mddStrat) < 1e-9, '年化÷MDD 應該等於年化報酬 ÷ |MDD|');
 })();

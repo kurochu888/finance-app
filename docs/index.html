@@ -593,8 +593,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · a64b78113a';
-const BUILD_HASH = 'a64b78113a';
+const BUILD_VERSION = '2026-09-24 · c23e5fdf3a';
+const BUILD_HASH = 'c23e5fdf3a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2523,6 +2523,9 @@ const LOT_SIZE = 1000;
 const EXIT_EXPERIMENTS = {
   trail:    { main: { kind:'trail', drop:0.20 }, drops: [0.10, 0.15, 0.20, 0.25, 0.30] },
   overheat: { main: { kind:'overheat', trigger:1.30, reentry:1.10 }, triggers: [1.25, 1.30, 1.35, 1.40], reentries: [1.05, 1.10, 1.15] },
+  // 對照組:規則跟原策略完全一樣,只是每次進場只把總資產的 invest 比例買成股票(加碼每層也照比例縮小),
+  // 續抱期間不再平衡——相當於把 HOLD 曝險目標調低。拿來判斷上面兩個實驗換到的回撤,是不是單純「少抱一點」就做得到。
+  partial:  { main: { kind:'partial', invest:0.80 }, invests: [0.70, 0.80, 0.90] },
 };
 function runBacktest(priceHistory, trendParams, exp = null){
   const p = trendParams;
@@ -2594,11 +2597,15 @@ function runBacktest(priceHistory, trendParams, exp = null){
         trimmedQty = 0; holdPeak = close; basePrice = close; pyramidCount = 0; status = 'HOLD';
       }else if (action === 'RECOVER'){
         // 全押 = 把剩下的現金買滿;加碼時已經買進的張數本來就在手上,不能當成重買一次再扣一次手續費。
-        buyAll(close);
+        if (exp && exp.kind === 'partial'){
+          const want = exp.invest * (cash + shares * close) - shares * close;   // 補到總資產的 invest 比例
+          const qty = Math.max(0, Math.floor(want / (close * 1.001425) / LOT_SIZE) * LOT_SIZE);
+          if (qty > 0){ cash -= qty * close + defaultFee('buy', qty * close); shares += qty; }
+        }else buyAll(close);
         if (events.length && events[events.length - 1].type !== 'in') events.push({ d: dates[i], type: 'in', price: close });
         holdPeak = close; basePrice = close; pyramidCount = 0; status = 'HOLD';
       }else if (action === 'ADD'){
-        const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
+        const unit = Math.min(cash, cashAtExit / p.pyramidLevels * (exp && exp.kind === 'partial' ? exp.invest : 1));
         const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
         if (qty > 0){
           const fee = defaultFee('buy', qty * close);
@@ -2682,6 +2689,7 @@ function runAllBacktests(){
     const seriesOf = r => { const m = new Map(r.curve.map(pt => [pt.d, pt.strat])); return sampled.map(pt => m.get(pt.d) / BACKTEST_INITIAL_CASH * 100); };
     const X = EXIT_EXPERIMENTS;
     const trailMain = runBacktest(hist, p, X.trail.main), ohMain = runBacktest(hist, p, X.overheat.main);
+    const partialMain = runBacktest(hist, p, X.partial.main);
     return {
       id: it.id, from: res.from, to: res.to,
       returnStrat: res.returnStrat, returnBh: res.returnBh,
@@ -2694,6 +2702,8 @@ function runAllBacktests(){
       overheat: { main: cell(ohMain), series: seriesOf(ohMain), events: ohMain.events,
                   grid: X.overheat.triggers.map(trigger => X.overheat.reentries.map(reentry =>
                     ({ trigger, reentry, ...cell(runBacktest(hist, p, { kind:'overheat', trigger, reentry })) }))) },
+      partial: { main: cell(partialMain),
+                 grid: X.partial.invests.map(invest => ({ invest, ...cell(runBacktest(hist, p, { kind:'partial', invest })) })) },
     };
   });
 }
@@ -3297,6 +3307,15 @@ function renderExitExperiments(r){
       </table>
       <div style="margin-top:8px;">${X.overheat.main.trigger}/${X.overheat.main.reentry} 的每次減碼明細:</div>
       ${btEventLog(r.overheat.events)}
+    </div></details>
+    <details class="tip" style="margin-top:8px; margin-bottom:0;"><summary>對照組:只投入部分資金(等於調低曝險)</summary><div class="body">
+      規則跟原策略完全一樣,只是每次進場只買到總資產的這個比例,其餘留現金,續抱期間不再平衡——
+      等於把 HOLD 曝險目標調低。拿來對照:上面兩個實驗換到的回撤,如果「少抱一點」也做得到、而且年化÷MDD
+      差不多,那實驗就沒有額外價值。每格:總報酬 / MDD / 年化÷MDD。${base}
+      <table class="bt-grid">
+        <tr>${X.partial.invests.map(v => `<th>投入 ${(v * 100).toFixed(0)}%</th>`).join('')}</tr>
+        <tr>${r.partial.grid.map(c => btCellHtml({ ...c, outs: 0 }, r).replace(/<span class="muted">0 次<\/span>/, '')).join('')}</tr>
+      </table>
     </div></details>`;
 }
 
@@ -3326,6 +3345,7 @@ function renderBacktestCard(){
           <div class="row sub"><span class="label">買進持有總報酬 / MDD</span><span class="val ${r.returnBh >= 0 ? 'pos' : 'neg'}">${r.returnBh >= 0 ? '+' : ''}${r.returnBh.toFixed(1)}% / ${r.mddBh.toFixed(1)}%</span></div>
           <div class="row sub"><span class="label">實驗1 高點回落 ${(EXIT_EXPERIMENTS.trail.main.drop * 100).toFixed(0)}% 出場</span><span class="val ${r.trail.main.ret >= 0 ? 'pos' : 'neg'}">${r.trail.main.ret >= 0 ? '+' : ''}${r.trail.main.ret.toFixed(1)}% / ${r.trail.main.mdd.toFixed(1)}%(${r.trail.main.outs} 次)</span></div>
           <div class="row sub"><span class="label">實驗2 高檔減半 ${EXIT_EXPERIMENTS.overheat.main.trigger}/${EXIT_EXPERIMENTS.overheat.main.reentry}</span><span class="val ${r.overheat.main.ret >= 0 ? 'pos' : 'neg'}">${r.overheat.main.ret >= 0 ? '+' : ''}${r.overheat.main.ret.toFixed(1)}% / ${r.overheat.main.mdd.toFixed(1)}%(${r.overheat.main.outs} 次)</span></div>
+          <div class="row sub"><span class="label">對照 只投入 ${(EXIT_EXPERIMENTS.partial.main.invest * 100).toFixed(0)}%</span><span class="val ${r.partial.main.ret >= 0 ? 'pos' : 'neg'}">${r.partial.main.ret >= 0 ? '+' : ''}${r.partial.main.ret.toFixed(1)}% / ${r.partial.main.mdd.toFixed(1)}%</span></div>
           ${lineChart('bt-' + r.id, r.labels, [
             { name:'原策略', color:'var(--s1)', values:r.stratSeries },
             { name:'實驗1', color:'var(--s3)', values:r.trail.series },
