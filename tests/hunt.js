@@ -201,6 +201,29 @@ check('舊格式備份(tranches + core)要正確轉成動用清單,id 也要檢�
   return '';
 });
 
+check('還款驗證:早於動用日、超過尚欠要擋下;成交價空白用目前股價', () => {
+  A.state = A.sampleData();
+  const d = A.state.leverage.draws[0];
+  const before = (d.repayments || []).length;
+  const tryRepay = (date, amount) => { A.onField('rd-target', { value: d.id }); A.onField('rd-date', { value: date }); A.onField('rd-amount', { value: String(amount) }); A.onClick({ dataset: { act: 'add-repay2' } }); };
+  const early = new Date(d.useDate + 'T00:00:00'); early.setDate(early.getDate() - 3);
+  const iso = x => x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+  tryRepay(iso(early), 1000);
+  if ((d.repayments || []).length !== before) return '早於動用日的還款應該被擋下(不然會被默默忽略)';
+  tryRepay(d.useDate, d.amount * 10);
+  if ((d.repayments || []).length !== before) return '超過尚欠的還款應該被擋下';
+  tryRepay(d.useDate, 1000);
+  if ((d.repayments || []).length !== before + 1) return '正常的還款應該記得進去';
+  // 成交價空白 → 用目前股價
+  const n = A.state.trades.length;
+  A.onField('pd-action', { value: 'buy' }); A.onField('pd-shares', { value: '1000' }); A.onField('pd-price', { value: '' });
+  A.onClick({ dataset: { act: 'add-trade' } });
+  if (A.state.trades.length !== n + 1) return '成交價空白時應該用目前股價記進去';
+  const t = A.state.trades[A.state.trades.length - 1];
+  if (t.price !== A.findInstrument(t.symbol).price) return `成交價應該等於目前股價,得到 ${t.price}`;
+  return '';
+});
+
 check('資料完整往返(normalize 不掉東西)', () => {
   A.state = A.sampleData();
   A.state.leverage.draws[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
