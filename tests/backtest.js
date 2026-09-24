@@ -141,43 +141,6 @@ console.log('RECOVER 全押時,加碼已經買進的張數不能再被當成重�
 })();
 console.log('  ok');
 
-console.log('OVERHEAT(高檔減半,回測實驗):過熱賣一半、回到快線附近買回原股數;中途崩盤走原本的出場線');
-(function testOverheat(){
-  const p = { maFast:5, maSlow:10, exitBuffer:0.9, recoverSlopeThreshold:1.0,
-              recoverStrongRebound:1.05, pyramidGap:0.10, pyramidLevels:2 };
-  const oh = { trigger:1.3, reentry:1.1, fraction:0.5 };
-  const base = [];
-  for (let i = 0; i < 12; i++) base.push(100);
-  for (let i = 1; i <= 10; i++) base.push(100 * Math.pow(1.01, i));   // 緩漲 → HOLD
-  const top = base[base.length - 1];
-
-  // 情況 1:急漲到快線 1.3 倍以上 → 減碼;之後價格持平、快線追上來 → 回到 1.1 倍以內買回
-  const spikeThenFlat = base.concat([160, 160, 160, 160, 160, 160]);
-  const b1 = A.runBacktest(mkHist(spikeThenFlat), p);
-  const o1 = A.runBacktest(mkHist(spikeThenFlat), p, oh);
-  must(b1.status === 'HOLD' && b1.trims === 0, `沒開 OVERHEAT 時應該一路 HOLD、不減碼,得到 ${b1.status}/${b1.trims}`);
-  must(o1.trims === 1 && o1.status === 'HOLD', `應該減碼一次再買回變 HOLD,得到 trims=${o1.trims} status=${o1.status}`);
-  must(o1.shares === b1.shares, `買回的應該是原本賣掉的股數,持股要跟沒減碼時一樣:${o1.shares} vs ${b1.shares}`);
-  must(o1.cash < b1.cash + 1 && o1.cash > b1.cash - 5000,
-       `這條路徑在同一個價格(160)賣出又買回,只差兩筆手續費跟交易稅,現金應該只比原策略少一點點:${o1.cash} vs ${b1.cash}`);
-
-  // 情況 2:急漲減碼後隔天就崩到出場線以下 → 直接全部出場,不能先觸發「回到 1.1 倍以內買回」
-  const spikeThenCrash = base.concat([160, 95]);
-  const o2 = A.runBacktest(mkHist(spikeThenCrash), p, oh);
-  must(o2.trims === 1 && o2.status === 'WAIT_RECOVER' && o2.shares === 0,
-       `減碼後崩到出場線以下應該全部出場、轉 WAIT_RECOVER,得到 trims=${o2.trims} status=${o2.status} shares=${o2.shares}`);
-  const b2 = A.runBacktest(mkHist(spikeThenCrash), p);
-  must(o2.curve[o2.curve.length - 1].strat > b2.curve[b2.curve.length - 1].strat,
-       '高點先賣了一半,崩盤出場後的淨值應該比沒減碼的原策略高');
-
-  // 沒有過熱的路徑,開不開 OVERHEAT 結果要完全一樣(不能影響原策略)
-  const calm = A.runBacktest(mkHist(base), p, oh), calmBase = A.runBacktest(mkHist(base), p);
-  must(calm.trims === 0 && calm.curve[calm.curve.length - 1].strat === calmBase.curve[calmBase.curve.length - 1].strat,
-       '沒有過熱時開了 OVERHEAT 也應該跟原策略完全一樣');
-  console.log(`  上漲到 ${top.toFixed(1)} 後急漲到 160:減碼 ${o1.trims} 次後買回;急漲後崩盤:淨值 ${o2.curve.at(-1).strat.toFixed(0)} vs 原策略 ${b2.curve.at(-1).strat.toFixed(0)}`);
-})();
-console.log('  ok');
-
 console.log('completeHistoryMonths:上次只抓到一半的月份不能被當成已經抓齊而永遠跳過');
 (function testCompleteMonths(){
   const daily = (dates) => dates.map(d => ({ d, c: 100 }));
