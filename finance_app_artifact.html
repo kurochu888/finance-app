@@ -595,8 +595,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · ed12eb4cf8';
-const BUILD_HASH = 'ed12eb4cf8';
+const BUILD_VERSION = '2026-09-24 · 428d404f3d';
+const BUILD_HASH = '428d404f3d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1947,10 +1947,19 @@ function maybeDailySnapshot(){
   scheduleSave();
   return true;
 }
+/* 範圍照日期算,不是「最後 N 筆」:每日快照只有打開 app/更新報價那天才記,一週開兩次的話
+   「最後 30 筆」其實是三個多月,標籤寫「1 個月」卻畫了一整季(壓測抓到) */
+const RANGE_DAYS = { 30: 31, 90: 92, 250: 366 };
 function dailySlice(){
   const list = state.dailyHistory.slice().sort((a, b) => a.d < b.d ? -1 : 1);
-  return chartRange > 0 ? list.slice(-chartRange) : list;
+  if (!(chartRange > 0)) return list;
+  const d = new Date(todayISO() + 'T00:00:00');
+  d.setDate(d.getDate() - (RANGE_DAYS[chartRange] || chartRange));
+  const cutoff = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  return list.filter(h => h.d >= cutoff);
 }
+/* 選的範圍裡不到兩筆:保留範圍切換,不要退回每月圖(以前退回之後範圍按鈕跟著消失,切不回「全部」) */
+const rangeTooShort = n => `<div class="empty">這段期間只有 ${n} 筆每日紀錄(打開 app 或更新報價的那天才會記一筆),選長一點的範圍。</div>`;
 const dayLabel = d => Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10));
 
 /* 把快照補成連續的月份 —— 中間沒開過 app 的月份留空,
@@ -3079,12 +3088,12 @@ function renderRisk(){
   const hist = monthlyHistory(12);
   const labels = hist.map(h => shortMonth(h.m));
   const dh = dailySlice();
-  const useDaily = dh.length >= 2;
+  const useDaily = state.dailyHistory.length >= 2;
   const posChart = useDaily
-    ? lineChart('pos', dh.map(h => dayLabel(h.d)), [
+    ? (dh.length < 2 ? rangeTooShort(dh.length) : lineChart('pos', dh.map(h => dayLabel(h.d)), [
         { name:'部位市值', color:'var(--s1)', values: dh.map(h => h.pv) },
         { name:'借款餘額', color:'var(--s2)', values: dh.map(h => h.loan) }
-      ], { label:'部位市值與借款', height:130 })
+      ], { label:'部位市值與借款', height:130 }))
     : lineChart('pos', labels, [
         { name:'部位市值', color:'var(--s1)', values: hist.map(h => h.pv === null || h.pv === undefined ? null : h.pv) },
         { name:'借款餘額', color:'var(--s2)', values: hist.map(h => h.loan === null || h.loan === undefined ? null : h.loan) }
@@ -3135,13 +3144,13 @@ function chartPending(what){
 
 function pnlChartBlock(){
   const dh = dailySlice().filter(h => h.pnl !== null);
-  const useDaily = dh.length >= 2;
+  const useDaily = state.dailyHistory.filter(h => h.pnl !== null).length >= 2;
   const hist = monthlyHistory(12);
   const chart = useDaily
-    ? lineChart('pnl', dh.map(h => dayLabel(h.d)), [
+    ? (dh.length < 2 ? rangeTooShort(dh.length) : lineChart('pnl', dh.map(h => dayLabel(h.d)), [
         { name:'整體損益', color:'var(--s1)', values: dh.map(h => h.pnl) }
       ], { zero:true, label:'整體損益走勢', height:130,
-           fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) })
+           fmtVal: v => (v >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(v)) }))
     : lineChart('pnl', hist.map(h => shortMonth(h.m)), [
         { name:'整體損益', color:'var(--s1)', values: hist.map(h => h.pnl === null || h.pnl === undefined ? null : h.pnl) }
       ], { zero:true, label:'整體損益走勢', height:120,

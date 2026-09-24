@@ -14,7 +14,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html','utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
-  get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v},
+  get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
   cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO,
@@ -374,6 +374,23 @@ check('歷史不夠時按「知道了」/「已調整完成」:不能把算不�
   A.onClick({ dataset:{ act:'ack-hold' } });
   const seen = A.state.instruments.map(x => x.trend.lastSeenStatus).filter(Boolean);
   return seen.length ? '記下了 ' + seen.join(',') : '';
+});
+
+check('走勢圖範圍照日期算:一個月內只有一筆時,範圍按鈕要留著、不能畫出兩個月前的點', () => {
+  A.state = A.emptyState();
+  A.state.instruments[0].price = 50;
+  A.state.trades = [{ id:'t', date:'2025-01-01', symbol:'00631L', action:'buy', shares:100, price:40, fee:0, amount:0, source:'cash', note:'' }];
+  const back = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
+  A.state.dailyHistory = [{ d: back(60), pv: 4000, loan: 0, eq: 4000, pnl: 0 }, { d: back(1), pv: 5000, loan: 0, eq: 5000, pnl: 1000 }];
+  A.currentTab = 'leverage'; A.levTab = 'overview'; A.chartRange = 30; A.renderAll();
+  const h1 = document.getElementById('content').innerHTML;
+  if (!h1.includes('data-act="range"')) return '範圍按鈕不見了(切不回「全部」)';
+  if (!h1.includes('這段期間只有 1 筆')) return '1 個月內只有一筆,應該說明而不是畫出兩個月前的點';
+  A.chartRange = 0; A.renderAll();
+  const h2 = document.getElementById('content').innerHTML;
+  if (h2.includes('這段期間只有')) return '選「全部」還說只有一筆';
+  A.chartRange = 90;
+  return '';
 });
 
 (async () => {
