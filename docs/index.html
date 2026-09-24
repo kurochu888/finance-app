@@ -593,8 +593,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · c23e5fdf3a';
-const BUILD_HASH = 'c23e5fdf3a';
+const BUILD_VERSION = '2026-09-24 · 5d37b8ad9c';
+const BUILD_HASH = '5d37b8ad9c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2522,7 +2522,8 @@ const LOT_SIZE = 1000;
    events 記錄每次高檔出場(out)跟回到 HOLD(in)的日期價格,給明細用。 */
 const EXIT_EXPERIMENTS = {
   trail:    { main: { kind:'trail', drop:0.20 }, drops: [0.10, 0.15, 0.20, 0.25, 0.30] },
-  overheat: { main: { kind:'overheat', trigger:1.30, reentry:1.10 }, triggers: [1.25, 1.30, 1.35, 1.40], reentries: [1.05, 1.10, 1.15] },
+  // 第一輪掃 1.25~1.40:1.25/1.30 兩檔都比原策略差、1.40 最好但落在範圍邊緣,第二輪往上延伸看是不是一片穩定的區域
+  overheat: { main: { kind:'overheat', trigger:1.40, reentry:1.10 }, triggers: [1.35, 1.40, 1.45, 1.50, 1.60], reentries: [1.05, 1.10, 1.15] },
   // 對照組:規則跟原策略完全一樣,只是每次進場只把總資產的 invest 比例買成股票(加碼每層也照比例縮小),
   // 續抱期間不再平衡——相當於把 HOLD 曝險目標調低。拿來判斷上面兩個實驗換到的回撤,是不是單純「少抱一點」就做得到。
   partial:  { main: { kind:'partial', invest:0.80 }, invests: [0.70, 0.80, 0.90] },
@@ -2671,6 +2672,22 @@ function findHistoryGap(hist){
   return null;
 }
 
+/* 前後兩段分開看:同一條淨值曲線(策略狀態一路延續,不在分界點重來)切成分界日前/後兩段,
+   各自算年化報酬跟段內的 MDD。高檔實驗的好處集中在 2024~2026 幾次急跌,要確認前段至少沒有變差,
+   不然可能只是「最近幾年的行情特色」。 */
+const BACKTEST_SPLIT_DATE = '2021-01-01';
+function periodStats(curve, fromD, toD){
+  const seg = curve.filter(pt => pt.d >= fromD && pt.d < toD);
+  if (seg.length < 2) return null;
+  const years = (new Date(seg[seg.length - 1].d) - new Date(seg[0].d)) / (365.25 * 86400000);
+  const cagr = years > 0 ? (Math.pow(seg[seg.length - 1].strat / seg[0].strat, 1 / years) - 1) * 100 : 0;
+  let peak = -Infinity, worst = 0;
+  seg.forEach(pt => { peak = Math.max(peak, pt.strat); worst = Math.min(worst, (pt.strat - peak) / peak); });
+  const mdd = worst * 100;
+  return { cagr, mdd, calmar: mdd < 0 ? cagr / -mdd : null };
+}
+const splitStats = curve => [periodStats(curve, '0000', BACKTEST_SPLIT_DATE), periodStats(curve, BACKTEST_SPLIT_DATE, '9999')];
+
 function runAllBacktests(){
   const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
   backtestResults = targets.map(it => {
@@ -2685,7 +2702,7 @@ function runAllBacktests(){
     }
     const res = runBacktest(hist, p);
     const sampled = monthEndSample(res.curve);
-    const cell = r => ({ ret: r.returnStrat, mdd: r.mddStrat, calmar: r.calmar, outs: r.outs });
+    const cell = r => ({ ret: r.returnStrat, mdd: r.mddStrat, calmar: r.calmar, outs: r.outs, halves: splitStats(r.curve) });
     const seriesOf = r => { const m = new Map(r.curve.map(pt => [pt.d, pt.strat])); return sampled.map(pt => m.get(pt.d) / BACKTEST_INITIAL_CASH * 100); };
     const X = EXIT_EXPERIMENTS;
     const trailMain = runBacktest(hist, p, X.trail.main), ohMain = runBacktest(hist, p, X.overheat.main);
@@ -2693,7 +2710,7 @@ function runAllBacktests(){
     return {
       id: it.id, from: res.from, to: res.to,
       returnStrat: res.returnStrat, returnBh: res.returnBh,
-      mddStrat: res.mddStrat, mddBh: res.mddBh, calmar: res.calmar,
+      mddStrat: res.mddStrat, mddBh: res.mddBh, calmar: res.calmar, halves: splitStats(res.curve),
       labels: sampled.map(pt => pt.d.slice(0, 7)),
       stratSeries: sampled.map(pt => pt.strat / BACKTEST_INITIAL_CASH * 100),
       bhSeries: sampled.map(pt => pt.bh / BACKTEST_INITIAL_CASH * 100),
@@ -3265,7 +3282,12 @@ function btCellHtml(c, base){
   return `<td><span class="${cls(c.ret - base.returnStrat, 0.5)}">${c.ret >= 0 ? '+' : ''}${c.ret.toFixed(0)}%</span>`
     + `<span class="${cls(c.mdd - base.mddStrat, 0.5)}">${c.mdd.toFixed(0)}%</span>`
     + `<span class="${c.calmar == null || base.calmar == null ? '' : cls(c.calmar - base.calmar, 0.02)}">${c.calmar == null ? '—' : c.calmar.toFixed(2)}</span>`
-    + `<span class="muted">${c.outs} 次</span></td>`;
+    + (c.halves ? [0, 1].map(k => {
+        const h = c.halves[k], b = base.halves && base.halves[k];
+        const v = h && h.calmar != null ? h.calmar.toFixed(2) : '—';
+        return `<span class="${h && b && h.calmar != null && b.calmar != null ? cls(h.calmar - b.calmar, 0.02) : ''}" style="font-size:10px;">${k ? '後' : '前'} ${v}</span>`;
+      }).join('') : '')
+    + (c.outs != null ? `<span class="muted">${c.outs} 次</span>` : '') + `</td>`;
 }
 function btEventLog(events){
   const px = v => v >= 10 ? v.toFixed(2) : v.toFixed(3);
@@ -3286,11 +3308,13 @@ function btEventLog(events){
 }
 function renderExitExperiments(r){
   const X = EXIT_EXPERIMENTS;
-  const base = `原策略:${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(0)}% / ${r.mddStrat.toFixed(0)}% / ${r.calmar == null ? '—' : r.calmar.toFixed(2)}`;
+  const hv = k => r.halves && r.halves[k] && r.halves[k].calmar != null ? r.halves[k].calmar.toFixed(2) : '—';
+  const base = `原策略:${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(0)}% / ${r.mddStrat.toFixed(0)}% / ${r.calmar == null ? '—' : r.calmar.toFixed(2)}`
+    + `(前段 ${hv(0)}、後段 ${hv(1)})。「前/後」是以 ${BACKTEST_SPLIT_DATE.slice(0, 4)} 年初為界,兩段各自的年化÷MDD,顏色跟原策略同一段比。`;
   return `
     <details class="tip" style="margin-top:8px; margin-bottom:0;"><summary>實驗 1:高點回落出場,換不同回落幅度</summary><div class="body">
       續抱期間從最高收盤回落超過這個幅度就全部出場;之後收盤創新高就全押再進場,先跌破原本出場線就接回原本的加碼流程。
-      每格:總報酬 / MDD / 年化÷MDD / 出場次數。${base}
+      每格:總報酬 / MDD / 年化÷MDD / 前段、後段年化÷MDD / 出場次數。${base}
       <table class="bt-grid">
         <tr>${X.trail.drops.map(d => `<th>回落 ${(d * 100).toFixed(0)}%</th>`).join('')}</tr>
         <tr>${r.trail.grid.map(c => btCellHtml(c, r)).join('')}</tr>
@@ -3300,7 +3324,7 @@ function renderExitExperiments(r){
     </div></details>
     <details class="tip" style="margin-top:8px; margin-bottom:0;"><summary>實驗 2:高檔減半、創新高就買回,換不同門檻</summary><div class="body">
       收盤高於快線 × 減碼門檻就賣一半;收盤高過賣出價(行情沒回頭)或回到快線 × 買回門檻以內,就買回原股數。
-      中途跌破原本的出場線照樣全部出場。每格:總報酬 / MDD / 年化÷MDD / 減碼次數。${base}
+      中途跌破原本的出場線照樣全部出場。每格:總報酬 / MDD / 年化÷MDD / 前段、後段年化÷MDD / 減碼次數。${base}
       <table class="bt-grid">
         <tr><th>減碼↓ 買回→</th>${X.overheat.reentries.map(x => `<th>${x.toFixed(2)}</th>`).join('')}</tr>
         ${r.overheat.grid.map(row => `<tr><th>${row[0].trigger.toFixed(2)}</th>${row.map(c => btCellHtml(c, r)).join('')}</tr>`).join('')}
@@ -3311,10 +3335,10 @@ function renderExitExperiments(r){
     <details class="tip" style="margin-top:8px; margin-bottom:0;"><summary>對照組:只投入部分資金(等於調低曝險)</summary><div class="body">
       規則跟原策略完全一樣,只是每次進場只買到總資產的這個比例,其餘留現金,續抱期間不再平衡——
       等於把 HOLD 曝險目標調低。拿來對照:上面兩個實驗換到的回撤,如果「少抱一點」也做得到、而且年化÷MDD
-      差不多,那實驗就沒有額外價值。每格:總報酬 / MDD / 年化÷MDD。${base}
+      差不多,那實驗就沒有額外價值。每格:總報酬 / MDD / 年化÷MDD / 前段、後段年化÷MDD。${base}
       <table class="bt-grid">
         <tr>${X.partial.invests.map(v => `<th>投入 ${(v * 100).toFixed(0)}%</th>`).join('')}</tr>
-        <tr>${r.partial.grid.map(c => btCellHtml({ ...c, outs: 0 }, r).replace(/<span class="muted">0 次<\/span>/, '')).join('')}</tr>
+        <tr>${r.partial.grid.map(c => btCellHtml({ ...c, outs: null }, r)).join('')}</tr>
       </table>
     </div></details>`;
 }
