@@ -77,3 +77,4 @@ catch(e){ bugs.push('設定分頁 refreshLeverage 發生例外:' + e.message); }
 
 console.log();
 console.log(bugs.length ? '發現問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
+if (bugs.length) process.exitCode = 1;
