@@ -637,8 +637,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 3d01e423c2';
-const BUILD_HASH = '3d01e423c2';
+const BUILD_VERSION = '2026-09-24 · d6236618e5';
+const BUILD_HASH = 'd6236618e5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3420,6 +3420,19 @@ function renderDrawRecords(){
     </div>`;
 }
 
+/* 這筆還款超過「當時還欠多少」的部分(repaidOf() 會把總還款夾在動用金額以內,多的默默不算)。
+   新增時會擋(add-repay2),但事後在清單上改金額/日期就沒擋——這裡標出來,不然看起來像是還清了卻對不上。
+   同一天多筆照清單順序算。 */
+function overRepaid(item, rp){
+  if (!rp.date || rp.date < item.useDate) return 0;
+  let owe = item.amount;
+  for (const x of (item.repayments || []).filter(x => x.date && x.date >= item.useDate).slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0)){
+    const over = Math.max(0, x.amount - owe);
+    owe = Math.max(0, owe - x.amount);
+    if (x === rp) return over;
+  }
+  return 0;
+}
 /* 還款紀錄:獨立成一張卡,對應 state.leverage.draws 裡任一筆有 useDate 的動用記錄 */
 function renderRepayments(){
   const L = state.leverage;
@@ -3461,7 +3474,9 @@ function renderRepayments(){
           <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
         </div>
         <div class="muted" style="margin-top:2px;">${esc(it.label)}${
-          !r.date ? '' : r.date < it.useDate ? `<span class="neg"> · 早於動用日 ${esc(it.useDate)},這筆不會計入</span>`
+          !r.date ? `<span class="neg"> · 沒有日期,這筆不會計入</span>`
+          : r.date < it.useDate ? `<span class="neg"> · 早於動用日 ${esc(it.useDate)},這筆不會計入</span>`
+          : overRepaid(it, r) > 0.5 ? `<span class="neg"> · 超過當時尚欠 NT$ ${fmt(overRepaid(it, r))},多的部分不會計入</span>`
           : r.date > todayISO() ? ' · 未來日期,到那天才會扣掉餘額' : ''}</div>`).join('')}</div>`
         : (items.length ? `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '')}
     </div>`;
