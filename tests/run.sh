@@ -27,6 +27,9 @@ echo
 echo "=== 計算正確性(隨機 400 組:會計恆等式、XIRR 是真的解、同日買賣順序) ==="
 node semantic.js || fail=1
 echo
+echo "=== 照建議實際操作再重算(曝險目標、壓力測試) ==="
+node oracle.js || fail=1
+echo
 echo "=== 瀏覽器空間快滿 ==="
 node storage.js || fail=1
 echo

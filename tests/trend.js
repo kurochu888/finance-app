@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, renderExposurePlanCard, onClick, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -238,6 +238,22 @@ console.log('快線設得比慢線長:需要的天數要看比較長的那條,�
   must(short.barsNeeded === 21 && short.status === 'WATCH', `快線 20、慢線 10 時至少要 21 天,15 天應該是 WATCH,得到 need=${short.barsNeeded} ${short.status}`);
   const full = A.computeTrend({ key:'t', id:'T', leverage:2, trend: p, priceHistory: mkHist(prices) });
   must(full.maFast != null && full.maSlow != null, '資料夠長時快慢線都要算得出來');
+})();
+console.log('  ok');
+
+console.log('狀態改變提醒:第一次算得出訊號時要安靜記下基準,之後狀態改變才提醒(迴歸測試:以前基準永遠是空的,提醒從沒出現過)');
+(function(){
+  A.state = A.sampleData();
+  A.state.instruments.forEach(it => { it.trend.lastSeenStatus = ''; });
+  A.renderAll();
+  must(A.state.instruments.every(it => it.trend.lastSeenStatus), '重畫之後每檔都應該記下基準狀態');
+  must(A.trendChanges().length === 0, '剛記下基準時不該跳提醒');
+  const it = A.state.instruments[0];
+  const was = it.trend.lastSeenStatus;
+  it.trend.lastSeenStatus = was === 'HOLD' ? 'WAIT_RECOVER' : 'HOLD';   // 模擬:上次看到的是別的狀態,現在變了
+  A.renderAll();
+  must(A.trendChanges().length === 1, `狀態跟上次看到的不一樣時應該提醒,得到 ${A.trendChanges().length} 則`);
+  must(it.trend.lastSeenStatus !== was, '已經有基準的不該被自動覆蓋(要等使用者按知道了)');
 })();
 console.log('  ok');
 
