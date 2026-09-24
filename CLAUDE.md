@@ -72,14 +72,29 @@ id 沿用舊值以確保重複呼叫不會飄動。
 以後如果要確認某個欄位是不是真的死了,`grep` 整個欄位名稱時**讀跟寫都要查**,不要只查其中一種。
 
 **`backtestFullHistory`(2026-09 新增,均線策略回測)**——刻意放在 `state` 之外的模組級變數,
-存在自己的 `localStorage` key(`financeBacktestHistory_v1`),不是 `state.instruments[].priceHistory`
-的一部分。原因:回測要看 2015 年至今的完整歷史(~2500 筆/檔),`priceHistory` 只留 4 年
+存在自己的 `localStorage` key(`financeBacktestHistory_v2`,內容是 `{hist, splits, listedFrom}`),
+不是 `state.instruments[].priceHistory` 的一部分。原因:回測要看 2015 年至今的完整歷史(~2500 筆/檔),`priceHistory` 只留 4 年
 (`PRICE_HIST_KEEP`,夠算 240 日均線就好)——如果把回測用的長歷史塞進 `state`,會讓 Firebase
 同步整包資料每次編輯(打字記帳、改設定)都多帶這幾百 KB,拖慢平常操作。
 雲端同步走的是**獨立的一份文件**(Firebase:`users/{uid}/data/backtestHistory`;Claude Artifact:
 `state/backtestHistory`),只在按「抓完整歷史」時整份覆蓋寫入一次,登入時如果本機沒資料才會
 拉一次下來——不是跟著 `docApi()`/`cloud.onChange` 那套即時同步機制走。之後如果要幫別的「量大、
 低頻更新」資料加雲端同步,這是現成的參考模式(`namedDoc()` in `firebase-sync.js`)。
+雲端文件帶 `v: BACKTEST_HIST_VERSION`,版本對不上的不帶入(舊版 v1 的資料被下面講的假分割弄歪了,
+換 key/加版本號讓它作廢)。`splits` 是這份歷史自己偵測到的分割記錄,`listedFrom` 是證交所確認
+「這個月之前查無資料」的上市月份(00675L 上市前 16 個月不用每次更新都再問一次)。
+
+**分割還原(`mergeHistory()`/`adjustForSplits()`)**——證交所給的是原始收盤價,正2 分割過
+(00631L 2026-03 1 拆 22)。偵測到單日變動超過 ±40% 就當分割,**記下 `{d, ratio}`**
+(`priceHistory` 用 `instruments[].splits`,回測用 `backtestSplits`),之後抓進來的原始價格一律先乘上
+「該日之後所有已記錄分割的比例」再合併。不能只靠每次合併時重新偵測:回補是從新到舊逐月合併,
+已還原的新月份旁邊接上未還原的舊月份,月份交界會被誤判成分割、把那天真實漲跌抹成 0——舊版這樣
+抹掉了 130 幾天,回測報酬錯得離譜。沒有 `splits` 欄位的 `priceHistory` 在 `normalize()` 裡會被清掉重抓。
+分割當天的真實漲跌仍會被偵測比例吃掉(只差這一天),`tests/trend.js` 有逐月倒著合併的回歸測試。
+
+**證交所請求節流(`twseJson()`)**——所有對證交所的請求都要走它:排隊、間隔 `TWSE_GAP_MS`(2 秒),
+連續失敗 5 次進入 20 分鐘冷卻(存 localStorage),冷卻中直接丟 `TwseBlocked`。不要再直接 `fetch()`
+證交所,也不要用 `Promise.all` 繞過排隊;第一次抓完整歷史因此要約 10 分鐘,這是刻意的取捨。
 
 ## 決策邏輯是怎麼演變的(現況 vs 已經拿掉的東西)
 
