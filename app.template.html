@@ -778,6 +778,8 @@ async function pullBacktestHistoryFromCloud(){
   if (!cloudBacktestDoc || Object.keys(backtestFullHistory).length) return;
   try{
     const remote = await cloudBacktestDoc.get();
+    // 等雲端回應的這段時間使用者可能已經按了「抓完整歷史」:不能拿雲端那份把抓到一半的資料跟分割記錄換掉
+    if (backtestHistBusy || Object.keys(backtestFullHistory).length) return;
     if (remote && remote.v === BACKTEST_HIST_VERSION && remote.data && Object.keys(remote.data).length){
       backtestFullHistory = remote.data;
       backtestSplits = remote.splits || {};
@@ -1234,23 +1236,28 @@ async function fetchQuotes(manual){
   quoteMsg = '更新報價中…';
   if (manual) renderAll();
   try{
-    const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+    // 跟 backfillHistory 一樣只記 key:排隊抓要好幾秒,這段時間雲端同步可能把 state.instruments 整個換掉,
+    // 抓著舊物件寫進去的股價會跟著孤兒物件一起消失(壓測重現過)
+    const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+      .map(it => ({ key: it.key, id: it.id }));
     const results = await Promise.all([
-      ...targets.map(it => twseRows(TWSE_STOCK + encodeURIComponent(it.id))),
+      ...targets.map(t => twseRows(TWSE_STOCK + encodeURIComponent(t.id))),
       twseRows(TWSE_INDEX)
     ]);
     const idxRows = results[results.length - 1];
     let date = '', got = 0, missed = [];
-    targets.forEach((it, i) => {
-      const rows = results[i];
-      if (rows && rows.length){
-        const row = rows[rows.length - 1];
+    targets.forEach((t, i) => {
+      const it = findInstrumentByKey(t.key);
+      // 最後一列收盤價是「--」(當天沒成交)時往前找最近一個有成交的,不然股價會被寫成 0、市值歸零
+      const row = (results[i] || []).slice().reverse().find(r => Array.isArray(r) && cleanNum(r[6]) > 0);
+      if (!it) return;                    // 抓的途中被刪掉了
+      if (row){
         it.price = cleanNum(row[6]);      // 收盤價
-        it.priceHistory = mergeHistory(it.priceHistory, rows, PRICE_HIST_KEEP, it.splits || (it.splits = []), it.id);   // 順便把整月資料併進歷史,累積均線用的資料
+        it.priceHistory = mergeHistory(it.priceHistory, results[i], PRICE_HIST_KEEP, it.splits || (it.splits = []), it.id);   // 順便把整月資料併進歷史,累積均線用的資料
         date = rocToISO(row[0]) || date;
         got++;
       }else{
-        missed.push(it.id);
+        missed.push(t.id);
       }
     });
     if (idxRows && idxRows.length){
@@ -3078,6 +3085,9 @@ function renderPnL(){
 function renderTrades(){
   const trades = state.trades.slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   const d = tradeDraft;
+  // 預設的 00631L 被刪掉(或改名)時,下拉選單畫面上會顯示第一檔,草稿卻還指著不存在的代號,
+  // 按新增就被擋「請先選標的」——跟記帳類別一樣,對不上就跟著畫面顯示的第一檔走
+  if (!findInstrument(d.symbol) && state.instruments.length) d.symbol = state.instruments[0].id;
   const gross = num(d.shares) * draftPrice(d);
   return `
     <div class="card">
@@ -3122,8 +3132,10 @@ function renderTrades(){
         <div class="tx-edit">
           <div class="grid2">
             <div class="field"><label>日期</label><input type="date" data-k="pt-date-${t.id}" value="${esc(t.date)}"></div>
+            ${t.action === 'dividend' ? `
+            <div class="field"><label>配息金額</label><input type="number" inputmode="decimal" data-k="pt-amount-${t.id}" value="${t.amount || ''}"></div>` : `
             <div class="field"><label>股數</label><input type="number" inputmode="decimal" data-k="pt-shares-${t.id}" value="${t.shares || ''}"></div>
-            <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pt-price-${t.id}" value="${t.price || ''}"></div>
+            <div class="field"><label>成交價</label><input type="number" inputmode="decimal" step="0.01" data-k="pt-price-${t.id}" value="${t.price || ''}"></div>`}
             <div class="field"><label>手續費</label><input type="number" inputmode="decimal" data-k="pt-fee-${t.id}" value="${t.fee || ''}"></div>
           </div>
           <div class="field"><label>備註</label><input data-k="pt-note-${t.id}" value="${esc(t.note)}"></div>
