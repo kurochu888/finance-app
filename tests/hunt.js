@@ -16,7 +16,8 @@ eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
-  computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth
+  computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
+  cashFlows, accruedInterest
 };`);
 
 const draw = i => {
@@ -104,6 +105,17 @@ check('還款超過動用金額', () => {
   T.repayments = [{ id:'r', date:'2026-02-01', amount:3000000 }];
   const bal = A.outstanding(T);
   if (bal !== 0) return '餘額 ' + bal;
+  return '';
+});
+
+check('XIRR 現金流裡的利息加總要等於「借款利息」(月中動用、當月未過完都不能算成整個月)', () => {
+  A.state = A.sampleData();
+  // 範例資料「今天結清的價值」(市值 − 借款)是正的,所以負的現金流只有買進跟利息;扣掉買進那幾天就是利息
+  const tradeDates = new Set(A.state.trades.map(t => t.date));
+  const paid = -A.cashFlows().filter(f => f.amount < 0 && !tradeDates.has(f.date)).reduce((a, f) => a + f.amount, 0);
+  const accrued = A.accruedInterest();
+  if (!(accrued > 0)) return '範例資料應該有借款利息';
+  if (Math.abs(paid - accrued) > 0.01) return `XIRR 利息 ${paid.toFixed(2)} ≠ 借款利息 ${accrued.toFixed(2)}`;
   return '';
 });
 
