@@ -527,7 +527,8 @@ function normalize(raw){
   });
   {
     const mapDraw = d => ({
-      id: d.id,
+      id: safeId(d.id),          // 新格式跟舊格式(tranches/core)兩條路都會經過這裡,id 檢查放這才不會漏
+
       label: String(d.label || '動用記錄'),
       amount: Math.max(0, num(d.amount)),
       useDate: isoDate(d.useDate, ''),
@@ -583,7 +584,7 @@ function fromLegacy(old){
    'historicalHighValue','stressDeclinePct'].forEach(k => { if (old[k] !== undefined) L[k] = num(old[k]); });
   const dates = old.trancheDates || {};
   Object.keys(dates).forEach((id, i) => {
-    if (dates[id]) L.draws.push({ id: id || ('t' + (i+1)), label: '動用記錄', amount: 0, useDate: isoDate(dates[id], ''), note: '', repayments: [] });
+    if (dates[id]) L.draws.push({ id: safeId(id || ('t' + (i+1))), label: '動用記錄', amount: 0, useDate: isoDate(dates[id], ''), note: '', repayments: [] });
   });
   if (old.coreUseDate) L.draws.push({ id: 'core', label: '長期投資部位', amount: 0, useDate: isoDate(old.coreUseDate, ''), note: '', repayments: [] });
   return s;
@@ -597,8 +598,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 0e832163e4';
-const BUILD_HASH = '0e832163e4';
+const BUILD_VERSION = '2026-09-24 · 98b542af2e';
+const BUILD_HASH = '98b542af2e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2445,7 +2446,8 @@ function renderHelp(){
       可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
       <p>全部還清後不再計息,但動用紀錄與還款歷史都保留。</p>
       <p>年利率是你填的假設值,實際以銀行核定為準。打開「每月自動記入支出」的話,
-      每月會在記帳自動產生一筆「房貸利息」;你把那筆刪掉,那個月不會被補記。</p>
+      每月會在記帳自動產生一筆「房貸利息」;整個月沒打開 app 的話,下次打開時會把漏掉的月份補上
+      (用那個月月初的借款餘額算)。你把某個月那筆刪掉,那個月不會被補記。</p>
     </div>
 
     <div class="sect">報價</div>
@@ -3576,20 +3578,34 @@ function refreshLeverage(){
 function maybePostInterest(){
   const L = state.leverage;
   if (!L.autoInterest) return false;
-  const r = computeLeverage();
-  if (!(r.monthlyInterest > 0)) return false;
-  const m = thisMonth();
-  if (L.interestPosted.includes(m)) return false;
-  state.transactions.push({
-    id: uid(),
-    date: m + '-01',
-    cat: '房貸利息',
-    desc: '槓桿借款利息(自動記入)',
-    amount: -Math.round(r.monthlyInterest)
-  });
-  L.interestPosted.push(m);
-  scheduleSave();
-  return true;
+  const cur = thisMonth();
+  const posted = L.interestPosted;
+  // 從「最近一次記入」的下個月開始,中間整個月沒開 app 的月份也要補記——以前只記「打開的那個月」,
+  // 某個月沒開就永遠漏記那個月的利息,記帳支出少算(壓測抓到 10 月、12 月沒開就沒有利息)。
+  // 只補最近一次之後的空檔,不回頭補更早的歷史空檔:那可能是使用者刻意關掉自動記入的期間(自己手動記),
+  // 補了會重複。重新打開開關時,關掉期間的月份會被標成已處理(見 toggle-autointerest)。
+  // 已經記過(包括使用者自己刪掉那筆)的月份都在 interestPosted 裡,不會重複記、也不會補回被刪的。
+  // 補記的月份用那個月月初的借款餘額;本月照舊用現在的餘額。
+  const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
+  const first = last && last < cur ? shiftMonth(last, 1) : cur;
+  let changed = false;
+  for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
+    if (posted.includes(m)) continue;
+    const balance = m === cur ? computeLeverage().usedAmount : sum(L.draws, d => balanceAt(d, m + '-01'));
+    const amt = balance * (L.annualRate / 100) / 12;
+    if (!(amt > 0)) continue;
+    state.transactions.push({
+      id: uid(),
+      date: m + '-01',
+      cat: '房貸利息',
+      desc: '槓桿借款利息(自動記入)',
+      amount: -Math.round(amt)
+    });
+    posted.push(m);
+    changed = true;
+  }
+  if (changed) scheduleSave();
+  return changed;
 }
 
 /* ===================== 輸入處理 ===================== */
@@ -4149,7 +4165,15 @@ function onClick(el){
       return;
     case 'toggle-autointerest':
       state.leverage.autoInterest = !state.leverage.autoInterest;
-      if (state.leverage.autoInterest) maybePostInterest();
+      if (state.leverage.autoInterest){
+        // 關掉的那段期間是使用者自己決定不自動記的,重新打開時標成已處理,不要補記(會跟手動記的重複)
+        const L = state.leverage, cur = thisMonth();
+        const last = L.interestPosted.length ? L.interestPosted.slice().sort()[L.interestPosted.length - 1] : '';
+        for (let m = last ? shiftMonth(last, 1) : cur, guard = 0; m < cur && guard < 240; m = shiftMonth(m, 1), guard++){
+          if (!L.interestPosted.includes(m)) L.interestPosted.push(m);
+        }
+        maybePostInterest();
+      }
       break;
     case 'sign-in': signInCloud(); return;
     case 'sign-out': signOutCloud(); return;

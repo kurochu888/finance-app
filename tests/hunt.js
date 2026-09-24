@@ -180,6 +180,27 @@ check('CSV:公式注入要擋、逗號/引號/換行(含 \\r)要正確加引號�
   return '';
 });
 
+check('舊格式備份(tranches + core)要正確轉成動用清單,id 也要檢查', () => {
+  const legacy = { assets:[], leverage:{ creditLimit: 5000000, annualRate: 2.5,
+    tranches:[
+      { useDate:'2022-03-01', amount:1000000, repayments:[{ id:'r1', date:'2023-01-01', amount:200000 }] },
+      { useDate:'', amount:0 },                                       // 沒動用過的空桶,轉換時捨棄
+      { id:'x"><img src=x onerror=alert(1)>', useDate:'2022-06-01', amount:500000 }
+    ],
+    core:{ useDate:'2021-01-15', amount:3000000, repayments:[] } } };
+  const s = A.normalize(legacy);
+  const d = s.leverage.draws;
+  if (d.length !== 3) return `應該轉出 3 筆動用(空桶捨棄),得到 ${d.length}`;
+  if (d[0].id !== 't1' || d[0].amount !== 1000000 || d[0].repayments.length !== 1) return '第一桶沒有正確轉換:' + JSON.stringify(d[0]);
+  if (!d.some(x => x.id === 'core' && x.amount === 3000000)) return 'core 沒有轉成 id=core 的動用記錄';
+  if (d.some(x => !/^[A-Za-z0-9_-]+$/.test(x.id))) return '舊格式的 id 沒有經過安全檢查:' + d.map(x => x.id).join(',');
+  const again = A.normalize(JSON.parse(JSON.stringify(legacy)));
+  if (again.leverage.draws.filter(x => x.id === 't1' || x.id === 'core').length !== 2) return '同一份舊資料重複轉換,正常的 id 應該固定不變';
+  const n2 = A.normalize(JSON.parse(JSON.stringify(s)));
+  if (JSON.stringify(n2.leverage.draws) !== JSON.stringify(s.leverage.draws)) return '轉換後再 normalize 一次,動用記錄不該再變';
+  return '';
+});
+
 check('資料完整往返(normalize 不掉東西)', () => {
   A.state = A.sampleData();
   A.state.leverage.draws[0].repayments = [{ id:'r1', date:'2026-08-20', amount:200000 }];
