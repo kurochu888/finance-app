@@ -18,6 +18,9 @@ echo
 echo "=== 均線策略回測(runBacktest) ==="
 node backtest.js || fail=1
 echo
+echo "=== 新版提示(checkForUpdate) ==="
+node update.js || fail=1
+echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo

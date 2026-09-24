@@ -133,6 +133,11 @@ id 沿用舊值以確保重複呼叫不會飄動。
   找「這頁還有哪些說明文字」,`.notice` 跟 `.muted` 都要查,或者直接找中文的長句子。
 - **這是 public repo**(`kurochu888/finance-app`)。`investment-policy.md`(使用者真實的部位
   金額,900萬/800萬那類數字)在 `.gitignore` 裡,只留在本機,絕對不要不小心 `git add` 進去。
+- **改 `state` 的資料格式時,要想到「還開著的舊版分頁」**——舊版的 `normalize()` 會把它不認得的欄位
+  丟掉再存回雲端(2026-09 加 `instruments[].splits` 時就是這樣,新版只好一再遷移)。現在 PWA 版會在
+  回到前景/每 30 分鐘問一次 `docs/version.json`(`build.py` 產生,內容是 build hash),換版了就在最上面
+  跳「有新版」提示(`checkForUpdate()`),舊分頁頂多多活一陣子;但新欄位的遷移邏輯還是要能承受
+  「被舊版寫回來」這件事,不能假設只會遷移一次。
 - **PWA 快取是 network-first for navigation**(見 `docs/sw.js`),所以正常重新整理應該就能
   拿到新版;使用者回報「改了但沒變化」時,先確認是不是忘了 build,或者他測的是很久以前
   下載到本機的 `finance_app.html`(那份是靜態檔案,不會自動更新)。

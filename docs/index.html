@@ -309,12 +309,17 @@ window.FinanceCloud.ready = new Promise(resolve => {
     background:var(--card); border-top:1px solid var(--line);
   }
   svg text{font-family:inherit;}
+  .update-banner{
+    flex:0 0 auto; width:100%; border:none; cursor:pointer; padding:9px 12px; text-align:center;
+    background:var(--accent); color:var(--accent-ink); font-size:13px; font-weight:700;
+  }
 </style>
 </head>
 <body>
 
 
 <div class="phone">
+  <button class="update-banner" id="updateBanner" hidden>🔄 有新版本,點這裡更新</button>
   <header class="topbar">
     <nav class="toptabs">
       <button class="top-tab active" data-tab="overview">總覽</button>
@@ -581,7 +586,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · 88341cea8a';
+const BUILD_VERSION = '2026-09-24 · 6d208e55a5';
+const BUILD_HASH = '6d208e55a5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -986,6 +992,34 @@ function monthParam(offset){
   d.setMonth(d.getMonth() + offset);
   return d.getFullYear() + pad2(d.getMonth() + 1) + '01';
 }
+/* ===================== 新版提示 =====================
+   GitHub Pages 版每次 build 都會附一份 version.json(內容是這次 build 的 hash)。
+   導覽是 network-first,重新整理就拿得到新版——問題是開著不關的分頁(尤其手機 PWA
+   一直留在背景)永遠不會重新整理,舊版程式會繼續拿舊的資料格式寫回雲端,
+   新版要靠 normalize() 一再遷移(2026-09 加 splits 欄位時就遇到)。所以回到前景時、
+   以及開著的時候每隔一段時間,問一下線上是不是已經換版,是的話在最上面跳一條提示讓使用者點。
+   不自動重新整理:使用者可能正在輸入,由他自己決定什麼時候換。
+   單檔版(file://)沒有 version.json 可以問、Artifact 版不能連外,這兩個版本不檢查。 */
+const UPDATE_CHECK_ENABLED = QUOTES_ENABLED && typeof location !== 'undefined' && location.protocol === 'https:';
+const UPDATE_CHECK_GAP_MS = 10 * 60000;
+let lastUpdateCheck = 0;
+async function checkForUpdate(){
+  if (!UPDATE_CHECK_ENABLED || Date.now() - lastUpdateCheck < UPDATE_CHECK_GAP_MS) return;
+  lastUpdateCheck = Date.now();
+  try{
+    const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const j = await res.json();
+    if (j && j.hash && j.hash !== BUILD_HASH) document.getElementById('updateBanner').hidden = false;
+  }catch(e){ /* 離線或暫時連不上,下次再問 */ }
+}
+async function applyUpdate(){
+  // 還在 400ms 延遲裡沒存出去的編輯,先存完再重新整理,不要因為換版掉資料
+  clearTimeout(saveTimer);
+  try{ await save(); }catch(e){}
+  location.reload();
+}
+
 /* ===================== 證交所請求節流 =====================
    證交所會擋短時間內大量的請求(網路上常見的說法是大約每 5 秒 3 個),被擋之後這台裝置
    要等一段時間才會恢復。以前每個請求只隔 0.3 秒,第一次抓完整歷史要發 270 個請求,
@@ -3944,6 +3978,12 @@ function init(){
   renderAll();
   maybeAutoQuote();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
+  if (UPDATE_CHECK_ENABLED){
+    document.getElementById('updateBanner').addEventListener('click', applyUpdate);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+    setInterval(checkForUpdate, 30 * 60000);   // 桌機分頁可能一直開著、一直在前景
+    checkForUpdate();
+  }
   setTimeout(maybeBackup, 4000);   // 讓畫面與雲端先就緒
   if (window.claude && typeof window.claude.use === 'function'){
     window.claude.use('downloads').then(ns => { downloadsNs = ns; }).catch(() => {});
