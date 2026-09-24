@@ -44,8 +44,10 @@ python3 build.py && bash tests/run.sh
 - `longrun.js` 會把 `Date` 換成假的、模擬 15 年每天開 app,跑起來要 30~60 秒,是最慢的一個。
 - `audit.js` **不在** `tests/run.sh` 裡跑(故意的)——它是版面密度盤點,不是通過/失敗測試,
   要看的話手動 `node tests/audit.js`。
-- `hunt.js` 有一項「normalize 往返後欄位不同」的已知誤報(補齊預設欄位不算掉資料),
-  詳見 `tests/README.md`。
+- `hunt.js` 的「normalize 往返後欄位不同」以前是已知誤報,現在已經補齊不會再出現;又出現的話先看是不是
+  新增欄位但 `sampleData()` 沒帶,詳見 `tests/README.md`。
+- `fuzz.js` 是隨機操作壓力測試(2026-09 加),抓到過:1e309 存成 Infinity、壞日期讓月份變 NaN、快線比慢線長
+  讓訊號分頁壞掉。改了輸入處理或 normalize 之後可以手動跑更多步:`node tests/fuzz.js 3000 <種子>`。
 
 ## 資料模型(`state`)重點
 

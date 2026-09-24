@@ -315,16 +315,26 @@
 <script>
 /* ===================== 小工具 ===================== */
 const uid = () => Math.random().toString(36).slice(2,9);
-const num = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-// num() 只擋 NaN,擋不住 Infinity/-Infinity(parseFloat('Infinity') 合法)——
-// 均線參數跟歷史收盤價這些會拿去做除法、比較大小的欄位,混進 Infinity 會讓算式整個壞掉,
-// 用這個在 normalize() 裡多擋一層,不改 num() 本身以免影響其他既有欄位的行為。
+// 非有限值(NaN、Infinity、超出範圍的 1e309)一律當 0。以前只擋 NaN,隨機壓測抓到在淨資產歷史填 1e309
+// 會把 Infinity 存進 state,整條走勢跟淨資產計算都壞掉;程式裡沒有任何欄位需要 Infinity,所以直接在這裡擋。
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+// finiteNum:同上,但可以指定不合法時的預設值(normalize() 補均線參數這類欄位用)。
 const finiteNum = (v, fallback) => { const n = num(v); return Number.isFinite(n) ? n : fallback; };
 const fmt = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
 const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad2 = n => String(n).padStart(2, '0');
 function todayISO(){ const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
+/* 合法的 YYYY-MM-DD 才收(2 月 30 日這種不存在的日期也擋),不合法就回傳 fallback。手機的日期選擇器本身
+   打不出亂碼,但匯入的備份檔、雲端同步來的資料可能帶進任何字串;壞掉的日期會讓記帳的月份分組、
+   利息天數算出 NaN(隨機壓測抓到「<b>x</b>年NaN月」),所以所有寫入日期的地方都先過這一關。 */
+function isoDate(v, fallback = ''){
+  const str = String(v == null ? '' : v).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return fallback;
+  const d = new Date(str + 'T00:00:00');
+  if (isNaN(d.getTime())) return fallback;
+  return (d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())) === str ? str : fallback;
+}
 const thisMonth = () => todayISO().slice(0,7);
 function monthLabel(m){ const p = m.split('-'); return p[0] + '年' + Number(p[1]) + '月'; }
 function shortMonth(m){ return Number(m.split('-')[1]) + '月'; }
@@ -400,21 +410,27 @@ function emptyState(){
   };
 }
 
+/* 內部 id/key 只收英數、底線、減號(app 自己產生的 uid() 跟舊版的 't1'、'core' 都符合)。
+   id 會原樣放進 HTML 屬性(data-id="…"、data-k="aa-…"),匯入的備份檔或雲端資料如果帶了
+   `"><img onerror=…>` 這種 id 就能在頁面裡執行程式——實測過 8 種 id 都能觸發,所以在這一關統一擋掉,
+   不合格的換成新的 uid()。顯示給人看的文字(名稱、備註…)本來就都有 esc(),不受影響。 */
+const safeId = v => { const str = String(v == null ? '' : v); return /^[A-Za-z0-9_-]{1,64}$/.test(str) ? str : uid(); };
+
 function normalize(raw){
   const s = emptyState();
   if (!raw || typeof raw !== 'object') return s;
   const arr = v => Array.isArray(v) ? v : [];
-  s.assets = arr(raw.assets).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
-  s.liabilities = arr(raw.liabilities).map(a => ({ id:a.id||uid(), name:String(a.name||''), amount:num(a.amount) }));
+  s.assets = arr(raw.assets).map(a => ({ id:safeId(a.id), name:String(a.name||''), amount:num(a.amount) }));
+  s.liabilities = arr(raw.liabilities).map(a => ({ id:safeId(a.id), name:String(a.name||''), amount:num(a.amount) }));
   // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
-  if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:b.id||uid(), name:String(b.name||''), budget:num(b.budget) }));
+  if (Array.isArray(raw.budgets)) s.budgets = raw.budgets.map(b => ({ id:safeId(b.id), name:String(b.name||''), budget:num(b.budget) }));
   if (Array.isArray(raw.instruments) && raw.instruments.length){
     s.instruments = raw.instruments.map(x => {
       const leverage = x.leverage === undefined ? 1 : num(x.leverage);
       const def = defaultTrendParams(leverage);
       const t = x.trend && typeof x.trend === 'object' ? x.trend : {};
       const out = {
-        key: String(x.key || '') || uid(),
+        key: safeId(x.key),
         id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
         name: String(x.name || ''),
         leverage,
@@ -447,8 +463,8 @@ function normalize(raw){
     });
   }
   s.trades = arr(raw.trades).map(t => ({
-    id: t.id || uid(),
-    date: String(t.date || todayISO()).slice(0, 10),
+    id: safeId(t.id),
+    date: isoDate(t.date, todayISO()),
     symbol: String(t.symbol || '00631L'),
     action: ['sell', 'dividend'].includes(t.action) ? t.action : 'buy',
     shares: Math.max(0, num(t.shares)),
@@ -459,7 +475,7 @@ function normalize(raw){
     note: String(t.note || '')
   }));
   s.transactions = arr(raw.transactions).map(t => ({
-    id:t.id||uid(), date:String(t.date||todayISO()).slice(0,10),
+    id:safeId(t.id), date:isoDate(t.date, todayISO()),
     cat:String(t.cat||'其他'), desc:String(t.desc||''), amount:num(t.amount)
   }));
   s.dailyHistory = arr(raw.dailyHistory)
@@ -472,7 +488,7 @@ function normalize(raw){
     .sort((a, b) => a.d < b.d ? -1 : 1);
   s.netWorthHistory = arr(raw.netWorthHistory)
     .map(h => ({
-      id: h.id || uid(),
+      id: safeId(h.id),
       m: String(h.m || '').slice(0, 7),
       v: num(h.v),
       pv: h.pv === undefined ? null : num(h.pv),      // 部位市值
@@ -480,7 +496,7 @@ function normalize(raw){
       loan: h.loan === undefined ? null : num(h.loan),// 借款餘額
       // 當月資產/負債細項(2026-09 起才有;更早的月份沒存過,是空陣列)。id 對應 assets/liabilities 的 id,
       // 改名也接得起來;t:'a' 資產、'l' 負債。
-      items: arr(h.items).map(it => ({ id: String(it.id || ''), name: String(it.name || ''), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
+      items: arr(h.items).filter(it => it && /^[A-Za-z0-9_-]{1,64}$/.test(String(it.id || ''))).map(it => ({ id: String(it.id), name: String(it.name || ''), amount: num(it.amount), t: it.t === 'l' ? 'l' : 'a' }))
         .filter(it => it.id),
       auto: h.auto !== false                           // 手動改過的不再被自動覆蓋
     }))
@@ -496,13 +512,13 @@ function normalize(raw){
       id: d.id,
       label: String(d.label || '動用記錄'),
       amount: Math.max(0, num(d.amount)),
-      useDate: String(d.useDate || ''),
+      useDate: isoDate(d.useDate, ''),
       note: String(d.note || ''),
       repayments: (Array.isArray(d.repayments) ? d.repayments : [])
-        .map(x => ({ id: x.id || uid(), date: String(x.date || '').slice(0, 10), amount: Math.max(0, num(x.amount)) }))
+        .map(x => ({ id: safeId(x.id), date: isoDate(x.date, ''), amount: Math.max(0, num(x.amount)) }))
     });
     if (Array.isArray(L.draws) && L.draws.length){
-      base.draws = L.draws.map(d => mapDraw({ ...d, id: d.id || uid() }));
+      base.draws = L.draws.map(d => mapDraw({ ...d, id: safeId(d.id) }));
     } else {
       // 舊格式(tranches+core)搬過來:id 沿用舊 id,同一份舊資料重覆呼叫 normalize() 也會得到
       // 相同 id,避免存檔前 id 一直飄動。只搬「真的動用過」(有 useDate)的,從沒填過的預設
@@ -549,9 +565,9 @@ function fromLegacy(old){
    'historicalHighValue','stressDeclinePct'].forEach(k => { if (old[k] !== undefined) L[k] = num(old[k]); });
   const dates = old.trancheDates || {};
   Object.keys(dates).forEach((id, i) => {
-    if (dates[id]) L.draws.push({ id: id || ('t' + (i+1)), label: '動用記錄', amount: 0, useDate: String(dates[id]), note: '', repayments: [] });
+    if (dates[id]) L.draws.push({ id: id || ('t' + (i+1)), label: '動用記錄', amount: 0, useDate: isoDate(dates[id], ''), note: '', repayments: [] });
   });
-  if (old.coreUseDate) L.draws.push({ id: 'core', label: '長期投資部位', amount: 0, useDate: String(old.coreUseDate), note: '', repayments: [] });
+  if (old.coreUseDate) L.draws.push({ id: 'core', label: '長期投資部位', amount: 0, useDate: isoDate(old.coreUseDate, ''), note: '', repayments: [] });
   return s;
 }
 
@@ -563,8 +579,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · 6c1bc30233';
-const BUILD_HASH = '6c1bc30233';
+const BUILD_VERSION = '2026-09-24 · fe12976474';
+const BUILD_HASH = 'fe12976474';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -614,7 +630,6 @@ function writeLocal(data){
   }
 }
 function scheduleSave(){
-  clearPosMemo();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 400);
 }
@@ -673,10 +688,40 @@ function onRemote(data){
 }
 function applyRemote(data){
   clearPosMemo();
+  const prev = state;
   state = normalize(data);
+  const restored = keepFieldsOldVersionsDrop(prev, data, state);
   lastPushed = canon(JSON.parse(JSON.stringify(state)));
   writeLocal(state);
+  if (restored) scheduleSave();   // 補回來的東西推回雲端,不然雲端那份一直是缺的
   renderAll();
+}
+/* 還開著的舊版分頁存檔時,會把它不認得的欄位整個丟掉再寫回雲端(見 CLAUDE.md「常見的坑」)。
+   每月快照的細項(items)丟了就補不回來,分割記錄(splits)丟了新版會把歷史價格清掉重抓——
+   所以收到雲端資料時,如果某個欄位在雲端那份「根本不存在」(不是空的,是沒有這個欄位,只有舊版會這樣寫),
+   而本機有,就保留本機的。新版寫出去的資料一定帶著這些欄位(normalize 會補),不會誤觸。回傳有沒有補。 */
+function keepFieldsOldVersionsDrop(prev, raw, next){
+  if (!prev || !raw) return false;
+  let restored = false;
+  const rawHist = Array.isArray(raw.netWorthHistory) ? raw.netWorthHistory : [];
+  const remoteHasItems = new Set(rawHist.filter(h => h && Array.isArray(h.items)).map(h => String(h.m || '').slice(0, 7)));
+  const prevItems = new Map((prev.netWorthHistory || []).filter(h => h.items && h.items.length).map(h => [h.m, h.items]));
+  next.netWorthHistory.forEach(h => {
+    if (!remoteHasItems.has(h.m) && prevItems.has(h.m)){
+      h.items = JSON.parse(JSON.stringify(prevItems.get(h.m)));
+      restored = true;
+    }
+  });
+  const rawInst = new Map((Array.isArray(raw.instruments) ? raw.instruments : []).filter(x => x).map(x => [String(x.key || ''), x]));
+  next.instruments.forEach(it => {
+    const r = rawInst.get(it.key), p = (prev.instruments || []).find(x => x.key === it.key);
+    if (r && !Array.isArray(r.splits) && p && p.id === it.id && Array.isArray(p.splits) && p.priceHistory && p.priceHistory.length){
+      it.splits = JSON.parse(JSON.stringify(p.splits));
+      it.priceHistory = JSON.parse(JSON.stringify(p.priceHistory));
+      restored = true;
+    }
+  });
+  return restored;
 }
 
 /* 第一次連上雲端:雲端有資料就拉下來,沒有就把本機的推上去 */
@@ -961,8 +1006,9 @@ let backtestResults = null;         // 上次「執行回測」的結果,重畫�
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const cleanNum = v => num(String(v).replace(/,/g, ''));
 function rocToISO(s){                       // '115/09/04' → '2026-09-04'
-  const p = String(s).split('/');
-  return p.length === 3 ? (Number(p[0]) + 1911) + '-' + p[1] + '-' + p[2] : '';
+  const p = String(s).trim().split('/');
+  if (p.length !== 3 || p.some(x => !/^\d+$/.test(x))) return '';
+  return (Number(p[0]) + 1911) + '-' + pad2(Number(p[1])) + '-' + pad2(Number(p[2]));   // 沒補零的 115/9/4 也收
 }
 function monthParam(offset){
   const d = new Date();
@@ -1130,10 +1176,14 @@ function normalizeSplits(v){
 /* splits 傳入時會被就地更新(偵測到新的分割就記進去),呼叫端要把它存回去。 */
 function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null, id = ''){
   const byDate = new Map((hist || []).map(h => [h.d, h.c]));
-  (rows || []).forEach(row => {
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    if (!Array.isArray(row)) return;
     const d = rocToISO(row[0]);
-    if (!d) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
     const raw = cleanNum(row[6]), f = splitFactor(d, splits);
+    // 收盤價解析不出正數(證交所當天沒成交給「--」、回應欄位不齊)就略過這一列——以前會用 0 蓋掉
+    // 已經存好的正確收盤價,接著又因為 ≤0 被濾掉,等於一次殘缺的回應就把好資料刪掉(壓測看到歷史從 226 天掉到 145 天)
+    if (!(raw > 0)) return;
     byDate.set(d, f === 1 ? raw : Math.round(raw * f * 10000) / 10000);
   });
   const merged = [...byDate.entries()]
@@ -1467,7 +1517,7 @@ function monthEndISO(m){
      自有資金買進 → 流出        房貸買進 → 0(錢是銀行出的)
      賣出、配息   → 流入        還款、利息 → 流出
      最後加上今天結清的價值:市值 − 借款餘額 */
-function cashFlows(){
+function cashFlows(merge = true){   // merge=false 回傳合併前的明細(測試核對利息用)
   const L = state.leverage;
   const today = todayISO();
   const flows = [];
@@ -1501,7 +1551,13 @@ function cashFlows(){
   const p = positionValueNow();
   const owed = sum(loans, item => balanceAt(item, today));
   add(today, p - owed);                  // 今天結清可以拿回的錢
-  return flows.sort((a, b) => a.date < b.date ? -1 : 1);
+  if (!merge) return flows.sort((a, b) => a.date < b.date ? -1 : 1);
+  // 同一天的現金流先合併:借款多時每筆每月一筆利息,幾千筆現金流其實只有一百多個日期,
+  // XIRR 每一輪都要對每筆算一次次方,合併後快很多,結果完全一樣
+  const byDate = new Map();
+  flows.forEach(f => byDate.set(f.date, (byDate.get(f.date) || 0) + f.amount));
+  return [...byDate.entries()].filter(([, a]) => a).map(([date, amount]) => ({ date, amount }))
+    .sort((a, b) => a.date < b.date ? -1 : 1);
 }
 function positionValueNow(){
   const seen = new Set();
@@ -1525,7 +1581,7 @@ function xirr(flows){
   let lo = -0.999999, hi = 10;   // 幾乎全賠時答案會逼近 −100%,下界要夠低
   let flo = npv(lo), fhi = npv(hi);
   if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
-  for (let i = 0; i < 200; i++){
+  for (let i = 0; i < 200 && hi - lo > 1e-10; i++){   // 區間小到 1e-10(報酬率誤差遠小於 0.01%)就夠了,不用跑滿 200 輪
     const mid = (lo + hi) / 2;
     const fm = npv(mid);
     if (!isFinite(fm)) return null;
@@ -1536,32 +1592,22 @@ function xirr(flows){
 }
 
 /* 一次重畫會呼叫 computePosition 三到四次(損益卡、曝險、買賣紀錄、壓力測試),
-   每次都要跑一遍 XIRR 的二分法。資料多了以後很有感,所以記住上一次的結果,
-   任何會改到狀態的動作都會清掉。 */
+   每次都要跑一遍 XIRR 的二分法。資料多了以後很有感,所以記住上一次的結果;
+   靠下面 posSignature() 判斷資料有沒有變,不用在重畫/存檔時清。整份 state 被換掉(雲端同步)時才清。 */
 let posMemo = null, posMemoKey = '';
 const clearPosMemo = () => { posMemo = null; };
 
-/* 只要影響損益的東西有變,簽章就會變 —— 不必仰賴每個呼叫端記得清快取 */
+/* 快取的鑰匙:所有會影響損益的東西(買賣紀錄、標的的代號/股價/股數/槓桿、動用與還款、利率、今天日期)
+   原樣序列化。以前是把這些加總成一個數字,會撞:例如把買賣日期的「月份」改掉簽章完全不變,只好在每次
+   重畫跟存檔都清快取保險,結果每次重畫都重算一次 XIRR(1000 筆買賣時一次 70ms,手機上打字會卡)。
+   序列化 1000 筆買賣只要約 1ms,而且不會撞,所以不用再靠呼叫端清快取。 */
 function posSignature(){
   const L = state.leverage;
-  // 任何一項是 undefined/NaN 都會讓整個簽章變成 NaN,兩組不同的資料就會被當成一樣
-  const n = v => (typeof v === 'number' && isFinite(v)) ? v : 0;
-  const dc = (str, i) => { const c = String(str || '').charCodeAt(i); return isFinite(c) ? c : 0; };
-  let h = state.trades.length * 31;
-  state.trades.forEach(t => {
-    h += n(t.shares) + n(t.price) * 7 + n(t.fee) + n(t.amount)
-       + (t.action === 'sell' ? 1 : t.action === 'dividend' ? 2 : 3)
-       + (t.source === 'loan' ? 11 : 0) + dc(t.date, 8) + dc(t.date, 9) + String(t.symbol || '').length;
-  });
-  state.instruments.forEach(it => {
-    h += n(it.price) * 13 + n(it.shares) + n(it.leverage) + String(it.id || '').length;
-  });
-  L.draws.forEach(t => {
-    h += n(t.amount) / 7 + (t.useDate ? dc(t.useDate, 9) + String(t.useDate).length : 0);
-    (t.repayments || []).forEach(r => { h += n(r.amount) / 3 + dc(r.date, 9); });
-  });
-  if (!isFinite(h)) return 'nocache:' + Math.random();   // 保險:算不出簽章就不要用快取
-  return h + '|' + n(L.annualRate) + '|' + state.trades.length + '|' + todayISO();
+  return JSON.stringify([
+    state.trades,
+    state.instruments.map(it => [it.id, it.price, it.shares, it.leverage]),
+    L.draws, L.annualRate, todayISO()
+  ]);
 }
 
 function computePosition(){
@@ -1805,7 +1851,6 @@ function monthNav(){
 }
 
 function renderAll(){
-  clearPosMemo();
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
@@ -2495,7 +2540,10 @@ function sma(vals, w){
 function computeTrend(it){
   const p = it.trend || defaultTrendParams(it.leverage);
   const hist = it.priceHistory || [];
-  const barsNeeded = p.maSlow + 1;   // 至少要能算出一天的慢線,還要前一天的快線才能判斷斜率
+  // 至少要能算出一天的慢線,還要前一天的快線才能判斷斜率。用快慢線裡比較長的那條——使用者把快線設得比慢線長時,
+  // 只看慢線會算不出快線,畫面拿 null 去 toFixed 整個訊號分頁就壞掉(隨機壓測抓到的)
+  const window_ = Math.max(p.maFast, p.maSlow);
+  const barsNeeded = window_ + 1;
   const base = { key: it.key, id: it.id, params: p, barsAvailable: hist.length, barsNeeded };
   if (hist.length < barsNeeded){
     return { ...base, status:'WATCH', pyramidCount:0, basePrice:0,
@@ -2505,7 +2553,7 @@ function computeTrend(it){
   const dates = hist.map(h => h.d);
   const maF = sma(closes, p.maFast);
   const maS = sma(closes, p.maSlow);
-  const start = p.maSlow - 1;
+  const start = window_ - 1;
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
@@ -2554,14 +2602,15 @@ const LOT_SIZE = 1000;
 function runBacktest(priceHistory, trendParams){
   const p = trendParams;
   const hist = priceHistory || [];
-  const barsNeeded = p.maSlow + 1;
+  const window_ = Math.max(p.maFast, p.maSlow);   // 跟 computeTrend 同一套:快線設得比慢線長也要算得出來
+  const barsNeeded = window_ + 1;
   if (hist.length < barsNeeded) return null;
 
   const closes = hist.map(h => h.c);
   const dates = hist.map(h => h.d);
   const maF = sma(closes, p.maFast);
   const maS = sma(closes, p.maSlow);
-  const start = p.maSlow - 1;
+  const start = window_ - 1;
 
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
   let cash = BACKTEST_INITIAL_CASH, shares = 0, cashAtExit = BACKTEST_INITIAL_CASH;
@@ -2684,8 +2733,9 @@ function runAllBacktests(){
   backtestResults = targets.map(it => {
     const hist = backtestFullHistory[it.id];
     const p = it.trend || defaultTrendParams(it.leverage);
-    if (!hist || hist.length < p.maSlow + 1){
-      return { id: it.id, error: `歷史資料不夠(需要至少 ${p.maSlow + 1} 天),請先按上面「抓完整歷史」。` };
+    const need = Math.max(p.maFast, p.maSlow) + 1;
+    if (!hist || hist.length < need){
+      return { id: it.id, error: `歷史資料不夠(需要至少 ${need} 天),請先按上面「抓完整歷史」。` };
     }
     const gap = findHistoryGap(hist);
     if (gap){
@@ -3239,8 +3289,8 @@ function renderTrendTab(){
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
-          <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast.toFixed(2)} / ${t.maSlow.toFixed(2)}</span></div>
-          <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose.toFixed(2)}</span></div>
+          <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast == null ? '—' : t.maFast.toFixed(2)} / ${t.maSlow == null ? '—' : t.maSlow.toFixed(2)}</span></div>
+          <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
             ? `<div class="row sub"><span class="label">距出場緩衝</span><span class="val">${t.cushionPct == null ? '—' : t.cushionPct.toFixed(2) + '%'}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
@@ -3561,7 +3611,7 @@ function onField(key, el){
       if (what === 'amt') t.amount = Math.max(0, num(el.value));
       else if (what === 'note') t.note = el.value;
       else if (what === 'label') t.label = el.value;
-      else t.useDate = el.value;
+      else t.useDate = isoDate(el.value, '');
     }
   }
   else if (kind === 'rp'){                       // 還款紀錄 rp-<what>-<動用記錄id>-<還款id>
@@ -3570,7 +3620,7 @@ function onField(key, el){
     const target = findById(state.leverage.draws, tid);
     const rp = target && (target.repayments || []).find(x => x.id === rid);
     if (rp){
-      if (what === 'date') rp.date = el.value;
+      if (what === 'date') rp.date = isoDate(el.value, '');
       else rp.amount = Math.max(0, num(el.value));
     }
   }
@@ -3581,16 +3631,16 @@ function onField(key, el){
       renderAll();
       return;
     }
-    draft[rest] = el.value;
+    draft[rest] = rest === 'date' ? isoDate(el.value, '') : el.value;
     return;                                          // 草稿不入庫
   }
   else if (kind === 'rd'){                                          // 還款草稿
-    repayDraft[rest] = el.value;
+    repayDraft[rest] = rest === 'date' ? isoDate(el.value, '') : el.value;
     if (rest === 'target') renderAll();
     return;
   }
   else if (kind === 'pd'){                                          // 買賣草稿
-    tradeDraft[rest] = el.value;
+    tradeDraft[rest] = rest === 'date' ? isoDate(el.value, '') : el.value;
     if (rest === 'shares' || rest === 'price') refreshTradeDraft();  // 更新成交金額預估,不整頁重畫
     return;
   }
@@ -3599,7 +3649,7 @@ function onField(key, el){
     const what = rest.slice(0, cut), tid = rest.slice(cut + 1);
     const t = findById(state.trades, tid);
     if (t){
-      if (what === 'date') t.date = el.value || todayISO();
+      if (what === 'date') t.date = isoDate(el.value, todayISO());
       else if (what === 'note') t.note = el.value;
       else t[what] = Math.max(0, num(el.value));   // 股數、價格、費用都不會是負的
     }
@@ -3608,7 +3658,7 @@ function onField(key, el){
   else if (kind === 'tdate' || kind === 'tamt' || kind === 'tcat' || kind === 'tdesc'){
     const t = findById(state.transactions, rest);
     if (t){
-      if (kind === 'tdate') t.date = el.value || todayISO();
+      if (kind === 'tdate') t.date = isoDate(el.value, todayISO());
       else if (kind === 'tamt') t.amount = num(el.value);
       else if (kind === 'tcat') t.cat = el.value;
       else t.desc = el.value;

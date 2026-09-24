@@ -24,6 +24,9 @@ echo
 echo "=== 資產/負債細項每月留存 ==="
 node items.js || fail=1
 echo
+echo "=== 隨機操作壓力測試(3 組 × 800 步) ==="
+node fuzz.js 800 || fail=1
+echo
 echo "=== 邊界情況 ==="
 node hunt.js || fail=1
 echo
