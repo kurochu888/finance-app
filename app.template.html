@@ -1015,7 +1015,10 @@ function backupApi(){
 }
 async function maybeBackup(){
   const today = todayISO();
-  try{ if (localStorage.getItem(BACKUP_TS_KEY) === today) return; }catch(e){}
+  // 本機跟雲端分開記「今天做過了沒」:開 app 4 秒後就會先備份一次,雲端登入比較慢的話那時還沒連上,
+  // 存成本機備份並記下今天做過了,連上雲端後的那次就被跳過——那天雲端完全沒有備份
+  const tsKey = (cloud && cloud.backups) ? BACKUP_TS_KEY + '_cloud' : BACKUP_TS_KEY;
+  try{ if (localStorage.getItem(tsKey) === today) return; }catch(e){}
   const api = backupApi();
   try{
     // 本機空間有限,資料越大留越少份,免得把主資料的位子吃掉
@@ -1026,7 +1029,7 @@ async function maybeBackup(){
     const before = await api.list();
     for (const id of before.slice(Math.max(0, keep - 1))) await api.del(id);
     await api.put(today, JSON.parse(JSON.stringify(state)));
-    try{ localStorage.setItem(BACKUP_TS_KEY, today); }catch(e){}
+    try{ localStorage.setItem(tsKey, today); }catch(e){}
   }catch(e){ /* 備份失敗不影響使用 */ }
 }
 async function loadBackups(){

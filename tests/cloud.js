@@ -42,7 +42,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v},
   get storageMode(){return storageMode}, get lastPushed(){return lastPushed},
   get pendingRemote(){return pendingRemote},
-  connectCloud, save, onRemote, applyRemote, scheduleSave, emptyState, sampleData, normalize, renderAll,
+  connectCloud, save, onRemote, applyRemote, scheduleSave, maybeBackup, emptyState, sampleData, normalize, renderAll,
   importJSON, todayISO, shiftMonth
 };`);
 
@@ -53,8 +53,11 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   // 1) 雲端已有資料 → 應該拉下來覆蓋本機
   cloudDocs['state/finance'] = { version:2, assets:[{id:'x', name:'雲端來的', amount:123}],
     liabilities:[], trades:[], transactions:[], netWorthHistory:[], budgets:[], instruments:[] };
+  await A.maybeBackup();            // 開 app 4 秒後的那次:還沒連上雲端,存成本機備份
   await A.connectCloud();
   await wait(30);
+  // 雲端連上之後那天也要有一份雲端備份(以前本機那次記了「今天做過了」,雲端就被跳過)
+  if (!cloudDocs['backups/' + A.todayISO()]) bugs.push('先做了本機備份,連上雲端後當天的雲端備份被跳過');
   console.log('1. 首次連線:', A.storageMode, '| 資產', A.state.assets.map(a=>a.name).join(','));
   if (A.state.assets[0].name !== '雲端來的') bugs.push('首次連線沒有把雲端資料拉下來');
 
