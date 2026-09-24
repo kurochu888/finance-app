@@ -102,6 +102,26 @@ console.log('還開著的舊版分頁把細項/分割記錄丟掉寫回雲端:�
 })();
 console.log('  ok');
 
+console.log('手機時間被往回調(10 月調回 9 月):已經固定的 9 月快照不能被現在的數字蓋掉');
+(function(){
+  const s3 = A.emptyState();
+  s3.assets = [{ id:'z1', name:'活存', amount:100 }];
+  A.state = s3;
+  simNow = new RealDate('2026-09-20T09:00:00').getTime();
+  A.maybeSnapshot();
+  simNow = new RealDate('2026-10-05T09:00:00').getTime();
+  field('aa-z1', 200);
+  const sepBefore = JSON.stringify(A.state.netWorthHistory.find(h => h.m === '2026-09'));
+  simNow = new RealDate('2026-09-28T09:00:00').getTime();
+  field('aa-z1', 999);
+  must(JSON.stringify(A.state.netWorthHistory.find(h => h.m === '2026-09')) === sepBefore, '時間往回調後,9 月快照被改掉了');
+  must(A.state.netWorthHistory.find(h => h.m === '2026-10').items[0].amount === 200, '10 月快照也不該被動到');
+  simNow = new RealDate('2026-10-06T09:00:00').getTime();   // 時間調回正確之後恢復正常更新
+  field('aa-z1', 300);
+  must(A.state.netWorthHistory.find(h => h.m === '2026-10').items[0].amount === 300, '時間恢復正常後,本月快照要照常更新');
+})();
+console.log('  ok');
+
 console.log('舊資料(沒有細項的月份)讀得進來,不會出錯,也不會被當成「上月」');
 const old = A.normalize({ assets: [{ id:'a1', name:'活存', amount:1 }],
   netWorthHistory: [{ id:'h1', m:'2026-08', v:100 }, { id:'h2', m:'2026-09', v:200, items:[{ id:'a1', name:'活存', amount:50, t:'a' }, { name:'沒有 id' }] }] });

@@ -579,8 +579,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · fe12976474';
-const BUILD_HASH = 'fe12976474';
+const BUILD_VERSION = '2026-09-24 · db089577a7';
+const BUILD_HASH = 'db089577a7';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -595,6 +595,9 @@ let authUser = null;         // Firebase 已登入的帳號
 let authBusy = false;
 let downloadsNs = null;
 let lastPushed = '';
+/* 最近幾次自己推上去的內容。雲端的回音不一定照順序、也不一定馬上到:連續存了 A、B,A 的回音晚到的話,
+   只比對「最後一次」會把它當成別台裝置的改動套用,狀態倒回 A、B 的修改就丟了(壓測抓到)。 */
+let recentPushed = [];
 let pendingRemote = null;
 let saveTimer = null;
 
@@ -613,7 +616,13 @@ function writeLocal(data){
     localStorage.setItem(STORAGE_KEY, json);
     return true;
   }catch(e){
-    // 空間不夠時先犧牲最舊的本機備份,主資料一定要存得進去
+    // 空間不夠時,主資料一定要存得進去。先清可以重抓的回測完整歷史快取(雲端也有一份,記憶體裡這次也還在),
+    // 再犧牲最舊的本機備份——以前只會刪備份,壓測看到主資料一大就把唯一一份備份刪掉、回測快取卻還佔著幾百 KB
+    try{
+      localStorage.removeItem(BACKTEST_HIST_KEY);
+      localStorage.setItem(STORAGE_KEY, json);
+      return true;
+    }catch(eBt){ /* 還是不夠,繼續刪備份 */ }
     try{
       const keys = [];
       for (let i = 0; i < localStorage.length; i++){
@@ -639,6 +648,7 @@ async function save(){
   if (cloud){
     try{
       lastPushed = canon(data);
+      recentPushed = recentPushed.concat(lastPushed).slice(-8);
       await cloud.set(data);
       storageMode = 'cloud';
       updateStorageStatus();
@@ -647,6 +657,13 @@ async function save(){
   }
   storageMode = ok ? 'local' : 'none';
   updateStorageStatus();
+}
+/* 主資料本身佔了多少空間(同樣粗估)。超過一半左右時,主資料加一份一樣大的備份就放不下了——
+   這時存檔會把備份刪光來保住主資料,總用量反而掉回五成多,「快滿了」的提醒就不見了,
+   使用者卻已經完全沒有本機備份(壓測看到的),所以要另外看這個比例。 */
+function mainDataRatio(){
+  try{ return ((localStorage.getItem(STORAGE_KEY) || '').length + STORAGE_KEY.length) * 2 / (5 * 1024 * 1024); }
+  catch(e){ return 0; }
 }
 /* 本機空間用了多少(粗估,UTF-16 一個字兩個位元組) */
 function localUsageRatio(){
@@ -679,7 +696,8 @@ function updateStorageStatus(){
 /* 收到雲端資料:正在打字就先擱著,等游標離開欄位再套用 */
 function onRemote(data){
   if (!data || !looksLikeState(data)) return;   // 壞掉的雲端資料不要拿來蓋本機
-  if (canon(data) === lastPushed) return;
+  const c = canon(data);
+  if (c === lastPushed || recentPushed.includes(c)) return;   // 自己的回音(包括晚到的舊回音)
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){
     pendingRemote = data;
     return;
@@ -1581,7 +1599,7 @@ function xirr(flows){
   let lo = -0.999999, hi = 10;   // 幾乎全賠時答案會逼近 −100%,下界要夠低
   let flo = npv(lo), fhi = npv(hi);
   if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
-  for (let i = 0; i < 200 && hi - lo > 1e-10; i++){   // 區間小到 1e-10(報酬率誤差遠小於 0.01%)就夠了,不用跑滿 200 輪
+  for (let i = 0; i < 200 && hi - lo > 1e-13; i++){   // 區間小到 1e-13 就夠了(約 47 輪),不用跑滿 200 輪
     const mid = (lo + hi) / 2;
     const fm = npv(mid);
     if (!isFinite(fm)) return null;
@@ -1621,7 +1639,10 @@ function computePosition(){
 function computePositionUncached(){
   const lots = {};
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
-  const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  // 同一天之內先處理買進、再配息、最後賣出:不可能先賣掉還沒買的股票。以前只照日期排,同一天就照輸入順序,
+  // 當沖或事後改日期時先記了賣出,會被判成賣超過持股、那筆賣出的損益整個不算(隨機測試抓到)
+  const dayOrder = t => t.action === 'sell' ? 2 : t.action === 'dividend' ? 1 : 0;
+  const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : dayOrder(a) - dayOrder(b));
   sorted.forEach(t => {
     const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
     const gross = t.shares * t.price;
@@ -1724,6 +1745,9 @@ function maybeSnapshot(){
   const nw = netWorth();
   if (!nw && !p.hasData && !r.totalValue) return false;
   const m = thisMonth();
+  // 已經有比「這個月」還新的快照 = 手機時間被往回調了(或時區跑掉)。這時候照寫會用現在的數字
+  // 蓋掉已經固定的過去月份(壓測看到 10 月調回 9 月,9 月的淨資產跟細項都被改掉),所以什麼都不寫。
+  if (state.netWorthHistory.some(h => h.m > m)) return false;
   const found = state.netWorthHistory.find(h => h.m === m);
   if (found && !found.auto) return false;
   const snap = {
@@ -2000,7 +2024,16 @@ function renderOverview(){
       <button class="btn danger" data-act="clear-all">${pendingConfirm === 'clear-all' ? '⚠️ 再按一次清空' : '清空全部'}</button>
       <input type="file" accept="application/json,.json,text/plain" id="importFile" style="display:none">
       ${dataMsg ? `<div class="muted" style="text-align:center; margin-top:10px;">${esc(dataMsg)}</div>` : ''}
-      ${(storageMode !== 'cloud' && localUsageRatio() > 0.75) ? `
+      ${(storageMode !== 'cloud' && mainDataRatio() > 0.45) ? `
+        <div class="alert amber">
+          <span class="ai">💾</span>
+          <div>
+            <div class="at">資料已經大到這台裝置放不下自動備份</div>
+            <div class="ad">主資料約佔瀏覽器空間的 ${Math.round(mainDataRatio() * 100)}%,再存一份一樣大的備份就放不下了,
+            每天的自動快照可能存不進去(「還原備份」裡會找不到最近的)。請改用雲端同步(登入 Google 帳號),
+            或定期按「匯出備份」存一份到手機檔案或雲端硬碟。</div>
+          </div>
+        </div>` : (storageMode !== 'cloud' && localUsageRatio() > 0.75) ? `
         <div class="alert amber">
           <span class="ai">💾</span>
           <div>
@@ -3771,8 +3804,10 @@ function stateJSON(){ return JSON.stringify(state, null, 2); }
 /* 匯出成 CSV 給 Excel。多張表放同一個檔,以空行和標題分隔。
    開頭加 BOM,Excel 開繁中才不會變亂碼。 */
 function csvCell(v){
-  const t = String(v === null || v === undefined ? '' : v);
-  return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  let t = String(v === null || v === undefined ? '' : v);
+  // 文字欄位以 = + - @ 開頭,Excel 會當成公式執行(CSV 公式注入);前面加 ' 讓它當純文字。數字(負數金額)不動。
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(t)) t = "'" + t;
+  return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
 }
 function csvTable(title, headers, rows){
   if (!rows.length) return '';
@@ -3821,6 +3856,13 @@ function stateCSV(){
   out += csvTable('# 每月快照', ['月份', '淨資產', '部位市值', '借款餘額', '整體損益'],
     state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1)
       .map(h => [h.m, h.v, h.pv === null ? '' : h.pv, h.loan === null ? '' : h.loan, h.pnl === null ? '' : h.pnl]));
+
+  // 每月資產/負債細項(2026-09 起才有):一列一項,用 Excel 樞紐分析就看得到每一項每個月怎麼變
+  const itemRows = [];
+  state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).forEach(h => {
+    (h.items || []).forEach(it => itemRows.push([h.m, it.t === 'l' ? '負債' : '資產', it.name, it.amount]));
+  });
+  out += csvTable('# 每月資產負債細項', ['月份', '類型', '項目', '金額'], itemRows);
 
   const p = computePosition();
   out += csvTable('# 目前損益', ['項目', '金額'], [
