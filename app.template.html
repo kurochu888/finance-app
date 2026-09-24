@@ -1479,10 +1479,13 @@ function symbolLeverage(sym){
 }
 const hasTrades = () => state.trades.length > 0;
 function heldShares(sym){
+  // 賣出只扣實際賣得掉的股數(soldQtyById),跟損益的回放一致。以前直接買減賣,
+  // 「先記了一筆超賣、之後才買」會算成 0 股,損益卻說持有,市值/曝險/報酬率各算各的
+  const sold = soldQtyById();
   let n = 0;
   state.trades.forEach(t => {
     if (t.symbol !== sym || t.action === 'dividend') return;
-    n += (t.action === 'sell' ? -t.shares : t.shares);
+    n += (t.action === 'sell' ? -(sold[t.id] ?? t.shares) : t.shares);
   });
   return Math.max(0, n);
 }
@@ -1556,9 +1559,12 @@ function cashFlows(merge = true){   // merge=false 回傳合併前的明細(測�
   const flows = [];
   const add = (date, amount) => { if (date && amount) flows.push({ date, amount }); };
 
+  // 賣超過當時持股的部分,損益那邊不計(computePositionUncached),這裡也只算實際賣得掉的股數——
+  // 以前照整筆算成流入,損益說「沒有計入」、報酬率卻算進去了,兩邊對不起來(先賣後買時 XIRR 變 0%)
+  const sellQty = soldQtyById();
   state.trades.forEach(t => {
     if (t.action === 'dividend') add(t.date, t.amount - t.fee);
-    else if (t.action === 'sell') add(t.date, t.shares * t.price - t.fee);
+    else if (t.action === 'sell') add(t.date, (sellQty[t.id] ?? t.shares) * t.price - t.fee);
     else if (t.source !== 'loan') add(t.date, -(t.shares * t.price + t.fee));
   });
 
@@ -1651,13 +1657,27 @@ function computePosition(){
   return posMemo;
 }
 
+/* 買賣紀錄的回放順序:依日期,同一天之內先買進、再配息、最後賣出(不可能先賣掉還沒買的股票)。
+   以前只照日期排,同一天就照輸入順序,當沖或事後改日期時先記了賣出,會被判成賣超過持股(隨機測試抓到)。 */
+const tradeDayOrder = t => t.action === 'sell' ? 2 : t.action === 'dividend' ? 1 : 0;
+const sortedTrades = () => state.trades.slice()
+  .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : tradeDayOrder(a) - tradeDayOrder(b));
+/* 每筆賣出實際賣得掉的股數(賣超過當時持股的部分不算),損益跟現金流共用 */
+function soldQtyById(){
+  const held = {}, out = {};
+  sortedTrades().forEach(t => {
+    if (t.action === 'buy') held[t.symbol] = (held[t.symbol] || 0) + t.shares;
+    else if (t.action === 'sell'){
+      out[t.id] = Math.min(t.shares, Math.max(0, held[t.symbol] || 0));
+      held[t.symbol] = (held[t.symbol] || 0) - out[t.id];
+    }
+  });
+  return out;
+}
 function computePositionUncached(){
   const lots = {};
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
-  // 同一天之內先處理買進、再配息、最後賣出:不可能先賣掉還沒買的股票。以前只照日期排,同一天就照輸入順序,
-  // 當沖或事後改日期時先記了賣出,會被判成賣超過持股、那筆賣出的損益整個不算(隨機測試抓到)
-  const dayOrder = t => t.action === 'sell' ? 2 : t.action === 'dividend' ? 1 : 0;
-  const sorted = state.trades.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : dayOrder(a) - dayOrder(b));
+  const sorted = sortedTrades();   // 同一天先買、再配息、最後賣,見 sortedTrades
   sorted.forEach(t => {
     const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
     const gross = t.shares * t.price;
