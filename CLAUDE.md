@@ -95,6 +95,14 @@ id 沿用舊值以確保重複呼叫不會飄動。
 已經用反推比例存下來的歷史,載入時 `applyKnownSplitRatios()` 會自動校正(可重複呼叫)。以後有新的分割,
 加一行進 `KNOWN_SPLIT_RATIOS` 就好。`tests/trend.js` 有逐月倒著合併跟公告比例的回歸測試。
 
+**OVERHEAT(高檔減半,2026-09 回測實驗)**——`runBacktest(hist, params, overheat)` 多了一個只在回測的狀態:
+HOLD 時收盤 > 快線 × trigger(1.3)賣一半(當現金),OVERHEAT 時先檢查原本出場線,否則回到快線 × reentry(1.1)
+以內買回原股數。`computeTrend` **刻意還沒有**這個狀態——使用者要先看回測(`OVERHEAT_GRID` 掃 4×3 組門檻,
+要大部分組合都穩定比原策略好才算數)再決定要不要放進正式訊號;真的要放時 `computeTrend` 要照 `runBacktest`
+逐行一起改,曝險卡片、狀態提醒、說明頁也要跟著處理 OVERHEAT。`overheat` 傳 null 時兩邊必須完全一致
+(`tests/backtest.js` 有檢查)。這個規則是賭「漲過頭會回到均線附近」,跟趨勢跟隨的邏輯相反,
+而且高點崩盤時會先在快線 1.1 倍買回、再跌到出場線才全出——它不是崩盤保護,討論時要講清楚。
+
 **證交所請求節流(`twseJson()`)**——所有對證交所的請求都要走它:排隊、間隔 `TWSE_GAP_MS`(2 秒),
 連續失敗 5 次進入 20 分鐘冷卻(存 localStorage),冷卻中直接丟 `TwseBlocked`。不要再直接 `fetch()`
 證交所,也不要用 `Promise.all` 繞過排隊;第一次抓完整歷史因此要約 10 分鐘,這是刻意的取捨。
