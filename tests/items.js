@@ -24,7 +24,7 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, maybeSnapshot,
-  onField, onClick, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets, applyRemote, sampleData };`);
+  onField, onClick, maybePostInterest, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets, applyRemote, sampleData };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -119,6 +119,43 @@ console.log('手機時間被往回調(10 月調回 9 月):已經固定的 9 月�
   simNow = new RealDate('2026-10-06T09:00:00').getTime();   // 時間調回正確之後恢復正常更新
   field('aa-z1', 300);
   must(A.state.netWorthHistory.find(h => h.m === '2026-10').items[0].amount === 300, '時間恢復正常後,本月快照要照常更新');
+})();
+console.log('  ok');
+
+console.log('房貸利息自動記入:整個月沒開 app 的月份,下次打開要補記;刪掉的月份不補回來');
+(function(){
+  const s4 = A.emptyState();
+  s4.leverage.autoInterest = true; s4.leverage.annualRate = 2.4;
+  s4.leverage.draws = [{ id:'d1', label:'x', amount:1000000, useDate:'2026-08-15', note:'', repayments:[{ id:'r1', date:'2026-10-20', amount:500000 }] }];
+  A.state = s4;
+  simNow = new RealDate('2026-09-02T09:00:00').getTime(); A.maybePostInterest();
+  simNow = new RealDate('2027-01-10T09:00:00').getTime(); A.maybePostInterest();
+  const posted = A.state.leverage.interestPosted.slice().sort().join(',');
+  must(posted === '2026-09,2026-10,2026-11,2026-12,2027-01', `中間沒開的月份要補記,得到 ${posted}`);
+  const amt = m => (A.state.transactions.find(t => t.date === m + '-01') || {}).amount;
+  must(amt('2026-10') === -2000 && amt('2026-11') === -1000, `10 月用月初餘額 100 萬、11 月(還了 50 萬之後)用 50 萬:得到 ${amt('2026-10')} / ${amt('2026-11')}`);
+  // 使用者刪掉 12 月那筆,不能再補回來
+  A.state.transactions = A.state.transactions.filter(t => t.date !== '2026-12-01');
+  simNow = new RealDate('2027-02-03T09:00:00').getTime(); A.maybePostInterest();
+  must(!A.state.transactions.some(t => t.date === '2026-12-01'), '使用者刪掉的月份不該被補回來');
+  must(A.state.transactions.some(t => t.date === '2027-02-01'), '新的月份要照常記入');
+  must(A.state.transactions.filter(t => t.date === '2026-10-01').length === 1, '同一個月不能記兩次');
+
+  // 使用者關掉自動記入一段時間(自己手動記),重新打開時不能把關掉期間補記回來
+  A.onClick({ dataset: { act: 'toggle-autointerest' } });          // 2027-02 關掉
+  simNow = new RealDate('2027-05-04T09:00:00').getTime();
+  A.onClick({ dataset: { act: 'toggle-autointerest' } });          // 2027-05 打開
+  must(!['2027-03-01', '2027-04-01'].some(d => A.state.transactions.some(t => t.date === d)), '關掉期間(3、4 月)不該被補記');
+  must(A.state.transactions.some(t => t.date === '2027-05-01'), '重新打開的當月要記入');
+  // 更早的歷史空檔也不回頭補(可能是刻意關掉的)
+  const s5 = A.emptyState();
+  s5.leverage.autoInterest = true; s5.leverage.annualRate = 2.4;
+  s5.leverage.draws = [{ id:'d1', label:'x', amount:1000000, useDate:'2025-01-15', note:'', repayments:[] }];
+  s5.leverage.interestPosted = ['2025-02', '2025-06'];            // 3~5 月是空檔
+  A.state = s5;
+  simNow = new RealDate('2025-07-02T09:00:00').getTime(); A.maybePostInterest();
+  must(!A.state.transactions.some(t => t.date === '2025-03-01'), '最近一次記入之前的歷史空檔不該回頭補');
+  must(A.state.transactions.some(t => t.date === '2025-07-01'), '本月要記入');
 })();
 console.log('  ok');
 
