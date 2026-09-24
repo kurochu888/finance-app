@@ -408,7 +408,7 @@ function normalize(raw){
       const leverage = x.leverage === undefined ? 1 : num(x.leverage);
       const def = defaultTrendParams(leverage);
       const t = x.trend && typeof x.trend === 'object' ? x.trend : {};
-      return {
+      const out = {
         key: String(x.key || '') || uid(),
         id: String(x.id || '').trim(),          // 代號可以先留空,不要亂數化
         name: String(x.name || ''),
@@ -437,6 +437,8 @@ function normalize(raw){
           .slice(-PRICE_HIST_KEEP),
         splits: normalizeSplits(x.splits)
       };
+      applyKnownSplitRatios(out.id, out.priceHistory, out.splits);   // 反推比例存下來的舊歷史改成公告比例
+      return out;
     });
   }
   s.trades = arr(raw.trades).map(t => ({
@@ -703,6 +705,7 @@ async function pullBacktestHistoryFromCloud(){
       backtestFullHistory = remote.data;
       backtestSplits = remote.splits || {};
       backtestListedFrom = remote.listedFrom || {};
+      applyBacktestKnownSplits();
       saveBacktestHistoryCache();
       backtestHistMsg = '已從雲端帶入其他裝置抓過的完整歷史,不用重抓。';
     }else if (remote && remote.data){
@@ -1070,12 +1073,35 @@ async function twseRows(url){
    偵測只負責「第一次」看到某個分割;已記錄的分割不重複記。存起來的歷史永遠滿足
    「價格 = 原始收盤 × 該日之後所有已記錄分割的比例」,不管抓的順序、重抓幾次都一樣。 */
 const HISTORY_GAP_DAYS = 16;   // 比農曆年封關(約 9-10 天)還寬鬆,不會誤判正常長假
-function adjustForSplits(rows, splits = null){
+/* 已知分割的公告比例。偵測到的比例是「分割前一天 → 分割當天」的收盤價比,會把分割當天
+   的真實漲跌一起吃掉(那天在還原後的序列裡漲跌變 0);比例對得上公告值(差距在正2 單日
+   漲跌範圍內)就改用公告值,分割當天的漲跌就保留下來。只寫比例不寫日期——日期還是靠偵測。 */
+const KNOWN_SPLIT_RATIOS = { '00631L': 1 / 22 };
+function exactSplitRatio(id, observed){
+  const k = KNOWN_SPLIT_RATIOS[id];
+  return k && Math.abs(observed / k - 1) < 0.25 ? k : observed;
+}
+/* 已經存下來、用反推比例還原的歷史,換成公告比例:分割日之前的價格整段乘上(公告/反推),
+   記錄的比例改成公告值。改完之後再跑一次就是 no-op,可以放心每次載入都呼叫。回傳有沒有改到。 */
+function applyKnownSplitRatios(id, hist, splits){
+  let changed = false;
+  (splits || []).forEach(sp => {
+    const exact = exactSplitRatio(id, sp.ratio);
+    if (exact === sp.ratio) return;
+    const f = exact / sp.ratio;
+    (hist || []).forEach(h => { if (h.d < sp.d) h.c = Math.round(h.c * f * 10000) / 10000; });
+    sp.ratio = exact;
+    changed = true;
+  });
+  return changed;
+}
+function adjustForSplits(rows, splits = null, id = ''){
   for (let i = 1; i < rows.length; i++){
     const dayGap = (new Date(rows[i].d) - new Date(rows[i - 1].d)) / 86400000;
     if (dayGap > HISTORY_GAP_DAYS) continue;   // 中間隔太久,大波動是真實累積漲跌或資料缺口,不是分割
-    const ratio = rows[i - 1].c > 0 ? rows[i].c / rows[i - 1].c : 1;
-    if (ratio > 0 && (ratio < 0.6 || ratio > 1.6)){
+    const observed = rows[i - 1].c > 0 ? rows[i].c / rows[i - 1].c : 1;
+    if (observed > 0 && (observed < 0.6 || observed > 1.6)){
+      const ratio = exactSplitRatio(id, observed);
       for (let j = 0; j < i; j++) rows[j].c = Math.round(rows[j].c * ratio * 10000) / 10000;
       if (splits && !splits.some(sp => sp.d === rows[i].d)) splits.push({ d: rows[i].d, ratio });
     }
@@ -1093,7 +1119,7 @@ function normalizeSplits(v){
     .filter(sp => /^\d{4}-\d{2}-\d{2}$/.test(sp.d) && sp.ratio > 0);
 }
 /* splits 傳入時會被就地更新(偵測到新的分割就記進去),呼叫端要把它存回去。 */
-function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null){
+function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null, id = ''){
   const byDate = new Map((hist || []).map(h => [h.d, h.c]));
   (rows || []).forEach(row => {
     const d = rocToISO(row[0]);
@@ -1105,7 +1131,7 @@ function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null){
     .map(([d, c]) => ({ d, c }))
     .filter(h => /^\d{4}-\d{2}-\d{2}$/.test(h.d) && h.c > 0)
     .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
-  return adjustForSplits(merged, splits).slice(-keep);
+  return adjustForSplits(merged, splits, id).slice(-keep);
 }
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
    使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
@@ -1138,7 +1164,7 @@ async function fetchQuotes(manual){
       if (rows && rows.length){
         const row = rows[rows.length - 1];
         it.price = cleanNum(row[6]);      // 收盤價
-        it.priceHistory = mergeHistory(it.priceHistory, rows, PRICE_HIST_KEEP, it.splits || (it.splits = []));   // 順便把整月資料併進歷史,累積均線用的資料
+        it.priceHistory = mergeHistory(it.priceHistory, rows, PRICE_HIST_KEEP, it.splits || (it.splits = []), it.id);   // 順便把整月資料併進歷史,累積均線用的資料
         date = rocToISO(row[0]) || date;
         got++;
       }else{
@@ -1209,7 +1235,7 @@ async function backfillHistory(){
         const j = await twseJson(TWSE_STOCK + encodeURIComponent(target.id) + '&date=' + monthParam(offset));
         if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
           const live = findInstrumentByKey(target.key);
-          if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []));
+          if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []), live.id);
           monthsOk++;
         }
       }catch(e){
@@ -1234,7 +1260,15 @@ function loadBacktestHistoryCache(){
     backtestFullHistory = raw.hist || {};
     backtestSplits = raw.splits || {};
     backtestListedFrom = raw.listedFrom || {};
+    if (applyBacktestKnownSplits()) saveBacktestHistoryCache();
   }catch(e){ backtestFullHistory = {}; backtestSplits = {}; backtestListedFrom = {}; }
+}
+function applyBacktestKnownSplits(){
+  let changed = false;
+  Object.keys(backtestSplits).forEach(id => {
+    if (applyKnownSplitRatios(id, backtestFullHistory[id], backtestSplits[id])) changed = true;
+  });
+  return changed;
 }
 function saveBacktestHistoryCache(){
   try{ localStorage.setItem(BACKTEST_HIST_KEY, JSON.stringify({ hist: backtestFullHistory, splits: backtestSplits, listedFrom: backtestListedFrom })); }catch(e){ /* 存不下就算了,下次按重抓 */ }
@@ -1298,7 +1332,7 @@ async function backfillFullHistory(){
       try{
         const j = await twseJson(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
         if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-          hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []));
+          hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []), tid);
           ok = true;
         }else{
           emptyMonths.add(m);
