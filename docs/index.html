@@ -613,8 +613,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-24 · db089577a7';
-const BUILD_HASH = 'db089577a7';
+const BUILD_VERSION = '2026-09-24 · 0e832163e4';
+const BUILD_HASH = '0e832163e4';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2816,8 +2816,9 @@ function runAllBacktests(){
       mddStrat: res.mddStrat, mddBh: res.mddBh,
       periods: { strat: splitStats(res.curve, 'strat'), bh: splitStats(res.curve, 'bh') },
       labels: sampled.map(pt => pt.d.slice(0, 7)),
-      stratSeries: sampled.map(pt => pt.strat / BACKTEST_INITIAL_CASH * 100),
-      bhSeries: sampled.map(pt => pt.bh / BACKTEST_INITIAL_CASH * 100),
+      // 圖上畫累積報酬率(%),跟上面「總報酬」同一個單位;以前畫淨值指數(起點=100),圖例的 9076 跟上面的 +8976% 看起來像對不起來
+      stratSeries: sampled.map(pt => (pt.strat / BACKTEST_INITIAL_CASH - 1) * 100),
+      bhSeries: sampled.map(pt => (pt.bh / BACKTEST_INITIAL_CASH - 1) * 100),
     };
   });
 }
@@ -3415,7 +3416,8 @@ function renderBacktestCard(){
           ${lineChart('bt-' + r.id, r.labels, [
             { name:'策略', color:'var(--s1)', values:r.stratSeries },
             { name:'買進持有', color:'var(--sub)', values:r.bhSeries }
-          ], { label: r.id + ' 回測淨值指數(起點=100)', height:150, fmtVal: v => v.toFixed(0) })}
+          ], { label: r.id + ' 回測累積報酬率', height:150, zero:true,
+               fmtVal: v => (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('zh-Hant-TW') + '%' })}
           ${renderBacktestPeriods(r)}
         </div>
       `).join('')}
