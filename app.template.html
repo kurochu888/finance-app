@@ -328,6 +328,7 @@ const finNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? Math.
 // finiteNum:同上,但可以指定不合法時的預設值(normalize() 補均線參數這類欄位用)。
 const finiteNum = (v, fallback) => { const n = num(v); return Number.isFinite(n) ? n : fallback; };
 const fmt = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
+const money = v => (v < 0 ? '−' : '') + 'NT$ ' + fmt(Math.abs(v));   // 負數寫成「−NT$ 400,000」,不是「NT$ -400,000」
 const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad2 = n => String(n).padStart(2, '0');
@@ -1953,7 +1954,8 @@ function computeStress(d){
 
   return {
     decline, pv: k.pv, newPv, loss, equity: k.equity, newEquity,
-    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0
+    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0,
+    capacity: k.capacity, newCapacity    // ≤ 0 時比例沒有意義(借款已經超過市值 + 額度),畫面要另外說明
   };
 }
 
@@ -2134,7 +2136,7 @@ function renderOverview(){
 
     <div class="card">
       <h3>淨資產</h3>
-      <div class="big-num">NT$ ${fmt(nw)}</div>
+      <div class="big-num">${money(nw)}</div>
       <div class="big-sub">資產 ${fmt(totalAssets())} − 負債 ${fmt(totalLiab())}</div>
       ${chart}
       <button class="btn" data-act="snap-networth">📌 記錄 ${monthLabel(thisMonth())} 的淨資產</button>
@@ -2158,7 +2160,7 @@ function renderOverview(){
         <div class="big-sub">整體損益(已扣借款利息)</div>
         ${xirrRow(p)}
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
-        <div class="row"><span class="label">淨投入自有資金</span><span class="val">NT$ ${fmt(p.netCash)}</span></div>
+        <div class="row"><span class="label">淨投入自有資金</span><span class="val">${money(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
         <div class="row"><span class="label">累計報酬(對累計自有投入)</span><span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
         <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
@@ -2169,7 +2171,7 @@ function renderOverview(){
       <h3>${esc(monthLabel(viewMonth))}收支</h3>
       <div class="row"><span class="label">收入</span><span class="val pos">NT$ ${fmt(flow.income)}</span></div>
       <div class="row"><span class="label">支出</span><span class="val">NT$ ${fmt(flow.expense)}</span></div>
-      <div class="row"><span class="label">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}">NT$ ${fmt(flow.balance)}</span></div>
+      <div class="row"><span class="label">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}">${money(flow.balance)}</span></div>
       ${!txOfMonth(viewMonth).length ? `<div class="empty">這個月還沒有交易紀錄。</div>
       <button class="btn" data-act="go" data-v="ledger">去記一筆</button>` : ''}
     </div>
@@ -2276,7 +2278,7 @@ function renderAssets(){
   return `
     <div class="card">
       <h3>淨資產</h3>
-      <div class="big-num" id="a-networth">NT$ ${fmt(tA - tL)}</div>
+      <div class="big-num" id="a-networth">${money(tA - tL)}</div>
       <div class="row"><span class="label">總資產</span><span class="val" id="a-total">NT$ ${fmt(tA)}</span></div>
       <div class="row"><span class="label">總負債</span><span class="val neg" id="l-total">NT$ ${fmt(tL)}</span></div>
     </div>
@@ -2318,7 +2320,7 @@ function renderAssets(){
 function refreshAssets(){
   const tA = totalAssets(), tL = totalLiab();
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('a-networth', 'NT$ ' + fmt(tA - tL));
+  set('a-networth', money(tA - tL));
   set('a-total', 'NT$ ' + fmt(tA));
   set('l-total', 'NT$ ' + fmt(tL));
   state.assets.forEach(a => {
@@ -2403,7 +2405,7 @@ function renderLedger(){
       <h3>${esc(monthLabel(viewMonth))}</h3>
       <div class="row"><span class="label">收入 ${txOfMonth(viewMonth).filter(t=>t.amount>0).length} 筆</span><span class="val pos">NT$ ${fmt(flow.income)}</span></div>
       <div class="row"><span class="label">支出 ${txOfMonth(viewMonth).filter(t=>t.amount<0).length} 筆</span><span class="val">NT$ ${fmt(flow.expense)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}" style="font-weight:800;">NT$ ${fmt(flow.balance)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}" style="font-weight:800;">${money(flow.balance)}</span></div>
     </div>
 
     <div class="card">
@@ -3034,7 +3036,7 @@ function computeExposurePlan(){
 const chartData = {};   // 圖表資料暫存,點擊時查得到數值
 
 function lineChart(key, labels, series, opts){
-  const o = Object.assign({ height:130, zero:false, fmtVal: v => 'NT$ ' + fmt(v) }, opts || {});
+  const o = Object.assign({ height:130, zero:false, fmtVal: money }, opts || {});
   const w = 320, h = o.height, padL = 8, padR = 8, padT = 14, padB = 20;
   const all = [];
   series.forEach(s2 => s2.values.forEach(v => { if (v !== null && v !== undefined) all.push(v); }));
@@ -3152,10 +3154,11 @@ function renderRisk(){
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
       <div class="row" style="margin-top:12px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
-      <div class="row total"><span class="label">自己的錢</span><span class="val">NT$ ${fmt(k.equity)}</span></div>
+      <div class="row total"><span class="label">自己的錢</span><span class="val ${k.equity < 0 ? 'neg' : ''}">${money(k.equity)}</span></div>
+      ${k.capacity <= 0 ? `<div class="muted neg" style="margin-top:4px;">借款已經超過「部位市值 + 房貸額度」,曝險比例沒有意義(顯示 —):部位全部賣掉也還不清借款。</div>` : ''}
       <div class="row sub"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
       <div class="row sub"><span class="label">槓桿倍數</span><span class="val">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</span></div>
-      <div class="row sub"><span class="label">分母(自己的錢 + 額度 ${fmt(k.creditLimit)})</span><span class="val">NT$ ${fmt(k.capacity)}</span></div>
+      <div class="row sub"><span class="label">分母(自己的錢 + 額度 ${fmt(k.creditLimit)})</span><span class="val">${money(k.capacity)}</span></div>
       <button class="why" data-act="go" data-v="help">曝險怎麼算 →</button>
       ${posChart ? `
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
@@ -3244,7 +3247,7 @@ function renderPnL(){
 
     <div class="card">
       <h3>投入的錢</h3>
-      <div class="mid-num">NT$ ${fmt(p.netCash)}</div>
+      <div class="mid-num">${money(p.netCash)}</div>
       <div class="big-sub">淨投入 —— 還放在裡面的自有資金</div>
       <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${p.invested ? (p.buyCash / p.invested * 100).toFixed(1) : 0}%"></div></div>
@@ -3467,10 +3470,12 @@ function stressBody(){
   <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
   <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
   <div class="row"><span class="label">部位淨值(自己的錢)</span>
-    <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">NT$ ${fmt(st.equity)} → ${fmt(st.newEquity)}</span></div>
+    <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">${money(st.equity)} → ${money(st.newEquity)}</span></div>
   <div class="row"><span class="label" style="font-weight:700;">曝險比例</span>
-    <span class="val" style="font-weight:800;">${st.ratio.toFixed(0)}% → ${st.newRatio.toFixed(0)}%</span></div>
-  ${plan ? `<div class="row sub"><span class="label">對照目前正2曝險目標(${plan.targetRatio}%)</span>
+    <span class="val" style="font-weight:800;">${st.capacity > 0 ? st.ratio.toFixed(0) + '%' : '—'} → ${st.newCapacity > 0 ? st.newRatio.toFixed(0) + '%' : '—'}</span></div>
+  ${st.newCapacity <= 0 ? `<div class="muted neg" style="margin-top:4px;">跌完之後借款會超過「部位市值 + 房貸額度」,曝險比例已經沒有意義——
+    部位全部賣掉也還不清借款,這是最危險的狀態。</div>`
+  : plan ? `<div class="row sub"><span class="label">對照目前正2曝險目標(${plan.targetRatio}%)</span>
     <span class="val">${st.newRatio > plan.targetRatio ? '會超過目標,是加碼還是減碼自己判斷' : '還在目標之內'}</span></div>` : ''}
   <details class="tip"><summary>試算怎麼算的</summary><div class="body">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div></details>`;
 }
@@ -3492,6 +3497,15 @@ function renderExposurePlanCard(){
   // 歷史價格還不夠算慢線的那檔,computeTrend 回的 WATCH 不是真的出場訊號——照算的話目標變 0%,
   // 卡片會叫你把整個部位賣掉(新增標的、回補失敗時就會這樣)。先說清楚在等資料,不給金額。
   const short = lev2.filter(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded; });
+  // 分母(部位淨值 + 額度)≤ 0:借款已經超過市值 + 額度,比例跟加碼/減碼金額都是拿負的分母解出來的,沒有意義
+  if (computeRisk().capacity <= 0 && computeRisk().pv > 0){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="muted neg">借款已經超過「部位市值 + 房貸額度」,曝險比例沒有意義,算不出該加碼或減碼多少。
+        先確認「紀錄」分頁的動用/還款金額跟「設定」分頁的房貸額度是不是填對了。</div>
+    </div>`;
+  }
   if (short.length){
     return `
     <div class="card">

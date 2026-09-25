@@ -461,6 +461,22 @@ check('事後在清單上把還款改成超過尚欠、或把日期清空:要標
   return '';
 });
 
+check('借款超過「市值 + 額度」:曝險比例顯示 —、壓力測試不能說「還在目標之內」、負的金額寫 −NT$', () => {
+  A.state = A.emptyState();
+  A.state.instruments[0].price = 10; A.state.instruments[0].shares = 10000;
+  A.state.leverage.creditLimit = 0;
+  A.state.leverage.draws = [{ id:'d', label:'x', amount:500000, useDate:'2025-01-01', note:'', repayments:[] }];
+  A.currentTab = 'leverage'; A.levTab = 'signal'; A.renderAll();
+  const h = document.getElementById('content').innerHTML.replace(/<[^>]+>/g, ' ');
+  if (/還在目標之內/.test(h)) return '借款超過市值 + 額度,壓力測試卻說「還在目標之內」';
+  if (/NT\$ -\d/.test(h)) return '負的金額寫成「NT$ -…」';
+  if (/加碼第|方案B/.test(h)) return '分母是負的還給加碼/減碼金額';
+  A.levTab = 'overview'; A.renderAll();
+  const h2 = document.getElementById('content').innerHTML.replace(/<[^>]+>/g, ' ');
+  if (!/−NT\$ 400,000/.test(h2)) return '自己的錢沒有寫成 −NT$ 400,000';
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;
