@@ -301,6 +301,32 @@ console.log('接刀加碼(狀態還是 WAIT_RECOVER、只有層數變)也要跳�
 })();
 console.log('  ok');
 
+console.log('一檔出場、兩檔市值不一樣:減碼金額照市值比例分,不能叫小的那檔賣超過自己的市值(迴歸測試:以前寫各半)');
+(function(){
+  const mk = (fallDays) => { const h = []; let c = 20; const d = new Date(2023, 0, 2);
+    for (let i = 0; h.length < 320 + fallDays; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0) continue;
+      c *= h.length < 320 ? 1.002 : 0.985; h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 1000) / 1000 }); }
+    return h; };
+  A.state = A.emptyState();
+  const [a, b] = A.state.instruments;   // 00631L 出場、00675L 續抱
+  b.priceHistory = mk(0); b.splits = [];
+  let fall = 0;
+  for (let f = 5; f < 60; f++){ a.priceHistory = mk(f); const t = A.computeTrend(a); if (t.status === 'WAIT_RECOVER' && t.pyramidCount === 0){ fall = f; break; } }
+  must(fall > 0, '造不出「剛出場還沒接刀」的路徑');
+  a.priceHistory = mk(fall); a.splits = [];
+  a.price = 10; a.shares = 70000;   // 市值 70 萬
+  b.price = 10; b.shares = 30000;   // 市值 30 萬
+  A.state.trades = [];
+  const plan = A.computeExposurePlan();
+  must(plan && plan.progress === 0 && plan.deltaLoan < 0, `應該是目標 0%、要減碼:${JSON.stringify(plan && { progress: plan.progress, deltaLoan: plan.deltaLoan })}`);
+  const txt = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const m675 = /00675L 約 NT\$ ([\d,]+)/.exec(txt), m631 = /00631L 約 NT\$ ([\d,]+)/.exec(txt);
+  must(m675 && m631, '減碼沒有逐檔寫金額:' + txt.slice(0, 200));
+  if (m675) must(Number(m675[1].replace(/,/g, '')) <= 300000, `叫 00675L 賣 ${m675[1]},超過它的市值 30 萬`);
+  must(!/各半/.test(txt.split('可考慮減碼')[1] || ''), '減碼還寫各半');
+})();
+console.log('  ok');
+
 console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄溜過去(迴歸測試:壓測抓到的 bug)');
 (function testInfinityGuard(){
   // num() 只擋 NaN,擋不住 Infinity(parseFloat('Infinity') 是合法的);
