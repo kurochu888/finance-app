@@ -1347,10 +1347,12 @@ function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null, id = ''
 /* 訊號是用「收盤價」算的。盤中(台灣 13:35 以前)如果證交所的資料已經帶著今天那一筆,那是還沒收盤的價格,
    併進均線用的歷史會讓訊號盤中跳一次、收盤又變回去——照 🔔 執行的話可能照著假訊號下單。
    證交所的日成交資料一般收盤後才有當天那筆,這裡只是保險:13:35 以前不收今天的列(股價顯示不受影響)。 */
-function closedRows(rows){
-  const now = new Date();
-  if (now.getHours() * 60 + now.getMinutes() >= 13 * 60 + 35) return rows;
-  const today = todayISO();
+function closedRows(rows, nowMs = Date.now()){
+  // 一律用台灣時間(UTC+8)判斷:手機時區換成國外的話,當地時間跟台股收盤對不上(美國早上 9 點台灣早就收盤了,
+  // 用當地時間會把已經確定的收盤價擋掉,訊號晚好幾個小時)
+  const tp = new Date(nowMs + 8 * 3600000);
+  if (tp.getUTCHours() * 60 + tp.getUTCMinutes() >= 13 * 60 + 35) return rows;
+  const today = tp.toISOString().slice(0, 10);
   return (Array.isArray(rows) ? rows : []).filter(r => !(Array.isArray(r) && rocToISO(r[0]) === today));
 }
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,

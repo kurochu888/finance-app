@@ -477,13 +477,13 @@ check('借款超過「市值 + 額度」:曝險比例顯示 —、壓力測試�
   return '';
 });
 
-check('13:35 以前不把今天(還沒收盤)的價格併進均線用的歷史', () => {
-  const t = A.todayISO(), [y, m, d] = t.split('-');
-  const rows = [[`${y - 1911}/${m}/01`, '1', '1', '1', '1', '1', '10', '', ''], [`${y - 1911}/${m}/${d}`, '1', '1', '1', '1', '1', '11', '', '']];
-  const now = new Date(), before = now.getHours() * 60 + now.getMinutes() < 13 * 60 + 35;
-  const kept = A.closedRows(rows).length;
-  if (before && kept !== 1 && d !== '01') return '盤中還收了今天那一筆';
-  if (!before && kept !== 2) return '收盤後把今天那一筆丟掉了';
+check('台灣時間 13:35 以前不把今天(還沒收盤)的價格併進均線用的歷史;手機在國外也照台灣時間', () => {
+  const rows = [['115/09/24', '1', '1', '1', '1', '1', '10', '', ''], ['115/09/25', '1', '1', '1', '1', '1', '11', '', '']];
+  const at = iso => Date.parse(iso);
+  if (A.closedRows(rows, at('2026-09-25T02:00:00Z')).length !== 1) return '台灣 10:00 盤中還收了今天那一筆';
+  if (A.closedRows(rows, at('2026-09-25T06:00:00Z')).length !== 2) return '台灣 14:00 收盤後把今天那一筆丟掉了';
+  // 美國東岸 9/25 早上 9 點 = 台灣 9/25 晚上 9 點,已經收盤:不能擋
+  if (A.closedRows(rows, at('2026-09-25T13:00:00Z')).length !== 2) return '人在國外(當地早上)時,把台灣已經收盤的價格擋掉了';
   return '';
 });
 
