@@ -405,12 +405,12 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
   must(p.currentRatio > 130, `這組設定曝險應該超過 130%,得到 ${p.currentRatio}`);
   must(p.holdAdjustPending === true, '剛轉成 HOLD、還沒確認過,應該要提示調整');
   let card = A.renderExposurePlanCard();
-  must(card.includes('已調整完成') && card.includes('可考慮減碼'), '剛轉成 HOLD 時卡片要給調整建議跟「已調整完成」按鈕');
+  must(card.includes('已調整完成') && card.includes('已超過目標'), '剛轉成 HOLD 時卡片要給調整建議跟「已調整完成」按鈕');
   A.onClick({ dataset: { act: 'ack-hold' } });
   p = A.computeExposurePlan();
   must(p.holdAdjustPending === false, '按了「已調整完成」之後就不該再提示');
   card = A.renderExposurePlanCard();
-  must(!card.includes('可考慮減碼') && !card.includes('方案A') && card.includes('續抱期間不做再平衡'),
+  must(!card.includes('已超過目標') && !card.includes('方案A') && card.includes('續抱期間不做再平衡'),
        '續抱期間曝險超過 130% 也不該提示減碼,只顯示目前曝險:' + card.replace(/\s+/g, ' ').slice(0, 200));
   A.state.instruments.find(x => x.id === '00675L').trend.lastSeenStatus = 'WAIT_RECOVER';   // 只有一檔確認過也還算「剛轉成」
   must(A.computeExposurePlan().holdAdjustPending === true, '兩檔要都確認過 HOLD 才算調整完');
