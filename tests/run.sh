@@ -34,6 +34,9 @@ echo
 echo "=== 照建議實際操作再重算(曝險目標、壓力測試) ==="
 node oracle.js || fail=1
 echo
+echo "=== 照策略嚴格執行 1000 天(提醒不漏、照卡片做完回到目標) ==="
+node execution.js || fail=1
+echo
 echo "=== 瀏覽器空間快滿 ==="
 node storage.js || fail=1
 echo
