@@ -411,7 +411,7 @@ function defaultTrendParams(leverage){
   const base = (num(leverage) >= 2)
     ? { maFast:120, maSlow:240, exitBuffer:0.90, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2 }
     : { maFast:100, maSlow:200, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:1 };
-  return Object.assign(base, { lastSeenStatus:'', lastSeenDate:'' });
+  return Object.assign(base, { lastSeenStatus:'', lastSeenLayers:-1, lastSeenDate:'' });   // 欄位順序跟 normalize() 一致,存檔往返才不會多出差異
 }
 const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的長度
 
@@ -478,6 +478,9 @@ function normalize(raw){
           pyramidGap: finiteNum(t.pyramidGap, 0) > 0 ? finiteNum(t.pyramidGap, def.pyramidGap) : def.pyramidGap,
           pyramidLevels: Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels)),
           lastSeenStatus: str(t.lastSeenStatus),
+          // 看過的時候已經接刀加碼到第幾層(-1 = 還沒記過)。只記狀態的話,接刀中從第 1 層加到第 2 層狀態都是
+          // WAIT_RECOVER,提醒不會跳——照 🔔 執行的話兩次加碼都會漏掉
+          lastSeenLayers: Number.isInteger(t.lastSeenLayers) && t.lastSeenLayers >= 0 ? t.lastSeenLayers : -1,
           lastSeenDate: str(t.lastSeenDate)
         },
         // 沒有 splits 欄位 = 舊版存下來的歷史:舊版逐月回補時會把分割前每個月的交界誤判成分割、
@@ -622,8 +625,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · a1c3caa63a';
-const BUILD_HASH = 'a1c3caa63a';
+const BUILD_VERSION = '2026-09-25 · ada037e258';
+const BUILD_HASH = 'ada037e258';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1363,8 +1366,16 @@ function needsBackfill(){
   return state.instruments.some(it => {
     if (!it.auto || !/^[0-9A-Za-z]{3,8}$/.test(it.id)) return false;
     const t = computeTrend(it);
-    return t.barsAvailable < t.barsNeeded;
+    return t.barsAvailable < t.barsNeeded || !!trendHistoryGap(it);
   });
+}
+/* 均線用得到的那段歷史中間有沒有缺一段。更新報價只抓「這個月」,一個多月沒開 app 的話中間那個月就不見了;
+   sma() 照筆數算,缺口前後會被硬接在一起,快慢線跟訊號都會錯(壓測重現:8 月沒開,9 月打開缺 32 天)。
+   有缺口就當成歷史不夠:自動回補(不受一天一次的限制)、訊號分頁不給訊號也不跳提醒。 */
+function trendHistoryGap(it){
+  const p = it.trend || defaultTrendParams(it.leverage);
+  const need = Math.max(p.maFast, p.maSlow) + 1;
+  return findHistoryGap((it.priceHistory || []).slice(-need));
 }
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
@@ -1423,7 +1434,8 @@ async function fetchQuotes(manual){
   // 以前每小時更新報價就再補一次 14 個月(每次十幾個請求、一半是「查無資料」)。手動按回補不受限。
   let autoDay = '';
   try{ autoDay = localStorage.getItem(AUTO_BACKFILL_KEY) || ''; }catch(e){}
-  if (needsBackfill() && !backfillBusy && (manual || autoDay !== todayISO())){
+  const gapNow = state.instruments.some(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && trendHistoryGap(it));   // 缺口關係到訊號對不對,不受一天一次限制
+  if (needsBackfill() && !backfillBusy && (manual || gapNow || autoDay !== todayISO())){
     try{ localStorage.setItem(AUTO_BACKFILL_KEY, todayISO()); }catch(e){}
     await backfillHistory();   // 歷史不夠就順便補,不用再多按一次
     // 這是在「設定」分頁按的,回補結果原本只會顯示在「訊號」分頁,這裡順便帶一份過來
@@ -2067,19 +2079,30 @@ function monthNav(){
 function ackTrend(it){
   if (!it || !it.trend) return;
   const t = computeTrend(it);
-  if (t.barsAvailable < t.barsNeeded) return;
+  if (t.barsAvailable < t.barsNeeded || trendHistoryGap(it)) return;
   it.trend.lastSeenStatus = t.status;
+  it.trend.lastSeenLayers = t.pyramidCount;
   it.trend.lastSeenDate = todayISO();
 }
 function seedTrendBaselines(){
   let changed = false;
   state.instruments.forEach(it => {
-    if (!it.trend || it.trend.lastSeenStatus) return;
+    if (!it.trend) return;
+    const seedStatus = !it.trend.lastSeenStatus;
+    // 舊資料只記了狀態、沒記層數:狀態跟現在一樣的話,安靜補上現在的層數(不跳提醒);狀態不一樣的話提醒本來就會跳,按知道了時一起記
+    const seedLayers = !seedStatus && !(it.trend.lastSeenLayers >= 0);
+    if (!seedStatus && !seedLayers) return;
     const t = computeTrend(it);
-    if (t.barsAvailable < t.barsNeeded) return;       // 歷史還不夠,算出來的 WATCH 不算數
-    it.trend.lastSeenStatus = t.status;
-    it.trend.lastSeenDate = todayISO();
-    changed = true;
+    if (t.barsAvailable < t.barsNeeded || trendHistoryGap(it)) return;       // 歷史還不夠/有缺口,算出來的狀態不算數
+    if (seedStatus){
+      it.trend.lastSeenStatus = t.status;
+      it.trend.lastSeenLayers = t.pyramidCount;
+      it.trend.lastSeenDate = todayISO();
+      changed = true;
+    }else if (it.trend.lastSeenStatus === t.status){
+      it.trend.lastSeenLayers = t.pyramidCount;
+      changed = true;
+    }
   });
   return changed;
 }
@@ -2121,13 +2144,14 @@ function renderOverview(){
 
   const alerts = trendChanges().map(t => {
     const it = findInstrumentByKey(t.key);
+    const a = trendAlertText(t, it);
     return `
       <div class="alert amber">
         <span class="ai">🔔</span>
         <div>
-          <div class="at">${esc(it.id || it.name)} 狀態變成${t.status === 'HOLD' ? '續抱(HOLD)' : t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}</div>
+          <div class="at">${a.title}</div>
           <div class="ad">
-            原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。
+            ${a.body}
             <button class="go" data-act="go" data-v="leverage">去槓桿頁看</button>
           </div>
         </div>
@@ -2630,6 +2654,9 @@ function renderHelp(){
       <p><strong>HOLD 的目標只在剛轉成 HOLD 時調整一次。</strong>兩檔都轉成 HOLD 時,卡片會顯示調整到目標要投入(或減碼)多少,
       調整完按「已調整完成」(或狀態提醒上的「知道了」)。之後整段續抱期間<strong>不做再平衡</strong>——漲上去曝險會跟著變高、
       跌下來會變低,都不提示加碼或減碼,只顯示目前的曝險比例,等出場訊號(EXIT)再動作。</p>
+      <p><strong>什麼時候會跳 🔔 提醒:</strong>跌破出場線(續抱 → 接刀中)、接刀中加碼到下一層、轉回續抱,這三種都會跳,
+      總覽頁跟訊號分頁都看得到;照著做完按「知道了」。價格歷史中間缺了一段(例如一個多月沒打開 app)時,均線會算錯,
+      這時不給訊號也不跳提醒,更新收盤價會自動補齊。</p>
     </div>
 
     <div class="sect">借款與還款</div>
@@ -3514,7 +3541,7 @@ function renderExposurePlanCard(){
   const lev2 = p.instruments.map(findInstrumentByKey).filter(Boolean);
   // 歷史價格還不夠算慢線的那檔,computeTrend 回的 WATCH 不是真的出場訊號——照算的話目標變 0%,
   // 卡片會叫你把整個部位賣掉(新增標的、回補失敗時就會這樣)。先說清楚在等資料,不給金額。
-  const short = lev2.filter(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded; });
+  const short = lev2.filter(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded || trendHistoryGap(it); });
   // 分母(部位淨值 + 額度)≤ 0:借款已經超過市值 + 額度,比例跟加碼/減碼金額都是拿負的分母解出來的,沒有意義
   if (computeRisk().capacity <= 0 && computeRisk().pv > 0){
     return `
@@ -3529,7 +3556,7 @@ function renderExposurePlanCard(){
     <div class="card">
       <h3>正2 曝險目標</h3>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
-      <div class="muted" style="margin-top:6px;">${short.map(it => esc(it.id || '未命名')).join('、')} 的歷史價格還不夠算均線,
+      <div class="muted" style="margin-top:6px;">${short.map(it => esc(it.id || '未命名')).join('、')} 的歷史價格還不夠(或中間缺了一段)算均線,
         算不出目前在第幾層,先不給加碼/減碼金額。到「設定」分頁按「從證交所更新收盤價」會自動回補。</div>
     </div>`;
   }
@@ -3578,18 +3605,37 @@ function renderExposurePlanCard(){
 function trendChanges(){
   return computeAllTrends().filter(t => {
     const it = findInstrumentByKey(t.key);
-    return it && it.trend && it.trend.lastSeenStatus && it.trend.lastSeenStatus !== t.status && t.barsAvailable >= t.barsNeeded;
+    if (!it || !it.trend || !it.trend.lastSeenStatus || t.barsAvailable < t.barsNeeded || trendHistoryGap(it)) return false;   // 歷史有缺口時訊號不可信,不提醒
+    return it.trend.lastSeenStatus !== t.status
+      || (t.status === 'WAIT_RECOVER' && it.trend.lastSeenLayers >= 0 && t.pyramidCount !== it.trend.lastSeenLayers);
   });
+}
+/* 提醒的標題跟該做的事,總覽頁跟訊號分頁共用一份文字 */
+function trendAlertText(t, it){
+  const was = it.trend.lastSeenStatus;
+  if (t.status === 'WAIT_RECOVER' && was === 'WAIT_RECOVER' && t.pyramidCount > 0)
+    return { title: `${esc(it.id || it.name)} 接刀加碼第 ${t.pyramidCount} 層`,
+             body: `照訊號分頁「正2 曝險目標」卡上的金額買進,買完到「紀錄」分頁記一筆,再按知道了。` };
+  if (t.status === 'WAIT_RECOVER' && was === 'HOLD')
+    return { title: `${esc(it.id || it.name)} 跌破出場線`, body: `訊號是這一檔全部賣出。賣完到「紀錄」分頁記一筆(有還房貸的話也記還款),再按知道了。` };
+  if (t.status === 'WAIT_RECOVER' && t.pyramidCount > 0)
+    return { title: `${esc(it.id || it.name)} 接刀加碼第 ${t.pyramidCount} 層`, body: `原本是「${esc(was)}」。照訊號分頁「正2 曝險目標」卡上的金額買進,買完記一筆再按知道了。` };
+  if (t.status === 'HOLD')
+    return { title: `${esc(it.id || it.name)} 轉回續抱(HOLD)`,
+             body: `原本是「${esc(was)}」。${it.leverage === 2 ? '照「正2 曝險目標」卡把曝險調到續抱目標,調整完按「已調整完成」——之後續抱期間不再提示加碼/減碼。' : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
+  return { title: `${esc(it.id || it.name)} 狀態變成${t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}`,
+           body: `原本是「${esc(was)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。` };
 }
 function renderTrendChangeAlerts(){
   return trendChanges().map(t => {
     const it = findInstrumentByKey(t.key);
+    const a = trendAlertText(t, it);
     return `
       <div class="alert amber">
         <span class="ai">🔔</span>
         <div>
-          <div class="at">${esc(it.id || it.name)} 狀態變成${t.status === 'HOLD' ? '續抱(HOLD)' : t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}</div>
-          <div class="ad">原本是「${esc(it.trend.lastSeenStatus)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。${t.status === 'HOLD' && it.leverage === 2 ? '兩檔都轉成 HOLD 時,先照「正2 曝險目標」調整完再按知道了——按了之後續抱期間就不再提示加碼/減碼。' : ''}</div>
+          <div class="at">${a.title}</div>
+          <div class="ad">${a.body}</div>
           <button class="go" data-act="ack-trend" data-id="${it.key}">知道了</button>
         </div>
       </div>`;
@@ -3606,6 +3652,15 @@ function renderTrendTab(){
       ${trends.map(t => {
         const it = findInstrumentByKey(t.key);
         if (!it) return '';
+        const gap = t.barsAvailable >= t.barsNeeded ? trendHistoryGap(it) : null;
+        if (gap){
+          return `
+          <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+            <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span><span class="badge amber">資料缺一段</span></div>
+            <div class="empty">歷史價格中間缺了一段(${esc(gap.from)} ~ ${esc(gap.to)},約 ${gap.days} 天沒有資料),均線會算錯,
+              <strong>先不要照這檔的訊號買賣</strong>。${QUOTES_ENABLED ? '按「設定」分頁的「從證交所更新收盤價」會自動補齊;補不齊的話按下面「手動回補歷史價格」。' : ''}</div>
+          </div>`;
+        }
         if (t.barsAvailable < t.barsNeeded){
           return `
           <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
@@ -4139,6 +4194,7 @@ function onField(key, el){
           it.splits = [];
           // 「上次看過的狀態」也是舊代號的:留著的話,新代號的歷史補齊後會跳「狀態從(舊代號的)X 變成 Y」的提醒
           it.trend.lastSeenStatus = '';
+          it.trend.lastSeenLayers = -1;
           it.trend.lastSeenDate = '';
           levMsg = '';
           structural = true;
@@ -4654,7 +4710,7 @@ function onClick(el){
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);
-      if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenDate: it.trend.lastSeenDate });
+      if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenLayers: it.trend.lastSeenLayers, lastSeenDate: it.trend.lastSeenDate });
       break;
     }
     case 'ack-hold':   // 曝險卡片的「已調整完成」:兩檔正2 一起確認,跟按提醒的「知道了」效果一樣

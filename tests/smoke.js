@@ -128,16 +128,16 @@ const i631 = inst('00631L');
 i631.trend.lastSeenStatus = 'WAIT_RECOVER';   // 假裝上次看到的是接刀中,跟目前算出來的 HOLD 不一樣
 A.currentTab = 'overview';
 A.renderAll();
-if (!store.content.innerHTML.includes('狀態變成')) throw new Error('總覽頁沒有顯示趨勢狀態改變的提醒');
+if (!store.content.innerHTML.includes('轉回續抱(HOLD)')) throw new Error('總覽頁沒有顯示趨勢狀態改變的提醒');
 console.log('  總覽頁有顯示 ✓');
 A.currentTab = 'leverage';
 A.levTab = 'signal';
 A.renderAll();
-if (!store.content.innerHTML.includes('狀態變成')) throw new Error('訊號分頁沒有顯示趨勢狀態改變的提醒');
+if (!store.content.innerHTML.includes('轉回續抱(HOLD)')) throw new Error('訊號分頁沒有顯示趨勢狀態改變的提醒');
 console.log('  訊號分頁有顯示 ✓');
 A.onClick({ dataset:{ act:'ack-trend', id:i631.key } });
 A.renderAll();
-if (store.content.innerHTML.includes('狀態變成')) throw new Error('按過「知道了」之後提醒還在');
+if (store.content.innerHTML.includes('轉回續抱(HOLD)')) throw new Error('按過「知道了」之後提醒還在');
 console.log('  確認後提醒消失 ✓');
 A.levTab = 'overview';
 
