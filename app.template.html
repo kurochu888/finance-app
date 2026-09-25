@@ -3553,7 +3553,16 @@ function renderExposurePlanCard(){
   }
   // 各檔平分的說明照實際的代號跟檔數寫(以前寫死「00631L/00675L 各半」,只有一檔正2 時金額卻是整筆)
   const split = amt => n > 1 ? `(${lev2.map(it => esc(it.id)).join('/')} ${n === 2 ? '各半' : '每檔'}約 NT$ ${fmt(amt / n)})` : '';
-  const stageLabel = p.progress === 0 ? '尚未進場'
+  // 減碼照各檔目前市值的比例分攤:以前也寫「各半」,兩檔市值不一樣時(例如 70 萬 / 30 萬、目標降到 0%)
+  // 會叫小的那檔賣 50 萬,根本沒那麼多可以賣。比例分攤每檔都不會超過自己的市值(總減碼 ≤ 正2 總市值)
+  const sellSplit = amt => {
+    if (n < 2) return '';
+    const hv = computeLeverage().holdings.filter(h => p.instruments.includes(h.key));
+    const tot = sum(hv, h => h.value);
+    if (!(tot > 0)) return split(amt);
+    return '(' + hv.filter(h => h.value > 0).map(h => `${esc(h.id)} 約 NT$ ${fmt(Math.min(h.value, amt * h.value / tot))}`).join('、') + ',照目前市值比例)';
+  };
+  const stageLabel = p.progress === 0 ? '尚未進場或已出場'
     : p.progress > p.layerCount ? '兩檔都 HOLD'
     : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`;
   const overTarget = p.deltaLoan < -0.5;   // 現值超過目標,允許一點點浮點誤差
@@ -3574,7 +3583,7 @@ function renderExposurePlanCard(){
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
       ${overTarget ? `
         <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
-          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${split(Math.abs(p.deltaLoan))}</span></div>
+          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${sellSplit(Math.abs(p.deltaLoan))}</span></div>
       ` : (p.deltaLoan > 0.5 ? `
         <div class="row sub"><span class="label">方案A:自己拿新的錢出來買(現金)</span>
           <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + split(p.deltaCash)}</span></div>
@@ -3603,19 +3612,25 @@ function trendChanges(){
 }
 /* 提醒的標題跟該做的事,總覽頁跟訊號分頁共用一份文字 */
 function trendAlertText(t, it){
-  const was = it.trend.lastSeenStatus;
-  if (t.status === 'WAIT_RECOVER' && was === 'WAIT_RECOVER' && t.pyramidCount > 0)
-    return { title: `${esc(it.id || it.name)} 接刀加碼第 ${t.pyramidCount} 層`,
-             body: `照訊號分頁「正2 曝險目標」卡上的金額買進,買完到「紀錄」分頁記一筆,再按知道了。` };
+  const was = it.trend.lastSeenStatus, name = esc(it.id || it.name);
+  // 正2 的買賣金額以「正2 曝險目標」卡為準:目標取兩檔裡比較保守的那個(一檔轉弱就一起保守),
+  // 所以一檔出場時卡片會叫兩檔都減碼,一檔先加碼時卡片可能顯示不用動。提醒不能只說「這一檔」,不然跟卡片打架
+  const lev2 = it.leverage === 2;
+  const card = '訊號分頁「正2 曝險目標」卡';
+  const layer = t.status === 'WAIT_RECOVER' && t.pyramidCount > 0 && (was === 'WAIT_RECOVER' || was !== 'HOLD');
+  if (layer)
+    return { title: `${name} 接刀加碼第 ${t.pyramidCount} 層`,
+             body: lev2 ? `照${card}的加碼金額買進;卡片如果顯示不用動,代表另一檔還沒到這一層(兩檔取比較保守的),先不用買。買了就到「紀錄」分頁記一筆,再按知道了。`
+                        : `這一檔的訊號是加碼一層。買了就到「紀錄」分頁記一筆,再按知道了。` };
   if (t.status === 'WAIT_RECOVER' && was === 'HOLD')
-    return { title: `${esc(it.id || it.name)} 跌破出場線`, body: `訊號是這一檔全部賣出。賣完到「紀錄」分頁記一筆(有還房貸的話也記還款),再按知道了。` };
-  if (t.status === 'WAIT_RECOVER' && t.pyramidCount > 0)
-    return { title: `${esc(it.id || it.name)} 接刀加碼第 ${t.pyramidCount} 層`, body: `原本是「${esc(was)}」。照訊號分頁「正2 曝險目標」卡上的金額買進,買完記一筆再按知道了。` };
+    return { title: `${name} 跌破出場線`,
+             body: lev2 ? `照${card}的減碼金額賣出——正2 兩檔一起看,一檔出場整組目標就降下來,另一檔通常也要一起賣。賣完到「紀錄」分頁記一筆(有還房貸的話也記還款),再按知道了。`
+                        : `訊號是這一檔全部賣出。賣完到「紀錄」分頁記一筆,再按知道了。` };
   if (t.status === 'HOLD')
-    return { title: `${esc(it.id || it.name)} 轉回續抱(HOLD)`,
-             body: `原本是「${esc(was)}」。${it.leverage === 2 ? '照「正2 曝險目標」卡把曝險調到續抱目標,調整完按「已調整完成」——之後續抱期間不再提示加碼/減碼。' : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
-  return { title: `${esc(it.id || it.name)} 狀態變成${t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}`,
-           body: `原本是「${esc(was)}」。這只是訊號,買賣要自己到「紀錄」分頁記一筆。` };
+    return { title: `${name} 轉回續抱(HOLD)`,
+             body: `原本是「${esc(was)}」。${lev2 ? `照${card}把曝險調到目標(兩檔都轉成 HOLD 才會是續抱目標),調整完按「已調整完成」——之後續抱期間不再提示加碼/減碼。` : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
+  return { title: `${name} 狀態變成${t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}`,
+           body: `原本是「${esc(was)}」。${lev2 ? `照${card}的金額調整。` : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
 }
 function renderTrendChangeAlerts(){
   return trendChanges().map(t => {
