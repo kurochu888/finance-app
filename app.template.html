@@ -4050,6 +4050,70 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
+/* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
+   中間的接刀、轉回續抱、續抱都算在這一輪裡;頭尾都是全部現金,淨值的比值就是這一輪整體的賺賠(含手續費)。
+   第一輪從回測起點(還沒進場,也是全部現金)開始;最後一輪還沒出場的標「進行中」,不算進勝率。
+   另外數「出場後買回比較貴」的次數:出場價跟下一次轉回續抱的價格比,買回比較貴 = 那次出場被洗(接刀買的那部分不算在內,
+   整輪賺賠看報酬那欄)。只是把 runBacktest 的 events 跟淨值曲線整理出來,不影響回測本身。 */
+function tradeRounds(r){
+  const at = new Map(r.curve.map(pt => [pt.d, pt]));
+  const last = r.curve[r.curve.length - 1];
+  const rounds = [];
+  let from = r.curve[0].d, adds = 0, pendingExit = null, rebuys = 0, pricier = 0;
+  const close = (to, done) => {
+    const a = at.get(from), b = at.get(to);
+    if (!a || !b) return;
+    rounds.push({ from, to, adds, done, ret: (b.strat / a.strat - 1) * 100, bh: (b.bh / a.bh - 1) * 100 });
+  };
+  (r.events || []).forEach(e => {
+    if (e.act === 'ADD') adds++;
+    else if (e.act === 'RECOVER' && pendingExit){
+      rebuys++;
+      if (e.close > pendingExit.close) pricier++;
+      pendingExit = null;
+    }else if (e.act === 'EXIT'){
+      close(e.d, true);
+      from = e.d; adds = 0; pendingExit = e;
+    }
+  });
+  if (last.d !== from) close(last.d, false);
+  const done = rounds.filter(x => x.done);
+  const wins = done.filter(x => x.ret > 0), losses = done.filter(x => x.ret <= 0);
+  const avg = list => list.length ? sum(list, x => x.ret) / list.length : null;
+  const avgWin = avg(wins), avgLoss = avg(losses);
+  return {
+    rounds, count: done.length, wins: wins.length,
+    winRate: done.length ? wins.length / done.length * 100 : null,
+    avgWin, avgLoss, payoff: avgWin != null && avgLoss != null && avgLoss < 0 ? avgWin / -avgLoss : null,
+    best: done.length ? Math.max(...done.map(x => x.ret)) : null,
+    worst: done.length ? Math.min(...done.map(x => x.ret)) : null,
+    rebuys, pricier
+  };
+}
+function renderTradeRounds(r){
+  const t = tradeRounds(r);
+  if (!t.rounds.length) return '';
+  const pct = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+  const cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  return `
+    <div class="row sub"><span class="label">每一輪進出勝率</span><span class="val">${t.count ? `${t.wins} / ${t.count} 輪賺錢(${t.winRate.toFixed(0)}%)` : '還沒有出場過'}</span></div>
+    ${t.count ? `<div class="row sub"><span class="label">平均賺 / 平均賠</span><span class="val"><span class="pos">${pct(t.avgWin)}</span> / <span class="neg">${pct(t.avgLoss)}</span>${t.payoff != null ? `(賺賠比 ${t.payoff.toFixed(1)})` : ''}</span></div>` : ''}
+    ${t.rebuys ? `<div class="row sub"><span class="label">出場後買回比賣出價貴</span><span class="val">${t.pricier} / ${t.rebuys} 次</span></div>` : ''}
+    <details class="adv">
+      <summary>每一輪明細(${t.rounds.length} 輪)</summary>
+      <div class="body">
+        <table class="bt-grid">
+          <tr><th>期間</th><th>接刀</th><th>策略</th><th>買進持有</th></tr>
+          ${t.rounds.map(x => `<tr><th>${esc(x.from)}<br>~ ${x.done ? esc(x.to) : '進行中'}</th><td>${x.adds ? x.adds + ' 次' : '—'}</td>`
+            + `<td class="${cls(x.ret)}">${pct(x.ret)}</td><td>${pct(x.bh)}</td></tr>`).join('')}
+        </table>
+        <div class="muted" style="font-size:11px; margin-top:4px;">一輪 = 從一次出場到下一次出場(第一輪從回測起點開始),中間接刀、轉回續抱、續抱都算在同一輪;
+          「策略」是這一輪整體賺賠(含手續費),「買進持有」是同一段期間一直抱著的漲跌。還沒出場的那輪標「進行中」,不算進勝率。
+          「出場後買回比賣出價貴」是被洗的次數:出場之後,轉回續抱時的價格比當初賣的還高。
+          均線策略本來就常常小賠(被洗)、偶爾大賺(躲掉大跌、抱完整段多頭),看勝率要一起看平均賺賠。</div>
+      </div>
+    </details>`;
+}
 function renderBacktestResult(r){
   return r.error ? `
         <div class="muted neg" style="margin-top:12px;">${esc(r.label || r.id)}:${esc(r.error)}</div>
@@ -4064,6 +4128,7 @@ function renderBacktestResult(r){
           ], { label: (r.label || r.id) + ' 回測累積報酬率', height:150, zero:true,
                fmtVal: v => (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('zh-Hant-TW') + '%' })}
           ${renderBacktestPeriods(r)}
+          ${renderTradeRounds(r)}
         </div>
       `;
 }
