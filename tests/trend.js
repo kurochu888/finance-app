@@ -381,6 +381,38 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
     return s;
   }
 
+  // 全部用自己的錢買(沒有借款)、曝險超過第 1 層目標 65%:卡片不能給「賣掉還房貸」(沒有房貸可還),
+  // 照卡片寫的金額賣掉留現金,曝險要剛好回到 65%(整合模擬抓到:以前照「還房貸」的金額賣,降不到目標)
+  {
+    A.state = setupState(49, 49, 6000000);   // 市值 600 萬、額度 800 萬、沒有借款 → 曝險 85.7%
+    const p0 = A.computeExposurePlan();
+    must(p0.progress === 1 && p0.currentRatio > 65, `設定應該是第 1 層、曝險超過 65%:${p0.progress} ${p0.currentRatio}`);
+    const txt = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    must(!/錢拿去還房貸/.test(txt), '沒有借款還叫你「賣掉、錢拿去還房貸」');
+    const m = /沒有房貸,賣掉的錢留著\) 約 NT\$ ([\d,]+)/.exec(txt);
+    must(m, '沒有借款時要給「賣掉留現金」的金額:' + txt.slice(0, 200));
+    if (m){
+      const x = Number(m[1].replace(/,/g, ''));
+      A.state.instruments.forEach(it => { it.shares -= x / 2; });   // 照卡片賣掉,錢留著
+      const after = A.computeExposurePlan().currentRatio;
+      must(Math.abs(after - 65) < 0.5, `照卡片賣完曝險應該回到 65%,得到 ${after.toFixed(2)}%`);
+    }
+    // 借款比要還的少:方案B 是「先還清、剩下留現金」,照它賣完還清也要回到目標
+    A.state = setupState(49, 49, 6000000);
+    A.state.leverage.draws = [{ id:'d', label:'x', amount:100000, useDate:'2025-01-01', note:'', repayments:[] }];
+    A.state.instruments.forEach(it => { it.shares += 50000; });   // 多買的 10 萬是借的
+    const txt2 = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    const m2 = /先還清房貸 NT\$ 100,000、剩下留現金 約 NT\$ ([\d,]+)/.exec(txt2);
+    must(m2, '借款只有 10 萬、要減的比這多時,方案B 要寫「先還清、剩下留現金」:' + txt2.slice(0, 260));
+    if (m2){
+      const x = Number(m2[1].replace(/,/g, ''));
+      A.state.instruments.forEach(it => { it.shares -= x / 2; });
+      A.state.leverage.draws[0].repayments.push({ id:'r', date: new Date().toISOString().slice(0, 10), amount: 100000 });
+      const after = A.computeExposurePlan().currentRatio;
+      must(Math.abs(after - 65) < 0.5, `照方案B 賣完、還清 10 萬後曝險應該回到 65%,得到 ${after.toFixed(2)}%`);
+    }
+  }
+
   // 兩檔都在 n=49(WAIT_RECOVER, pyramidCount=1)→ progress=1 → 目標 65%,equity=0(剛開始)
   A.state = setupState(49, 49, 0);
   let p = A.computeExposurePlan();
