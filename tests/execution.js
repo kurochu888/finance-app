@@ -37,6 +37,10 @@ const buy = (it, amt, date, src) => { const px = it.price; const sh = Math.floor
 const sell = (it, amt, date) => { const px = it.price; const held = A.heldShares(it.id); const sh = Math.min(held, Math.floor(amt / px)); if (sh <= 0) return 0; A.state.trades.push({ id: 't' + A.state.trades.length, date, symbol: it.id, action: 'sell', shares: sh, price: px, fee: 0, amount: 0, source: 'cash', note: '' }); return sh * px; };
 a.price = P1[W - 1]; b.price = P2[W - 1];
 buy(a, 1000000, days[W - 1], 'cash'); buy(b, 1000000, days[W - 1], 'cash');
+if (SEED % 2 === 0){   // 偶數種子另外抱著 0050(1 倍,自己的訊號、不照卡片買賣),曝險比例會把它算進去
+  A.state.instruments.push({ key:'k50', id:'0050', name:'', leverage:1, price:100, shares:0, auto:false, trend: { maFast:100, maSlow:200, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:1, lastSeenStatus:'', lastSeenLayers:-1, lastSeenDate:'' }, priceHistory:[], splits:[], splitsAcked:[] });
+  A.state.trades.push({ id:'t50', date: days[W - 1], symbol:'0050', action:'buy', shares:8000, price:100, fee:0, amount:0, source:'cash', note:'' });
+}
 A.renderAll();   // 記下基準
 const probs = []; let events = 0, alerts = 0;
 let prev = { a: A.computeTrend(a), b: A.computeTrend(b) }; let skipLeft = 0;
@@ -48,7 +52,7 @@ for (let i = W; i < days.length; i++){
   if (rnd() < 0.03) skipLeft = 3 + Math.floor(rnd() * 8);
   A.tab = 'overview'; A.renderAll();
   const html = document.getElementById('content').innerHTML;
-  if (/NaN|undefined|Infinity/.test(html)) probs.push(d + ' 總覽出現 NaN');
+  if (/NaN|undefined|Infinity/.test(html)){ probs.push(d + ' 總覽出現 NaN:' + (html.replace(/<[^>]+>/g, ' ').match(/.{0,40}(NaN|undefined|Infinity).{0,20}/) || [''])[0]); }
   const cur = { a: A.computeTrend(a), b: A.computeTrend(b) };
   const ch = A.trendChanges().map(t => t.key);
   for (const [k, it] of [['a', a], ['b', b]]){
@@ -68,11 +72,12 @@ for (let i = W; i < days.length; i++){
       if (plan.deltaLoan < -1){
         // 減碼:像真人一樣只照卡片上寫的金額
         const r = A.computeLeverage(); const hv = r.holdings.filter(h => plan.instruments.includes(h.key)); const tot = hv.reduce((s, h) => s + h.value, 0);
-        const amtB = numAfter(/方案B:賣掉、[^約—]*約 NT\$ ([\d,]+)/), amtA = numAfter(/方案A:賣掉、錢留著當現金 約 NT\$ ([\d,]+)/);
-        const amtOne = numAfter(/可考慮減碼[^約—]*約 NT\$ ([\d,]+)/);
+        const amtB = numAfter(/方案B:賣掉、[^約—]*?(?:正2 全部賣掉 )?約 NT\$ ([\d,]+)/), amtA = numAfter(/方案A:賣掉、錢留著當現金 (?:正2 全部賣掉 )?約 NT\$ ([\d,]+)/);
+        const amtOne = numAfter(/可考慮減碼[^約—]*約 NT\$ ([\d,]+)/) ?? numAfter(/正2 全部賣掉 約 NT\$ ([\d,]+)/);
         const useB = amtB != null && (amtA == null || rnd() < 0.5);
         const total = useB ? amtB : amtA != null ? amtA : amtOne;
-        if (total == null){ if (!/降不到目標/.test(cardTxt)) probs.push(`${d} 卡片要減碼卻讀不到金額:${cardTxt.slice(0, 120)}`); }
+        if (tot <= 0){ if (/可考慮減碼|方案B:賣掉/.test(cardTxt)) probs.push(`${d} 正2 已經沒有持股,卡片還叫你減碼`); }
+        else if (total == null){ if (!/到不了目標/.test(cardTxt)) probs.push(`${d} 卡片要減碼卻讀不到金額:${cardTxt.slice(0, 120)}`); }
         else {
           let proceeds = 0;
           for (const h of hv){ const want = total * h.value / tot; if (want > h.value + 1) probs.push(`${d} 叫 ${h.id} 賣 ${Math.round(want)} 超過市值 ${Math.round(h.value)}`); proceeds += sell(h.id === a.id ? a : b, want, d); }
@@ -94,7 +99,7 @@ for (let i = W; i < days.length; i++){
         }
       }
       const after = A.computeExposurePlan();
-      if (after && Math.abs(after.currentRatio - after.targetRatio) > 3 && !(after.progress > after.layerCount && !after.holdAdjustPending) && A.computeRisk().capacity > 0)
+      if (after && A.computeLeverage().holdings.some(h => after.instruments.includes(h.key) && h.value > 0) && Math.abs(after.currentRatio - after.targetRatio) > 3 && !(after.progress > after.layerCount && !after.holdAdjustPending) && A.computeRisk().capacity > 0 && !/到不了目標/.test(card.replace(/<[^>]+>/g, ' ')))
         probs.push(`${d} 照卡片做完,曝險 ${after.currentRatio.toFixed(1)}% 跟目標 ${after.targetRatio}% 差很多(階段 ${after.progress})`);
     }
     ch.forEach(key => A.onClick({ dataset: { act: 'ack-trend', id: key } }));
