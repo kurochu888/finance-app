@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, maybePostInterest, todayISO, renderExposurePlanCard,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -499,6 +499,34 @@ check('訊號用的收盤價太舊時,總覽跟訊號分頁要警告「沒有 �
   A.state.instruments.forEach(it => { it.priceHistory = mk(1); });
   A.renderAll();
   if (/收盤價停在/.test(document.getElementById('content').innerHTML)) return '收盤價是昨天的還在警告';
+  return '';
+});
+
+check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,重按也不會再乘一次;選不用換算就不動', () => {
+  const mk = () => {
+    A.state = A.emptyState();
+    const it = A.state.instruments[0];
+    it.price = 20; it.splits = [{ d:'2026-03-10', ratio: 1 / 22 }];
+    A.state.trades = [{ id:'t1', date:'2025-06-01', symbol:'00631L', action:'buy', shares:1000, price:440, fee:0, amount:0, source:'cash', note:'' },
+                      { id:'t2', date:'2026-04-01', symbol:'00631L', action:'buy', shares:2000, price:18, fee:0, amount:0, source:'cash', note:'' }];
+    return it;
+  };
+  let it = mk();
+  A.currentTab = 'overview'; A.renderAll();
+  if (!/分割過/.test(document.getElementById('content').innerHTML)) return '分割前有買賣紀錄,總覽頁沒有提醒';
+  if (!/分割過/.test(A.renderExposurePlanCard()) && !/分割/.test(A.renderExposurePlanCard())) return '分割還沒處理,曝險目標卡照樣給金額';
+  A.onClick({ dataset:{ act:'split-convert', id: it.key + '|2026-03-10' } });
+  if (A.heldShares('00631L') !== 24000) return '換算後持股應該是 22000 + 2000 = 24000,得到 ' + A.heldShares('00631L');
+  const cost = A.state.trades[0].shares * A.state.trades[0].price;
+  if (Math.abs(cost - 440000) > 1) return '換算後成本金額變了:' + cost;
+  it.splitsAcked = [];   // 模擬舊版分頁把「處理過」丟掉寫回來,提醒又跳
+  A.onClick({ dataset:{ act:'split-convert', id: it.key + '|2026-03-10' } });
+  if (A.heldShares('00631L') !== 24000) return '重按「幫我換算」把同一批紀錄又乘了一次:' + A.heldShares('00631L');
+  it = mk();
+  A.onClick({ dataset:{ act:'split-keep', id: it.key + '|2026-03-10' } });
+  if (A.state.trades[0].shares !== 1000) return '選「不用換算」卻動了資料';
+  A.renderAll();
+  if (/分割過/.test(document.getElementById('content').innerHTML)) return '選了不用換算,提醒還在';
   return '';
 });
 

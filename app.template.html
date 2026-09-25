@@ -399,8 +399,8 @@ const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的
 
 /* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
-  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[] },
-  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[] }
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] }
 ];
 // trend/priceHistory 是巢狀物件,Object.assign 只會淺拷貝參照 —— 每個新 instrument
 // 都要有自己獨立的 trend/priceHistory,不能共用同一份 DEFAULT_INSTRUMENTS 底下的物件,
@@ -473,7 +473,9 @@ function normalize(raw){
           .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
           .filter((h, i, arr) => i === arr.length - 1 || h.d !== arr[i + 1].d)   // 同一天重複只留最後一筆
           .slice(-PRICE_HIST_KEEP),
-        splits: normalizeSplits(x.splits)
+        splits: normalizeSplits(x.splits),
+        // 使用者已經處理過(換算過或確認不用換算)的分割日期,見 splitTradeIssues()
+        splitsAcked: arr(x.splitsAcked).map(str).filter(d => isoDate(d))
       };
       applyKnownSplitRatios(out.id, out.priceHistory, out.splits);   // 反推比例存下來的舊歷史改成公告比例
       return out;
@@ -2156,6 +2158,7 @@ function renderOverview(){
 
   return `
     ${monthNav()}
+    ${renderSplitAlerts()}
     ${computePosition().hasData || state.instruments.some(it => it.shares > 0) ? renderStaleSignalAlert() : ''}
     ${alerts.join('')}
     ${isEmpty ? `
@@ -2649,6 +2652,9 @@ function renderHelp(){
       <p><strong>什麼時候會跳 🔔 提醒:</strong>跌破出場線(續抱 → 接刀中)、接刀中加碼到下一層、轉回續抱,這三種都會跳,
       總覽頁跟訊號分頁都看得到;照著做完按「知道了」。價格歷史中間缺了一段(例如一個多月沒打開 app)時,均線會算錯,
       這時不給訊號也不跳提醒,更新收盤價會自動補齊。</p>
+      <p><strong>正2 分割之後:</strong>價格歷史會自動還原,但「紀錄」分頁的買賣紀錄如果是分割前的股數跟價格,持股會少算。
+      偵測到分割、而且分割日之前有買賣紀錄時,總覽跟訊號分頁會跳 ✂️ 提醒,選「幫我換算」(股數 × N、價格 ÷ N,成本不變)
+      或「已經是分割後的數字」;處理完之前曝險目標卡不給金額。</p>
     </div>
 
     <div class="sect">借款與還款</div>
@@ -3534,6 +3540,14 @@ function renderExposurePlanCard(){
   // 歷史價格還不夠算慢線的那檔,computeTrend 回的 WATCH 不是真的出場訊號——照算的話目標變 0%,
   // 卡片會叫你把整個部位賣掉(新增標的、回補失敗時就會這樣)。先說清楚在等資料,不給金額。
   const short = lev2.filter(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded || trendHistoryGap(it); });
+  // 還沒處理的分割:持股可能少算成 1/N,算出來的加碼金額會大錯,先請使用者處理分割提醒
+  if (splitTradeIssues().some(x => p.instruments.includes(x.it.key))){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="muted neg">上面有「分割過」的提醒還沒處理:持股可能少算,現在算出來的加碼/減碼金額不可靠,先處理那個提醒。</div>
+    </div>`;
+  }
   // 分母(部位淨值 + 額度)≤ 0:借款已經超過市值 + 額度,比例跟加碼/減碼金額都是拿負的分母解出來的,沒有意義
   if (computeRisk().capacity <= 0 && computeRisk().pv > 0){
     return `
@@ -3648,6 +3662,36 @@ function renderTrendChangeAlerts(){
       </div>`;
   }).join('');
 }
+/* 分割 vs 買賣紀錄:價格歷史會自動還原分割,但持股是把買賣紀錄的股數直接加總再乘最新股價。
+   分割前記的紀錄(1000 股 @ 400)分割後會被算成 1000 股 × 18,市值只剩 1/22,曝險目標卡叫你大量加碼。
+   不能自動換算:使用者可能已經自己把舊紀錄改成分割後的股數,再換一次就變 22 倍。所以偵測到
+   「有分割、分割日之前有買賣紀錄、還沒處理過」就提醒,讓使用者選「幫我換算」或「已經是分割後的數字」。 */
+const splitTag = d => `(${d} 分割換算)`;
+// 已經換算過的(備註有標記)不算、也不再換:還開著的舊版分頁可能把 splitsAcked 丟掉寫回來,提醒再跳一次時
+// 重按「幫我換算」不能把同一批紀錄再乘一次
+const splitPending = (t, it, d) => t.symbol === it.id && t.date < d && t.action !== 'dividend' && !String(t.note || '').includes(splitTag(d));
+function splitTradeIssues(){
+  const out = [];
+  state.instruments.forEach(it => (it.splits || []).forEach(sp => {
+    if ((it.splitsAcked || []).includes(sp.d)) return;
+    const n = state.trades.filter(t => splitPending(t, it, sp.d)).length;
+    if (n) out.push({ it, sp, n, times: Math.round(1 / sp.ratio) });
+  }));
+  return out;
+}
+function renderSplitAlerts(){
+  return splitTradeIssues().map(({ it, sp, n, times }) => `
+    <div class="alert amber">
+      <span class="ai">✂️</span>
+      <div>
+        <div class="at">${esc(it.id)} 在 ${esc(sp.d)} 分割過(約 1 拆 ${times}),有 ${n} 筆買賣紀錄在分割之前</div>
+        <div class="ad">那些紀錄如果是分割前的股數跟價格,現在的持股會少算成 1/${times},市值、損益、曝險目標的金額都會錯。
+          「幫我換算」會把它們的股數 ×${times}、價格 ÷${times}(成本金額不變,備註會註明);如果你已經自己改成分割後的數字,按「不用換算」。</div>
+        <button class="go" data-act="split-convert" data-id="${it.key}|${sp.d}">幫我換算</button>
+        <button class="go" data-act="split-keep" data-id="${it.key}|${sp.d}" style="margin-left:6px;">已經是分割後的數字,不用換算</button>
+      </div>
+    </div>`).join('');
+}
 /* 訊號用的收盤價多久沒更新。照 🔔 執行的人,「沒有提醒」要代表「沒有訊號」,不能是「沒抓到新資料」
    (沒網路、證交所冷卻中、好幾天沒開 app)。以前只有設定分頁有「報價 N 天沒更新」,訊號分頁跟總覽看不到。
    超過 4 天才警告:週末只隔 3 天;連假會誤報,文字裡有說。 */
@@ -3676,6 +3720,7 @@ function renderStaleSignalAlert(){
 function renderTrendTab(){
   const trends = computeAllTrends();
   return `
+    ${renderSplitAlerts()}
     ${renderStaleSignalAlert()}
     ${renderTrendChangeAlerts()}
     ${renderExposurePlanCard()}
@@ -4226,6 +4271,7 @@ function onField(key, el){
           it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
           it.splits = [];
           // 「上次看過的狀態」也是舊代號的:留著的話,新代號的歷史補齊後會跳「狀態從(舊代號的)X 變成 Y」的提醒
+          it.splitsAcked = [];
           it.trend.lastSeenStatus = '';
           it.trend.lastSeenLayers = -1;
           it.trend.lastSeenDate = '';
@@ -4409,11 +4455,11 @@ function sampleData(){
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
   s.instruments = [
     { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
-      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260), splits:[] },
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260), splits:[], splitsAcked:[] },
     { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true,
-      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260), splits:[] },
+      trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260), splits:[], splitsAcked:[] },
     { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
-      trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[] }
+      trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[], splitsAcked:[] }
   ];
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
@@ -4643,7 +4689,7 @@ function onClick(el){
     }
     case 'add-instrument':
       state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true,
-        trend: defaultTrendParams(1), priceHistory:[], splits:[] });
+        trend: defaultTrendParams(1), priceHistory:[], splits:[], splitsAcked:[] });
       levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
     case 'del-instrument': {
@@ -4733,6 +4779,24 @@ function onClick(el){
       target.repayments.push({ id: uid(), date: rdate, amount: amt });
       repayError = '';
       repayDraft = { target: tid, date: repayDraft.date, amount:'' };
+      break;
+    }
+    case 'split-convert': case 'split-keep': {
+      const [key, d] = String(id).split('|');
+      const it = findInstrumentByKey(key);
+      const sp = it && (it.splits || []).find(x => x.d === d);
+      if (!sp) break;
+      if (act === 'split-convert'){
+        const times = 1 / sp.ratio;
+        state.trades.forEach(t => {
+          if (!splitPending(t, it, d)) return;
+          t.shares = Math.round(t.shares * times);
+          t.price = Math.round(t.price * sp.ratio * 10000) / 10000;
+          t.note = (t.note ? t.note + ' ' : '') + splitTag(d);
+        });
+      }
+      if (!Array.isArray(it.splitsAcked)) it.splitsAcked = [];
+      if (!it.splitsAcked.includes(d)) it.splitsAcked.push(d);
       break;
     }
     case 'fetch-quotes': fetchQuotes(true); return;
