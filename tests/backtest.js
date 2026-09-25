@@ -23,7 +23,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -192,6 +192,47 @@ console.log('events(指定期間檢視用):從事件推回來的狀態要跟回�
   }
   console.log('  40 組共', total, '個策略動作');
   must(total > 40, '隨機路徑幾乎沒有策略動作,這個測試沒測到東西');
+})();
+console.log('  ok');
+
+console.log('tradeRounds(每一輪進出勝率):每輪報酬連乘 = 總報酬,勝率/被洗次數跟事件對得起來');
+(function testTradeRounds(){
+  let seed = 23, checked = 0, rounds = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
+  for (let k = 0; k < 30; k++){
+    const hist = []; let px = 50;
+    const d = new Date(2016, 0, 4);
+    for (let i = 0; i < 1500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+      px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 250) % 2 ? -0.0015 : 0.0015);
+      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
+    const r = A.backtestFromHistory('X', hist, p, 2);
+    if (r.error) continue;
+    const t = A.tradeRounds(r);
+    checked++; rounds += t.count;
+    const prod = t.rounds.reduce((a, x) => a * (1 + x.ret / 100), 1);
+    must(Math.abs(prod - (1 + r.returnStrat / 100)) < 1e-6 * Math.max(1, prod), `每輪報酬連乘 ${prod} 跟總報酬 ${1 + r.returnStrat / 100} 對不起來`);
+    const prodBh = t.rounds.reduce((a, x) => a * (1 + x.bh / 100), 1);
+    // 買進持有的總報酬從買進前的現金算(含第一筆手續費),每輪從回測起點那天(已經買進)算,所以跟淨值曲線比
+    const bhAll = r.curve[r.curve.length - 1].bh / r.curve[0].bh;
+    must(Math.abs(prodBh - bhAll) < 1e-6 * Math.max(1, prodBh), `每輪買進持有連乘 ${prodBh} 跟整段 ${bhAll} 對不起來`);
+    const exits = r.events.filter(e => e.act === 'EXIT');
+    must(t.count === exits.length, `完成的輪數 ${t.count} 應該等於出場次數 ${exits.length}`);
+    must(t.rounds.filter(x => !x.done).length <= 1 && t.rounds.every((x, i) => x.done || i === t.rounds.length - 1), '只有最後一輪可以是進行中');
+    must(t.wins === t.rounds.filter(x => x.done && x.ret > 0).length, '賺錢輪數算錯');
+    // 被洗:每次出場配下一次轉回續抱
+    let pend = null, rb = 0, pr = 0;
+    r.events.forEach(e => { if (e.act === 'EXIT') pend = e; else if (e.act === 'RECOVER' && pend){ rb++; if (e.close > pend.close) pr++; pend = null; } });
+    must(t.rebuys === rb && t.pricier === pr, `被洗次數 ${t.pricier}/${t.rebuys} 應該是 ${pr}/${rb}`);
+    must(!/NaN|undefined|Infinity/.test(A.renderTradeRounds(r)), '勝率表出現 NaN/undefined');
+  }
+  console.log('  ' + checked + ' 組共', rounds, '輪');
+  must(checked > 20 && rounds > 20, '隨機路徑幾乎沒有出場,這個測試沒測到東西');
+  // 從來沒出場(一路漲):只有一輪進行中,勝率顯示「還沒有出場過」
+  const up = []; const d = new Date(2016, 0, 4);
+  for (let i = 0; i < 400; i++){ d.setDate(d.getDate() + 1); up.push({ d: d.toISOString().slice(0, 10), c: 50 * Math.pow(1.002, i) }); }
+  const r2 = A.backtestFromHistory('U', up, p, 2), t2 = A.tradeRounds(r2);
+  must(t2.count === 0 && t2.winRate === null && t2.rounds.length === 1 && !t2.rounds[0].done, `一路漲應該只有一輪進行中:${JSON.stringify(t2)}`);
+  must(A.renderTradeRounds(r2).includes('還沒有出場過'), '沒出場過時勝率要顯示「還沒有出場過」');
 })();
 console.log('  ok');
 
