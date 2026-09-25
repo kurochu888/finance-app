@@ -627,8 +627,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · 5f43240a3d';
-const BUILD_HASH = '5f43240a3d';
+const BUILD_VERSION = '2026-09-25 · aa7af62f7b';
+const BUILD_HASH = 'aa7af62f7b';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1463,11 +1463,20 @@ async function fetchQuotes(manual){
     renderAll();
   }
 }
-function maybeAutoQuote(){
+function maybeAutoQuote(onlyNewClose = false){   // onlyNewClose:計時器叫的,只在可能有新收盤價時抓
   if (!QUOTES_ENABLED) return;
   let last = 0;
   try{ last = Number(localStorage.getItem(QUOTE_TS_KEY)) || 0; }catch(e){}
-  if (Date.now() - last > 3600000 && !twseCooldownLeft()) fetchQuotes(false);   // 一小時內不重覆抓;被擋冷卻中也不抓
+  // 一小時內不重覆抓;被擋冷卻中也不抓。但上次抓是在最近一次收盤(台灣時間 13:35)之前的話照抓:
+  // 13:00 抓過、13:50 再打開,以前要等到一小時後才會拿到今天的收盤價,這段時間訊號跟 🔔 都還是昨天的
+  const now = Date.now();
+  if (((!onlyNewClose && now - last > 3600000) || last < lastCloseCutoff(now)) && !twseCooldownLeft()) fetchQuotes(false);
+}
+/* 最近一次「台灣時間 13:35」(收盤價確定、closedRows 開始收當天那筆)的時間點,不管是不是交易日 */
+function lastCloseCutoff(nowMs){
+  const tp = new Date(nowMs + 8 * 3600000);
+  const cut = Date.UTC(tp.getUTCFullYear(), tp.getUTCMonth(), tp.getUTCDate(), 13, 35) - 8 * 3600000;
+  return cut <= nowMs ? cut : cut - 86400000;
 }
 
 /* 回補約 14 個月(涵蓋 240 日均線)的歷史收盤價,給趨勢訊號用。
@@ -4939,10 +4948,37 @@ function onClick(el){
 }
 
 /* ===================== 啟動 ===================== */
-function init(){
+/* 手機的 PWA 切到背景不會被關掉,隔天切回來是同一個頁面繼續跑,init() 裡「每次打開」該做的事都不會再做:
+   不抓新收盤價(🔔 還是前一天的訊號,要 4 天後才跳「收盤價停在…」)、不記當月利息跟快照、
+   標題日期跟記帳/買賣的預設日期停在前一天(沒注意就把今天的交易記成昨天)。回到前景時補做。 */
+let foregroundDay = todayISO();
+function showTodayDate(){
   const d = new Date();
   // 分頁列旁邊只放短日期,免得窄螢幕擠不下
-  document.getElementById('todayDate').textContent = (d.getMonth()+1) + '/' + d.getDate();
+  const el = document.getElementById('todayDate');
+  if (el) el.textContent = (d.getMonth()+1) + '/' + d.getDate();
+}
+function onForeground(fromTimer = false){
+  const today = todayISO();
+  if (today !== foregroundDay){
+    const prev = foregroundDay;
+    foregroundDay = today;
+    showTodayDate();
+    // 使用者自己改過的日期(補記前幾天的)不動,只換掉還停在「那天的今天」的預設值
+    if (draft.date === prev) draft.date = today;
+    if (tradeDraft.date === prev) tradeDraft.date = today;
+    if (viewMonth === prev.slice(0, 7)) viewMonth = thisMonth();
+    maybePostInterest();
+    maybeSnapshot();
+    maybeDailySnapshot();
+    if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
+  }
+  // 計時器(桌機分頁一直開在前景)只在收盤後抓一次,不要整天每小時問證交所
+  maybeAutoQuote(fromTimer);
+}
+
+function init(){
+  showTodayDate();
 
   const local = readLocal();
   if (local) state = normalize(local);
@@ -4987,6 +5023,10 @@ function init(){
   renderAll();
   maybeAutoQuote();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') onForeground(); });
+  // 桌機分頁可能一直開著、一直在前景,不會有 visibilitychange
+  const fg = setInterval(() => { if (document.visibilityState !== 'hidden') onForeground(true); }, 10 * 60000);
+  if (fg && fg.unref) fg.unref();   // 瀏覽器回傳數字沒有 unref;node 跑測試時不讓計時器卡住結束
   if (UPDATE_CHECK_ENABLED){
     document.getElementById('updateBanner').addEventListener('click', applyUpdate);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
