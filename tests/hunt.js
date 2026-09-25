@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, maybePostInterest, todayISO, renderExposurePlanCard,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, maybePostInterest, todayISO, renderExposurePlanCard,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -519,6 +519,28 @@ check('借款超過「市值 + 額度」:曝險比例顯示 —、壓力測試�
     reqs = 0;
     await A.fetchQuotes(true); await waitIdle();
     if (!(reqs > 10)) bugs.push('手動按更新報價應該照樣回補(只發了 ' + reqs + ' 個請求)');
+    // 一個多月沒開 app:更新報價只抓這個月,中間那個月缺掉 → 均線會錯。要自動補齊;補齊前不能給訊號/提醒
+    global.fetch = async (url) => {
+      const m = /date=(\d{4})(\d{2})/.exec(url); const y = +m[1], mo = +m[2];
+      const rows = [];
+      for (let d = 1; d <= 28; d++){ const dow = new Date(y, mo - 1, d).getDay(); if (dow === 0 || dow === 6) continue;
+        rows.push([`${y - 1911}/${String(mo).padStart(2, '0')}/${String(d).padStart(2, '0')}`, '1', '1', '1', '1', '1', '50.00', '+1', '1']); }
+      return { ok: true, json: async () => ({ stat: 'OK', data: rows }) };
+    };
+    A.state = A.emptyState();
+    const now = new Date(), cut = new Date(now.getFullYear(), now.getMonth() - 1, 0);   // 兩個月前的月底
+    const h = []; for (let d = new Date(cut.getFullYear() - 2, 0, 2); d <= cut; d.setDate(d.getDate() + 1)){ if (d.getDay() % 6 === 0) continue;
+      h.push({ d: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'), c: 50 }); }
+    A.state.instruments.forEach(it => { it.priceHistory = h.slice(); it.splits = []; it.auto = true; it.trend.lastSeenStatus = 'WAIT_RECOVER'; });
+    // 先手動接上這個月(模擬舊版只抓這個月的結果),確認缺口期間不給訊號也不提醒
+    const cur = await (await global.fetch('x&date=' + now.getFullYear() + String(now.getMonth() + 1).padStart(2, '0') + '01')).json();
+    A.state.instruments.forEach(it => { cur.data.forEach(r => { const [yy, mm, dd] = r[0].split('/'); it.priceHistory.push({ d: `${+yy + 1911}-${mm}-${dd}`, c: 50 }); }); });
+    if (!/資料缺一段/.test(A.renderTrendTab())) bugs.push('價格歷史缺了一個月,訊號分頁沒有警告');
+    if (A.trendChanges().length) bugs.push('價格歷史有缺口時還在跳訊號提醒');
+    localStorage.removeItem('financeTwseCooldownUntil'); localStorage.setItem('financeAutoBackfillDay', A.todayISO());   // 今天已經自動回補過一次
+    await A.fetchQuotes(false); await waitIdle();
+    const gapLeft = A.state.instruments.filter(it => { for (let i = 1; i < it.priceHistory.length; i++) if ((new Date(it.priceHistory[i].d) - new Date(it.priceHistory[i - 1].d)) / 864e5 > 16) return true; return false; });
+    if (gapLeft.length) bugs.push('一個多月沒開 app 後更新報價,中間那個月沒有補回來(' + gapLeft.map(it => it.id).join('、') + ')');
   }catch(e){ bugs.push('抓報價測試例外:' + e.message); }
   global.setTimeout = realST;
 

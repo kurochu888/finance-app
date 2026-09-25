@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -254,6 +254,50 @@ console.log('狀態改變提醒:第一次算得出訊號時要安靜記下基準
   A.renderAll();
   must(A.trendChanges().length === 1, `狀態跟上次看到的不一樣時應該提醒,得到 ${A.trendChanges().length} 則`);
   must(it.trend.lastSeenStatus !== was, '已經有基準的不該被自動覆蓋(要等使用者按知道了)');
+})();
+console.log('  ok');
+
+console.log('接刀加碼(狀態還是 WAIT_RECOVER、只有層數變)也要跳提醒(迴歸測試:以前只比狀態,兩次加碼都不會提醒)');
+(function(){
+  // 找一段隨機路徑:某天剛出場(接刀 0 層),之後某天加碼到第 1 層
+  let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  let found = null;
+  for (let k = 0; k < 200 && !found; k++){
+    const hist = []; let p = 50; const d = new Date(2016, 0, 4);
+    while (hist.length < 900){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0) continue;
+      p *= 1 + (rnd() - 0.5) * 0.05 + (hist.length > 500 ? -0.004 : 0.002);
+      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(p * 100) / 100 }); }
+    const it = { key:'k', id:'00631L', leverage:2, trend: A.defaultTrendParams(2), priceHistory: [] };
+    let exitAt = -1;
+    for (let n = 260; n <= hist.length; n++){
+      it.priceHistory = hist.slice(0, n);
+      const t = A.computeTrend(it);
+      if (exitAt < 0 && t.status === 'WAIT_RECOVER' && t.pyramidCount === 0) exitAt = n;
+      if (exitAt > 0 && t.status === 'WAIT_RECOVER' && t.pyramidCount === 1){ found = { hist, exitAt, addAt: n }; break; }
+      if (exitAt > 0 && t.status === 'HOLD') exitAt = -1;
+    }
+  }
+  must(found, '找不到「出場後接刀第 1 層」的路徑,這個測試沒測到東西');
+  if (!found) return;
+  A.state = A.emptyState();
+  A.state.instruments = A.state.instruments.filter(x => x.id === '00631L');
+  const it = A.state.instruments[0];
+  it.priceHistory = found.hist.slice(0, found.exitAt); it.splits = [];
+  it.trend.lastSeenStatus = 'HOLD'; it.trend.lastSeenLayers = 0;
+  must(A.trendChanges().length === 1, '剛跌破出場線應該提醒');
+  A.onClick({ dataset:{ act:'ack-trend', id: it.key } });        // 看過了:WAIT_RECOVER、0 層
+  must(A.trendChanges().length === 0, '按了知道了之後不該再提醒');
+  it.priceHistory = found.hist.slice(0, found.addAt);           // 過了幾天,加碼到第 1 層
+  const ch = A.trendChanges();
+  must(ch.length === 1, `接刀加碼第 1 層沒有提醒(狀態還是 WAIT_RECOVER,只有層數變了)`);
+  const html = A.renderTrendTab();
+  must(/接刀加碼第 1 層/.test(html), '提醒文字沒寫出接刀加碼第幾層');
+  A.onClick({ dataset:{ act:'ack-trend', id: it.key } });
+  must(A.trendChanges().length === 0, '加碼後按知道了還在提醒');
+  // 舊資料只記了狀態、沒記層數:不能因此跳假提醒,要安靜補上
+  it.trend.lastSeenLayers = -1;
+  A.renderAll();
+  must(it.trend.lastSeenLayers === 1 && A.trendChanges().length === 0, `舊資料沒有層數時要安靜補上現在的層數(得到 ${it.trend.lastSeenLayers})`);
 })();
 console.log('  ok');
 
