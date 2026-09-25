@@ -603,8 +603,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-24 · d6236618e5';
-const BUILD_HASH = 'd6236618e5';
+const BUILD_VERSION = '2026-09-25 · 26f8c01552';
+const BUILD_HASH = '26f8c01552';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2847,6 +2847,7 @@ function runBacktest(priceHistory, trendParams){
   const bhShares = bhQty;
   const bhCashLeft = BACKTEST_INITIAL_CASH - bhQty * closes[start] - (bhQty > 0 ? defaultFee('buy', bhQty * closes[start]) : 0);
   const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhCashLeft + bhShares * closes[start] }];
+  const events = [];   // 每次策略動作(出場/接刀/轉回續抱)的日期跟價格,給「指定期間」檢視列出來;只記錄,不影響淨值計算
 
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
@@ -2875,6 +2876,7 @@ function runBacktest(priceHistory, trendParams){
           shares += qty;
         }
         basePrice = close; pyramidCount = 0; status = 'HOLD';
+        events.push({ d: dates[i], act: 'RECOVER', close });
       }else if (action === 'ADD'){
         const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
         const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
@@ -2884,6 +2886,7 @@ function runBacktest(priceHistory, trendParams){
           shares += qty;
         }
         basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
+        events.push({ d: dates[i], act: 'ADD', close, n: pyramidCount });
       }else if (action === 'EXIT'){
         const gross = shares * close;
         const fee = defaultFee('sell', gross);
@@ -2891,6 +2894,7 @@ function runBacktest(priceHistory, trendParams){
         shares = 0;
         cashAtExit = cash;
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
+        events.push({ d: dates[i], act: 'EXIT', close });
       }
     }
     curve.push({ d: dates[i], strat: cash + shares * close, bh: bhCashLeft + bhShares * close });
@@ -2903,7 +2907,7 @@ function runBacktest(priceHistory, trendParams){
   };
   const final = curve[curve.length - 1];
   return {
-    curve, from: curve[0].d, to: final.d, status, pyramidCount,
+    curve, events, from: curve[0].d, to: final.d, status, pyramidCount,
     returnStrat: (final.strat / BACKTEST_INITIAL_CASH - 1) * 100,
     returnBh: (final.bh / BACKTEST_INITIAL_CASH - 1) * 100,
     mddStrat: mdd(curve.map(c => c.strat)),
@@ -2974,7 +2978,8 @@ function runAllBacktests(){
     const res = runBacktest(hist, p);
     const sampled = monthEndSample(res.curve);
     return {
-      id: it.id, from: res.from, to: res.to,
+      id: it.id, from: res.from, to: res.to, leverage: it.leverage,
+      curve: res.curve, events: res.events,   // 指定期間檢視用
       returnStrat: res.returnStrat, returnBh: res.returnBh,
       mddStrat: res.mddStrat, mddBh: res.mddBh,
       periods: { strat: splitStats(res.curve, 'strat'), bh: splitStats(res.curve, 'bh') },
@@ -3619,6 +3624,88 @@ function renderBacktestPeriods(r){
     分段的數字只在同一段內算,前後段可以互相比,不要拿去跟全期比。</div>`;
 }
 
+/* 指定期間檢視:回測跑完之後,挑一段期間(預設 2022 升息那一年)看策略當時有沒有動作、
+   策略 vs 買進持有在這段期間內的報酬跟最大回撤。淨值曲線是同一條(策略狀態從回測起點一路延續下來,
+   不是在期間起點重新開始),MDD 從期間內的高點算。0050 這類 1 倍標的要先加進標的清單、抓完整歷史才會出現。 */
+const BT_WINDOW_KEY = 'financeBacktestWindow';
+const BT_WINDOW_PRESETS = [['2020-01-01', '2020-06-30', '2020 疫情'], ['2022-01-01', '2022-12-31', '2022 升息'], ['2024-07-01', '2024-09-30', '2024 急跌']];
+let btWindow = (() => {
+  try{
+    const w = JSON.parse(localStorage.getItem(BT_WINDOW_KEY) || 'null');
+    if (w && isoDate(w.from) && isoDate(w.to)) return { from: w.from, to: w.to };
+  }catch(e){}
+  return { from: '2022-01-01', to: '2022-12-31' };
+})();
+function setBtWindow(from, to){
+  btWindow = { from, to };
+  try{ localStorage.setItem(BT_WINDOW_KEY, JSON.stringify(btWindow)); }catch(e){}
+  const box = document.getElementById('bt-window-body');
+  if (box) box.innerHTML = renderBacktestWindowBody();   // 只換這一塊,不整頁重畫(日期欄位才不會失焦)
+}
+const nextDay = d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 1); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
+const BT_ACT_LABEL = e => e.act === 'EXIT' ? '跌破出場線,全部賣出'
+  : e.act === 'ADD' ? `接刀加碼第 ${e.n} 層` : '訊號轉回續抱,剩下的現金全部買進';
+function btStateBefore(r, d){
+  const prev = r.events.filter(e => e.d < d);
+  const last = prev[prev.length - 1];
+  if (!last) return '還沒進場(全部現金,等第一次訊號)';
+  if (last.act === 'RECOVER') return `續抱中(${last.d} 轉回續抱)`;
+  if (last.act === 'EXIT') return `已出場,拿著現金等回歸(${last.d} 出場)`;
+  return `接刀中,已加碼 ${last.n} 層(最近一次 ${last.d})`;
+}
+function renderBacktestWindowBody(){
+  const { from, to } = btWindow;
+  if (!(from < to)) return `<div class="muted neg">開始日要早於結束日。</div>`;
+  const rows = (backtestResults || []).filter(r => !r.error && r.curve);
+  const pct = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+  const segStats = (r, key) => {
+    const seg = r.curve.filter(pt => pt.d >= from && pt.d < nextDay(to));
+    if (seg.length < 2) return null;
+    const st = periodStats(r.curve, from, nextDay(to), key);
+    return { ret: (seg[seg.length - 1][key] / seg[0][key] - 1) * 100, mdd: st ? st.mdd : null, first: seg[0].d, last: seg[seg.length - 1].d };
+  };
+  const table = rows.map(r => {
+    const s1 = segStats(r, 'strat'), s2 = segStats(r, 'bh');
+    if (!s1) return `<tr><th>${esc(r.id)}</th><td colspan="2" class="muted">這段期間沒有回測資料(回測從 ${esc(r.from)} 開始)</td></tr>`;
+    return `<tr><th>${esc(r.id)}${r.leverage && r.leverage !== 1 ? `<div class="muted" style="font-weight:400;">${r.leverage} 倍</div>` : ''}</th>
+      <td><span class="${s1.ret >= 0 ? 'pos' : 'neg'}">${pct(s1.ret)}</span><span class="neg">${pct(s1.mdd)}</span></td>
+      <td><span class="${s2.ret >= 0 ? 'pos' : 'neg'}">${pct(s2.ret)}</span><span class="neg">${pct(s2.mdd)}</span></td></tr>`;
+  }).join('');
+  const logs = rows.map(r => {
+    const inWin = r.events.filter(e => e.d >= from && e.d <= to);
+    return `
+      <div style="margin-top:10px;">
+        <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.id)}</span><span class="val muted">策略動作 ${inWin.length} 次</span></div>
+        <div class="row sub"><span class="label">期初狀態</span><span class="val">${esc(btStateBefore(r, from))}</span></div>
+        ${inWin.map(e => `<div class="row sub"><span class="label">${esc(e.d)}</span><span class="val">${BT_ACT_LABEL(e)} @ ${e.close.toFixed(2)}</span></div>`).join('')
+          || `<div class="row sub"><span class="label">期間內</span><span class="val">沒有動作,維持期初狀態</span></div>`}
+      </div>`;
+  }).join('');
+  const hasOneX = rows.some(r => r.leverage === 1);
+  return `
+    <table class="bt-grid" style="margin-top:8px;">
+      <tr><th></th><th>照策略進出</th><th>買進持有(沒策略)</th></tr>
+      ${table}
+    </table>
+    <div class="muted" style="font-size:11px; margin-top:4px;">每格:期間報酬 / 期間內最大回撤(MDD,從這段期間的高點算)。
+      策略的部位狀態是從回測起點一路延續下來的,不是在期間第一天重新開始。${hasOneX ? '' : '想跟 0050 比,先到「設定」分頁新增 0050,再按上面「抓完整歷史」、重新執行回測。'}</div>
+    ${logs}`;
+}
+function renderBacktestWindow(){
+  if (!(backtestResults || []).some(r => !r.error && r.curve)) return '';
+  return `
+    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
+      <h3 style="margin-bottom:6px;">指定期間</h3>
+      <div class="seg" style="margin-bottom:8px;">
+        ${BT_WINDOW_PRESETS.map(([f, t, label]) => `<button class="seg-btn ${btWindow.from === f && btWindow.to === t ? 'on' : ''}" data-act="btw-preset" data-v="${f}|${t}">${label}</button>`).join('')}
+      </div>
+      <div class="grid2">
+        <div class="field"><label>開始</label><input type="date" data-k="btw-from" value="${esc(btWindow.from)}"></div>
+        <div class="field"><label>結束</label><input type="date" data-k="btw-to" value="${esc(btWindow.to)}"></div>
+      </div>
+      <div id="bt-window-body">${renderBacktestWindowBody()}</div>
+    </div>`;
+}
 function renderBacktestCard(){
   return `
     <div class="card">
@@ -3648,6 +3735,7 @@ function renderBacktestCard(){
           ${renderBacktestPeriods(r)}
         </div>
       `).join('')}
+      ${renderBacktestWindow()}
     </div>`;
 }
 
@@ -3953,6 +4041,11 @@ function onField(key, el){
   else if (kind === 'rd'){                                          // 還款草稿
     repayDraft[rest] = rest === 'date' ? isoDate(el.value, '') : el.value;
     if (rest === 'target') renderAll();
+    return;
+  }
+  else if (kind === 'btw'){                                         // 回測「指定期間」:不是資料,不存檔
+    const v = isoDate(el.value, '');
+    if (v) setBtWindow(rest === 'from' ? v : btWindow.from, rest === 'to' ? v : btWindow.to);
     return;
   }
   else if (kind === 'pd'){                                          // 買賣草稿
@@ -4390,6 +4483,7 @@ function onClick(el){
     case 'backfill-history': backfillHistory(); return;
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); break;
+    case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);
       if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenDate: it.trend.lastSeenDate });
