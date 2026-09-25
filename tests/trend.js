@@ -327,6 +327,20 @@ console.log('一檔出場、兩檔市值不一樣:減碼金額照市值比例分
 })();
 console.log('  ok');
 
+console.log('另外抱著 0050 時正2 出場:卡片要給「正2 全部賣掉」的金額,不能只寫降不到目標');
+(function(){
+  const mk = (fall) => { const h = []; let c = 20; const d = new Date(2023, 0, 2); while (h.length < 320 + fall){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0) continue; c *= h.length < 320 ? 1.002 : 0.985; h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 1000) / 1000 }); } return h; };
+  A.state = A.emptyState();
+  const [a, b] = A.state.instruments;
+  let f = 5; for (; f < 60; f++){ a.priceHistory = mk(f); const t = A.computeTrend(a); if (t.status === 'WAIT_RECOVER' && t.pyramidCount === 0) break; }
+  b.priceHistory = mk(0); a.splits = []; b.splits = [];
+  a.price = 10; a.shares = 50000; b.price = 10; b.shares = 50000;
+  A.state.instruments.push({ key:'k50', id:'0050', name:'', leverage:1, price:100, shares:10000, auto:false, trend: A.defaultTrendParams(1), priceHistory:[], splits:[], splitsAcked:[] });
+  const txt = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  must(/正2 全部賣掉 約 NT\$ 1,000,000/.test(txt), '0050 也算在曝險裡、正2 賣光到不了 0%,卡片要寫「正2 全部賣掉 約 NT$ 1,000,000」:' + txt.slice(0, 220));
+})();
+console.log('  ok');
+
 console.log('normalize():Infinity 混進趨勢參數/歷史收盤價不能悄悄溜過去(迴歸測試:壓測抓到的 bug)');
 (function testInfinityGuard(){
   // num() 只擋 NaN,擋不住 Infinity(parseFloat('Infinity') 是合法的);

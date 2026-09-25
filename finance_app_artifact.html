@@ -609,8 +609,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-25 · 0e2e99bb5c';
-const BUILD_HASH = '0e2e99bb5c';
+const BUILD_VERSION = '2026-09-25 · 5f43240a3d';
+const BUILD_HASH = '5f43240a3d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3575,6 +3575,11 @@ function renderExposurePlanCard(){
   // 減碼照各檔目前市值的比例分攤:以前也寫「各半」,兩檔市值不一樣時(例如 70 萬 / 30 萬、目標降到 0%)
   // 會叫小的那檔賣 50 萬,根本沒那麼多可以賣。比例分攤每檔都不會超過自己的市值(總減碼 ≤ 正2 總市值)
   const lev2Value = () => sum(computeLeverage().holdings.filter(h => p.instruments.includes(h.key)), h => h.value);
+  // 要賣的比正2 全部市值還多:代表其他標的(0050 這類 1 倍)的曝險也算在比例裡,正2 賣光也到不了目標。
+  // 以前只寫「全部賣掉也降不到目標」、不給金額,出場訊號當下不知道要賣多少——照訊號就是正2 全部賣掉,寫出來
+  const hasOther = computeLeverage().holdings.some(h => !p.instruments.includes(h.key) && h.value > 0);
+  const sellAllLev2 = () => `正2 全部賣掉 約 NT$ ${fmt(lev2Value())}${sellSplit(lev2Value())}`
+    + (hasOther ? '(其他標的也算在曝險裡,正2 賣光還到不了目標;其他標的照它自己的訊號)' : '(賣光也到不了目標)');
   // 還款/借款的上限:借款餘額、剩下的額度。R = 目標比例,raw = 曝險差額(負 = 要減)
   const loan = computeRisk().loan, room = Math.max(0, state.leverage.creditLimit - loan);
   const R = p.targetRatio / 100, raw = p.deltaLoan * 2;
@@ -3609,23 +3614,25 @@ function renderExposurePlanCard(){
       <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
-      ${overTarget ? (
+      ${overTarget && lev2Value() < 1 ? `
+        <div class="muted" style="margin-top:6px;">正2 已經沒有持股,不用再減碼;目前的曝險來自其他標的(例如 0050),照它們自己的訊號處理。</div>
+      ` : overTarget ? (
         // 減碼有兩個邊界:賣了拿去還房貸(市值跟借款一起減,部位淨值不變)vs 賣了留現金(現金不算在分母裡,要賣更多)。
         // 還房貸最多只能還到借款餘額:沒有借款時只有「留現金」一種;借款比要還的少時,方案B 是「先還清、剩下留現金」
         // (整合模擬抓到:全現金部位照「賣掉還房貸」的金額賣,沒有房貸可還,曝險 68.8% 降不到 65%)。
         // 目標 0%(出場)兩者一樣,只寫一行
         loan < 1 ? `
         <div class="row sub"><span class="label">已超過目標,可考慮減碼(目前沒有房貸,賣掉的錢留著)</span>
-          <span class="val">${sellCash == null || sellCash > lev2Value() + 1 ? '—(全部賣掉也降不到目標)' : '約 NT$ ' + fmt(sellCash) + sellSplit(sellCash)}</span></div>
+          <span class="val">${sellCash == null || sellCash > lev2Value() + 1 ? sellAllLev2() : '約 NT$ ' + fmt(sellCash) + sellSplit(sellCash)}</span></div>
         ` : sellCash != null && Math.abs(sellCash - Math.abs(p.deltaLoan)) > 1 ? `
         <div class="row sub"><span class="label">已超過目標。方案B:賣掉、${Math.abs(p.deltaLoan) <= loan + 0.5 ? '錢拿去還房貸' : `先還清房貸 NT$ ${fmt(loan)}、剩下留現金`}</span>
-          <span class="val">${sellRepay == null || sellRepay > lev2Value() + 1 ? '—(全部賣掉也降不到目標)' : '約 NT$ ' + fmt(sellRepay) + sellSplit(sellRepay) + '(記得在「紀錄」分頁記還款)'}</span></div>
+          <span class="val">${sellRepay == null || sellRepay > lev2Value() + 1 ? sellAllLev2() + '(賣得的錢拿去還房貸,記得記還款)' : '約 NT$ ' + fmt(sellRepay) + sellSplit(sellRepay) + '(記得在「紀錄」分頁記還款)'}</span></div>
         <div class="row sub"><span class="label">方案A:賣掉、錢留著當現金</span>
-          <span class="val">${sellCash > lev2Value() + 1 ? '—(全部賣掉也降不到目標,至少要用方案B 還房貸)'
+          <span class="val">${sellCash > lev2Value() + 1 ? sellAllLev2()
             : '約 NT$ ' + fmt(sellCash) + sellSplit(sellCash)}</span></div>
         ` : `
         <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
-          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${sellSplit(Math.abs(p.deltaLoan))}</span></div>
+          <span class="val">${Math.abs(p.deltaLoan) > lev2Value() + 1 ? sellAllLev2() : '約 NT$ ' + fmt(Math.abs(p.deltaLoan)) + sellSplit(Math.abs(p.deltaLoan))}</span></div>
       `) : (p.deltaLoan > 0.5 ? `
         <div class="row sub"><span class="label">方案A:自己拿新的錢出來買(現金)</span>
           <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + split(p.deltaCash)}</span></div>
