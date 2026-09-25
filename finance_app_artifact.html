@@ -607,8 +607,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-25 · ada037e258';
-const BUILD_HASH = 'ada037e258';
+const BUILD_VERSION = '2026-09-25 · 049063766d';
+const BUILD_HASH = '049063766d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1342,6 +1342,15 @@ function mergeHistory(hist, rows, keep = PRICE_HIST_KEEP, splits = null, id = ''
     .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
   return adjustForSplits(merged, splits, id).slice(-keep);
 }
+/* 訊號是用「收盤價」算的。盤中(台灣 13:35 以前)如果證交所的資料已經帶著今天那一筆,那是還沒收盤的價格,
+   併進均線用的歷史會讓訊號盤中跳一次、收盤又變回去——照 🔔 執行的話可能照著假訊號下單。
+   證交所的日成交資料一般收盤後才有當天那筆,這裡只是保險:13:35 以前不收今天的列(股價顯示不受影響)。 */
+function closedRows(rows){
+  const now = new Date();
+  if (now.getHours() * 60 + now.getMinutes() >= 13 * 60 + 35) return rows;
+  const today = todayISO();
+  return (Array.isArray(rows) ? rows : []).filter(r => !(Array.isArray(r) && rocToISO(r[0]) === today));
+}
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
    使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
 function needsBackfill(){
@@ -1386,7 +1395,7 @@ async function fetchQuotes(manual){
       if (!it) return;                    // 抓的途中被刪掉了
       if (row){
         it.price = cleanNum(row[6]);      // 收盤價
-        it.priceHistory = mergeHistory(it.priceHistory, results[i], PRICE_HIST_KEEP, it.splits || (it.splits = []), it.id);   // 順便把整月資料併進歷史,累積均線用的資料
+        it.priceHistory = mergeHistory(it.priceHistory, closedRows(results[i]), PRICE_HIST_KEEP, it.splits || (it.splits = []), it.id);   // 順便把整月資料併進歷史,累積均線用的資料
         date = rocToISO(row[0]) || date;
         got++;
       }else{
@@ -1464,7 +1473,7 @@ async function backfillHistory(){
         const j = await twseJson(TWSE_STOCK + encodeURIComponent(target.id) + '&date=' + monthParam(offset));
         if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
           const live = findInstrumentByKey(target.key);
-          if (live) live.priceHistory = mergeHistory(live.priceHistory, j.data, PRICE_HIST_KEEP, live.splits || (live.splits = []), live.id);
+          if (live) live.priceHistory = mergeHistory(live.priceHistory, closedRows(j.data), PRICE_HIST_KEEP, live.splits || (live.splits = []), live.id);
           monthsOk++;
         }
       }catch(e){
@@ -1561,7 +1570,7 @@ async function backfillFullHistory(){
       try{
         const j = await twseJson(TWSE_STOCK + encodeURIComponent(tid) + '&date=' + m);
         if (j.stat === 'OK' && Array.isArray(j.data) && j.data.length){
-          hist = mergeHistory(hist, j.data, Infinity, backtestSplits[tid] || (backtestSplits[tid] = []), tid);
+          hist = mergeHistory(hist, closedRows(j.data), Infinity, backtestSplits[tid] || (backtestSplits[tid] = []), tid);
           ok = true;
         }else{
           emptyMonths.add(m);

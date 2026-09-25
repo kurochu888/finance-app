@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, maybePostInterest, todayISO, renderExposurePlanCard,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, maybePostInterest, todayISO, renderExposurePlanCard,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -474,6 +474,16 @@ check('借款超過「市值 + 額度」:曝險比例顯示 —、壓力測試�
   A.levTab = 'overview'; A.renderAll();
   const h2 = document.getElementById('content').innerHTML.replace(/<[^>]+>/g, ' ');
   if (!/−NT\$ 400,000/.test(h2)) return '自己的錢沒有寫成 −NT$ 400,000';
+  return '';
+});
+
+check('13:35 以前不把今天(還沒收盤)的價格併進均線用的歷史', () => {
+  const t = A.todayISO(), [y, m, d] = t.split('-');
+  const rows = [[`${y - 1911}/${m}/01`, '1', '1', '1', '1', '1', '10', '', ''], [`${y - 1911}/${m}/${d}`, '1', '1', '1', '1', '1', '11', '', '']];
+  const now = new Date(), before = now.getHours() * 60 + now.getMinutes() < 13 * 60 + 35;
+  const kept = A.closedRows(rows).length;
+  if (before && kept !== 1 && d !== '01') return '盤中還收了今天那一筆';
+  if (!before && kept !== 2) return '收盤後把今天那一筆丟掉了';
   return '';
 });
 
