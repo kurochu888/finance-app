@@ -19,6 +19,9 @@ echo
 echo "=== 均線策略回測(runBacktest) ==="
 node backtest.js || fail=1
 echo
+echo "=== 加權指數模擬正2(可拆) ==="
+node indexsim.js | tail -1 || fail=1
+echo
 echo "=== 新版提示(checkForUpdate) ==="
 node update.js || fail=1
 echo
