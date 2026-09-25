@@ -170,6 +170,31 @@ console.log('periodStats:前後段各自算年化跟段內 MDD(原策略、買�
 })();
 console.log('  ok');
 
+console.log('events(指定期間檢視用):從事件推回來的狀態要跟回測一致,出場前一定在續抱、接刀層數連續');
+(function testEvents(){
+  let seed = 11, total = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 40; k++){
+    const hist = []; let p = 50;
+    const d = new Date(2016, 0, 4);
+    for (let i = 0; i < 1500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+      p *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 250) % 2 ? -0.0015 : 0.0015);
+      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(p * 100) / 100 }); }
+    const res = A.runBacktest(hist, A.computeTrend({ key:'k', id:'X', leverage:2, priceHistory:[] }).params || { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 });
+    if (!res) continue;
+    total += res.events.length;
+    let st = 'WATCH', n = 0;
+    for (const e of res.events){
+      if (e.act === 'EXIT'){ must(st === 'HOLD', `${e.d} 出場時不是續抱中(${st})`); st = 'WAIT_RECOVER'; n = 0; }
+      else if (e.act === 'ADD'){ must(st !== 'HOLD' && e.n === n + 1, `${e.d} 接刀層數不連續(${n} → ${e.n})`); st = 'WAIT_RECOVER'; n = e.n; }
+      else { must(st !== 'HOLD', `${e.d} 已經續抱中又轉回續抱`); st = 'HOLD'; n = 0; }
+    }
+    must(st === res.status && n === res.pyramidCount, `事件推回來的狀態 ${st}/${n} 跟回測結果 ${res.status}/${res.pyramidCount} 不一致`);
+  }
+  console.log('  40 組共', total, '個策略動作');
+  must(total > 40, '隨機路徑幾乎沒有策略動作,這個測試沒測到東西');
+})();
+console.log('  ok');
+
 console.log('completeHistoryMonths:上次只抓到一半的月份不能被當成已經抓齊而永遠跳過');
 (function testCompleteMonths(){
   const daily = (dates) => dates.map(d => ({ d, c: 100 }));
