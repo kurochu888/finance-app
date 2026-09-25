@@ -621,8 +621,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · a86398d2e4';
-const BUILD_HASH = 'a86398d2e4';
+const BUILD_VERSION = '2026-09-25 · 84c9f1bf7d';
+const BUILD_HASH = '84c9f1bf7d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3693,12 +3693,14 @@ function renderBacktestWindowBody(){
       <td><span class="${s1.ret >= 0 ? 'pos' : 'neg'}">${pct(s1.ret)}</span><span class="neg">${pct(s1.mdd)}</span></td>
       <td><span class="${s2.ret >= 0 ? 'pos' : 'neg'}">${pct(s2.ret)}</span><span class="neg">${pct(s2.mdd)}</span></td></tr>`;
   }).join('');
-  const logs = rows.map(r => {
+  // 期間內完全沒資料的(例如選 2000 泡沫時的 00631L)不列動作清單:上面表格已經寫了沒資料,
+  // 這裡再列「策略動作 0 次、還沒進場」看起來像策略那段期間什麼都沒做
+  const logs = rows.filter(r => r.from <= to && r.to >= from).map(r => {
     const inWin = r.events.filter(e => e.d >= from && e.d <= to);
     return `
       <div style="margin-top:10px;">
         <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label || r.id)}</span><span class="val muted">策略動作 ${inWin.length} 次</span></div>
-        <div class="row sub"><span class="label">期初狀態</span><span class="val">${esc(btStateBefore(r, from))}</span></div>
+        <div class="row sub"><span class="label">期初狀態</span><span class="val">${esc(from < r.from ? `回測從 ${r.from} 開始,之前沒有資料` : btStateBefore(r, from))}</span></div>
         ${inWin.map(e => `<div class="row sub"><span class="label">${esc(e.d)}</span><span class="val">${BT_ACT_LABEL(e)} @ ${e.close.toFixed(2)}</span></div>`).join('')
           || `<div class="row sub"><span class="label">期間內</span><span class="val">沒有動作,維持期初狀態</span></div>`}
       </div>`;
@@ -3783,10 +3785,15 @@ async function fetchIndexSim(){
           const d = rocToISO(row[0]), c = cleanNum(row[4]);   // 日期、開、高、低、收
           if (d && c > 0) byDate.set(d, c);
         });
-      }else if (++empties >= 3){
-        // 連續 3 個月查無資料:比這更早的證交所沒有
-        if (byDate.size) indexSimFirst = [...byDate.keys()].sort()[0].slice(0, 7);
-        break;
+      }else if (j && /沒有符合條件/.test(String(j.stat || ''))){
+        // 只有證交所明確回「查無資料」才算;維護中/其他錯誤訊息當作沒抓到(missed),不然歷史中間碰上一次,
+        // 就會被當成「更早沒資料」記進 indexSimFirst,之後永遠不再往前抓
+        if (++empties >= 3){
+          if (byDate.size) indexSimFirst = [...byDate.keys()].sort()[0].slice(0, 7);   // 連續 3 個月查無資料:比這更早的證交所沒有
+          break;
+        }
+      }else{
+        missed++;
       }
     }catch(e){
       if (e instanceof TwseBlocked){ blocked = e; break; }
