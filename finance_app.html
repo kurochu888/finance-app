@@ -627,8 +627,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · c4de44ddfb';
-const BUILD_HASH = 'c4de44ddfb';
+const BUILD_VERSION = '2026-09-25 · 0e2e99bb5c';
+const BUILD_HASH = '0e2e99bb5c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3593,6 +3593,14 @@ function renderExposurePlanCard(){
   // 減碼照各檔目前市值的比例分攤:以前也寫「各半」,兩檔市值不一樣時(例如 70 萬 / 30 萬、目標降到 0%)
   // 會叫小的那檔賣 50 萬,根本沒那麼多可以賣。比例分攤每檔都不會超過自己的市值(總減碼 ≤ 正2 總市值)
   const lev2Value = () => sum(computeLeverage().holdings.filter(h => p.instruments.includes(h.key)), h => h.value);
+  // 還款/借款的上限:借款餘額、剩下的額度。R = 目標比例,raw = 曝險差額(負 = 要減)
+  const loan = computeRisk().loan, room = Math.max(0, state.leverage.creditLimit - loan);
+  const R = p.targetRatio / 100, raw = p.deltaLoan * 2;
+  const sellCash = p.deltaCash == null ? null : Math.abs(p.deltaCash);
+  // 賣 x、還 min(x, 借款):借款夠還 → x = |raw|/2;不夠 → 先還清、剩下留現金:x = (−raw − R×借款)/(2 − R)
+  const sellRepay = Math.abs(p.deltaLoan) <= loan + 0.5 ? Math.abs(p.deltaLoan) : (2 - R > 0.0001 ? (-raw - R * loan) / (2 - R) : null);
+  // 借完剩下的額度 z 還不夠:還要自己出現金 c,(raw − 2z)/(2 − R)
+  const mixCash = 2 - R > 0.0001 ? Math.max(0, (raw - 2 * room) / (2 - R)) : null;
   const sellSplit = amt => {
     if (n < 2) return '';
     const hv = computeLeverage().holdings.filter(h => p.instruments.includes(h.key));
@@ -3620,23 +3628,32 @@ function renderExposurePlanCard(){
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
       ${overTarget ? (
-        // 減碼也有兩個邊界:賣了拿去還房貸(市值跟借款一起減,部位淨值不變)vs 賣了留現金(現金不算在分母裡,
-        // 要賣更多才到目標)。以前只寫「減碼約 X」(= 還房貸的金額),照做但把錢留著的話曝險降不到目標
-        // (整合模擬抓到:照卡片做完 134.7% vs 目標 130%)。目標 0%(出場)兩者一樣,只寫一行
-        p.deltaCash != null && Math.abs(Math.abs(p.deltaCash) - Math.abs(p.deltaLoan)) > 1 ? `
-        <div class="row sub"><span class="label">已超過目標。方案B:賣掉、錢拿去還房貸</span>
-          <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${sellSplit(Math.abs(p.deltaLoan))}(記得在「紀錄」分頁記還款)</span></div>
+        // 減碼有兩個邊界:賣了拿去還房貸(市值跟借款一起減,部位淨值不變)vs 賣了留現金(現金不算在分母裡,要賣更多)。
+        // 還房貸最多只能還到借款餘額:沒有借款時只有「留現金」一種;借款比要還的少時,方案B 是「先還清、剩下留現金」
+        // (整合模擬抓到:全現金部位照「賣掉還房貸」的金額賣,沒有房貸可還,曝險 68.8% 降不到 65%)。
+        // 目標 0%(出場)兩者一樣,只寫一行
+        loan < 1 ? `
+        <div class="row sub"><span class="label">已超過目標,可考慮減碼(目前沒有房貸,賣掉的錢留著)</span>
+          <span class="val">${sellCash == null || sellCash > lev2Value() + 1 ? '—(全部賣掉也降不到目標)' : '約 NT$ ' + fmt(sellCash) + sellSplit(sellCash)}</span></div>
+        ` : sellCash != null && Math.abs(sellCash - Math.abs(p.deltaLoan)) > 1 ? `
+        <div class="row sub"><span class="label">已超過目標。方案B:賣掉、${Math.abs(p.deltaLoan) <= loan + 0.5 ? '錢拿去還房貸' : `先還清房貸 NT$ ${fmt(loan)}、剩下留現金`}</span>
+          <span class="val">${sellRepay == null || sellRepay > lev2Value() + 1 ? '—(全部賣掉也降不到目標)' : '約 NT$ ' + fmt(sellRepay) + sellSplit(sellRepay) + '(記得在「紀錄」分頁記還款)'}</span></div>
         <div class="row sub"><span class="label">方案A:賣掉、錢留著當現金</span>
-          <span class="val">${Math.abs(p.deltaCash) > lev2Value() + 1 ? '—(全部賣掉也降不到目標,至少要用方案B 還房貸)'
-            : '約 NT$ ' + fmt(Math.abs(p.deltaCash)) + sellSplit(Math.abs(p.deltaCash))}</span></div>
+          <span class="val">${sellCash > lev2Value() + 1 ? '—(全部賣掉也降不到目標,至少要用方案B 還房貸)'
+            : '約 NT$ ' + fmt(sellCash) + sellSplit(sellCash)}</span></div>
         ` : `
         <div class="row sub"><span class="label">已超過目標,可考慮減碼</span>
           <span class="val">約 NT$ ${fmt(Math.abs(p.deltaLoan))}${sellSplit(Math.abs(p.deltaLoan))}</span></div>
       `) : (p.deltaLoan > 0.5 ? `
         <div class="row sub"><span class="label">方案A:自己拿新的錢出來買(現金)</span>
           <span class="val">${p.deltaCash == null ? '—(純現金到不了)' : 'NT$ ' + fmt(p.deltaCash) + split(p.deltaCash)}</span></div>
+        ${p.deltaLoan <= room + 0.5 ? `
         <div class="row sub"><span class="label">方案B:直接借房貸額度買(不拿新錢)</span>
-          <span class="val">NT$ ${fmt(p.deltaLoan)}${split(p.deltaLoan)}</span></div>
+          <span class="val">NT$ ${fmt(p.deltaLoan)}${split(p.deltaLoan)}</span></div>` : room < 1 ? `
+        <div class="row sub"><span class="label">方案B:借房貸額度買</span>
+          <span class="val">—(房貸額度已經用完,只能用方案A)</span></div>` : `
+        <div class="row sub"><span class="label">方案B:額度只剩 NT$ ${fmt(room)},借完還要自己拿現金</span>
+          <span class="val">${mixCash == null ? '—(到不了)' : `借 NT$ ${fmt(room)} + 現金 NT$ ${fmt(mixCash)}(共 NT$ ${fmt(room + mixCash)})${split(room + mixCash)}`}</span></div>`}
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
       ${p.holdAdjustPending ? `
         <div class="muted" style="margin-top:6px;">這是轉成 HOLD 時唯一一次調整;調整完按下面這顆,之後續抱期間不再提示加碼/減碼。</div>
