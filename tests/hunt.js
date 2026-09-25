@@ -487,6 +487,21 @@ check('13:35 以前不把今天(還沒收盤)的價格併進均線用的歷史',
   return '';
 });
 
+check('訊號用的收盤價太舊時,總覽跟訊號分頁要警告「沒有 🔔 不代表沒有訊號」', () => {
+  const back = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const mk = last => { const h = []; for (let i = 400; i >= last; i--) h.push({ d: back(i), c: 50 }); return h; };
+  A.state = A.emptyState();
+  A.state.instruments.forEach(it => { it.priceHistory = mk(10); it.splits = []; it.shares = 1000; it.price = 50; });
+  A.currentTab = 'overview'; A.renderAll();
+  if (!/收盤價停在/.test(document.getElementById('content').innerHTML)) return '收盤價停在 10 天前,總覽頁沒有警告';
+  A.currentTab = 'leverage'; A.levTab = 'signal'; A.renderAll();
+  if (!/收盤價停在/.test(document.getElementById('content').innerHTML)) return '收盤價停在 10 天前,訊號分頁沒有警告';
+  A.state.instruments.forEach(it => { it.priceHistory = mk(1); });
+  A.renderAll();
+  if (/收盤價停在/.test(document.getElementById('content').innerHTML)) return '收盤價是昨天的還在警告';
+  return '';
+});
+
 (async () => {
   // 證交所回應:最後一列(今天)收盤價是「--」;途中雲端同步把 state 換掉
   const realST = global.setTimeout;

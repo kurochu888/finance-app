@@ -641,8 +641,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · 9cf0d22115';
-const BUILD_HASH = '9cf0d22115';
+const BUILD_VERSION = '2026-09-25 · 9137d3b792';
+const BUILD_HASH = '9137d3b792';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2190,6 +2190,7 @@ function renderOverview(){
 
   return `
     ${monthNav()}
+    ${computePosition().hasData || state.instruments.some(it => it.shares > 0) ? renderStaleSignalAlert() : ''}
     ${alerts.join('')}
     ${isEmpty ? `
     <div class="card">
@@ -3681,9 +3682,35 @@ function renderTrendChangeAlerts(){
       </div>`;
   }).join('');
 }
+/* 訊號用的收盤價多久沒更新。照 🔔 執行的人,「沒有提醒」要代表「沒有訊號」,不能是「沒抓到新資料」
+   (沒網路、證交所冷卻中、好幾天沒開 app)。以前只有設定分頁有「報價 N 天沒更新」,訊號分頁跟總覽看不到。
+   超過 4 天才警告:週末只隔 3 天;連假會誤報,文字裡有說。 */
+function signalStaleness(){
+  const dates = state.instruments
+    .filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && (it.priceHistory || []).length)
+    .map(it => it.priceHistory[it.priceHistory.length - 1].d);
+  if (!dates.length) return null;
+  const oldest = dates.sort()[0], days = Math.floor(daysSince(oldest));
+  return days > 4 ? { date: oldest, days } : null;
+}
+function renderStaleSignalAlert(){
+  const st = signalStaleness();
+  if (!st) return '';
+  return `
+    <div class="alert amber">
+      <span class="ai">🕘</span>
+      <div>
+        <div class="at">訊號用的收盤價停在 ${esc(st.date)}(${st.days} 天前)</div>
+        <div class="ad">沒有 🔔 可能只是還沒抓到新的收盤價,不代表沒有訊號。${QUOTES_ENABLED ? '按下面更新;' : ''}連假期間沒開盤的話是正常的。
+          ${quoteMsg && !quoteBusy ? `<br><span class="neg">${esc(quoteMsg)}</span>` : ''}</div>
+        ${QUOTES_ENABLED ? `<button class="go" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 更新收盤價'}</button>` : ''}
+      </div>
+    </div>`;
+}
 function renderTrendTab(){
   const trends = computeAllTrends();
   return `
+    ${renderStaleSignalAlert()}
     ${renderTrendChangeAlerts()}
     ${renderExposurePlanCard()}
     <div class="card">
