@@ -627,8 +627,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-25 · 6756a1c53f';
-const BUILD_HASH = '6756a1c53f';
+const BUILD_VERSION = '2026-09-25 · 5f43240a3d';
+const BUILD_HASH = '5f43240a3d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2932,8 +2932,6 @@ function runBacktest(priceHistory, trendParams){
         const gapTriggered = close < effectiveBase * (1 - p.pyramidGap);
         if ((priceStable && slopeOk) || strongRebound) action = 'RECOVER';
         else if (gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
-        // FLOOR_STOP 實驗(可拆,只在回測、只有傳 floorStop 才會動):層數都接完之後,收盤比最後一次加碼價再跌 floorStop 就停損全賣、層數歸零重新接刀
-        else if (p.floorStop > 0 && pyramidCount >= p.pyramidLevels && basePrice > 0 && close < basePrice * (1 - p.floorStop)) action = 'STOP';
         else action = status;
       }
 
@@ -2957,14 +2955,14 @@ function runBacktest(priceHistory, trendParams){
         }
         basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
         events.push({ d: dates[i], act: 'ADD', close, n: pyramidCount });
-      }else if (action === 'EXIT' || action === 'STOP'){
+      }else if (action === 'EXIT'){
         const gross = shares * close;
         const fee = defaultFee('sell', gross);
         cash += gross - fee;
         shares = 0;
         cashAtExit = cash;
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
-        events.push({ d: dates[i], act: action, close });
+        events.push({ d: dates[i], act: 'EXIT', close });
       }
     }
     curve.push({ d: dates[i], strat: cash + shares * close, bh: bhCashLeft + bhShares * close });
@@ -3871,14 +3869,14 @@ function setBtWindow(from, to){
   if (box) box.innerHTML = renderBacktestWindowBody();   // 只換這一塊,不整頁重畫(日期欄位才不會失焦)
 }
 const nextDay = d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 1); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
-const BT_ACT_LABEL = e => e.act === 'EXIT' ? '跌破出場線,全部賣出' : e.act === 'STOP' ? '接完之後又大跌,停損全部賣出(實驗)'
+const BT_ACT_LABEL = e => e.act === 'EXIT' ? '跌破出場線,全部賣出'
   : e.act === 'ADD' ? `接刀加碼第 ${e.n} 層` : '訊號轉回續抱,剩下的現金全部買進';
 function btStateBefore(r, d){
   const prev = r.events.filter(e => e.d < d);
   const last = prev[prev.length - 1];
   if (!last) return '還沒進場(全部現金,等第一次訊號)';
   if (last.act === 'RECOVER') return `續抱中(${last.d} 轉回續抱)`;
-  if (last.act === 'EXIT' || last.act === 'STOP') return `已出場,拿著現金等回歸(${last.d} ${last.act === 'STOP' ? '停損' : '出場'})`;
+  if (last.act === 'EXIT') return `已出場,拿著現金等回歸(${last.d} 出場)`;
   return `接刀中,已加碼 ${last.n} 層(最近一次 ${last.d})`;
 }
 function renderBacktestWindowBody(){
@@ -4061,78 +4059,6 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
-/* ===================== FLOOR_STOP 實驗:接完再跌 X% 停損(2026-09,只在回測,可拆) =====================
-   2008 模擬正2 的 MDD 幾乎都來自「兩層接完之後大盤又跌五成」。實驗規則:層數都接完、還在接刀中時,
-   收盤比最後一次加碼價再跌 X% 就全部賣掉,層數歸零、從更低的地方重新接刀。實際訊號(computeTrend)完全不動,
-   只有這裡把 floorStop 傳進 runBacktest 才會觸發;原本的回測結果不受影響。
-   判斷要照 CLAUDE.md 的規矩:五段 + 全期一起看、X 稍微變會不會斷崖、2021 前後兩段是不是都成立。
-   拆掉:刪這個區塊、renderBacktestCard() 的 renderFloorStopExperiment()、onClick 的 floor-run、
-   runBacktest() 裡標了 FLOOR_STOP 的那一行(STOP 跟 EXIT 共用賣出邏輯,EXIT 條件不用改回)。
-   還原點分支 restore/pre-floorstop-experiment-2026-09-25。 */
-const FLOOR_STOP_GRID = [0.15, 0.20, 0.25, 0.30, 0.35];
-const FLOOR_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
-                       ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
-let floorStopResults = null;
-function runFloorStopExperiment(){
-  const sources = [];
-  state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).forEach(it => {
-    sources.push({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(it.leverage) });
-  });
-  if (indexSimHist.length > 1){   // 加權指數模擬(可拆)
-    const { one, two } = indexSimSeries();
-    sources.push({ label: '模擬正2', hist: two, p: (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2) });
-    sources.push({ label: '加權指數', hist: one, p: (state.instruments.find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1) });
-  }
-  floorStopResults = sources.map(src => {
-    const need = Math.max(src.p.maFast, src.p.maSlow) + 1;
-    if (!src.hist || src.hist.length < need || findHistoryGap(src.hist)) return { label: src.label, error: '歷史不夠或中間有缺口,先抓完整歷史' };
-    let from = '', to = '';
-    const rows = [null].concat(FLOOR_STOP_GRID).map(x => {
-      const res = runBacktest(src.hist, x == null ? src.p : Object.assign({}, src.p, { floorStop: x }));
-      from = res.from; to = res.to;
-      const st = (f, t) => periodStats(res.curve, f, t, 'strat');
-      const all = st('0000', '9999'), early = st('0000', BACKTEST_SPLIT_DATE), late = st(BACKTEST_SPLIT_DATE, '9999');
-      const wins = FLOOR_WINDOWS.map(([, f, t]) => {
-        const seg = res.curve.filter(pt => pt.d >= f && pt.d < nextDay(t));
-        if (seg.length < 2) return null;
-        const w = st(f, nextDay(t));
-        return { ret: (seg[seg.length - 1].strat / seg[0].strat - 1) * 100, mdd: w ? w.mdd : null };
-      });
-      return { x, ret: res.returnStrat, mdd: res.mddStrat, calmar: all && all.calmar, early: early && early.calmar, late: late && late.calmar,
-               stops: res.events.filter(e => e.act === 'STOP').length, wins };
-    });
-    return { label: src.label, from, to, rows };
-  });
-}
-function renderFloorStopExperiment(){
-  const f1 = v => v == null ? '—' : v.toFixed(2);
-  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  const name = x => x == null ? '原策略' : `停損 ${Math.round(x * 100)}%`;
-  return `
-    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
-      <h3 style="margin-bottom:6px;">實驗:接完再跌 X% 停損</h3>
-      <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
-        只在回測裡試,實際訊號不動。規則:兩層都接完、還在接刀中時,收盤比最後一次加碼價再跌 X% 就全部賣掉,
-        層數歸零、從更低的地方重新接刀。想擋的是 2008 那種接完之後又跌一大段。看的時候注意:
-        X 稍微改一點結果會不會突然變很多(斷崖)、2021 前後兩段是不是都變好、2020/2022 有沒有被傷到。</div></details>
-      <button class="btn" data-act="floor-run">▶ 跑停損實驗(用上面已經抓好的歷史)</button>
-      ${(floorStopResults || []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
-        <div style="margin-top:12px;">
-          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
-          <table class="bt-grid">
-            <tr><th></th><th>總報酬</th><th>MDD</th><th>年化÷MDD</th><th>2021前</th><th>2021後</th><th>停損次數</th></tr>
-            ${r.rows.map(x => `<tr><th>${name(x.x)}</th><td>${pc(x.ret)}</td><td>${x.mdd.toFixed(1)}%</td><td>${f1(x.calmar)}</td><td>${f1(x.early)}</td><td>${f1(x.late)}</td><td>${x.x == null ? '—' : x.stops}</td></tr>`).join('')}
-          </table>
-          <table class="bt-grid" style="margin-top:6px;">
-            <tr><th></th>${FLOOR_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
-            ${r.rows.map(x => `<tr><th>${name(x.x)}</th>${x.wins.map(w => w ? `<td><span>${pc(w.ret)}</span><span>${w.mdd == null ? '—' : w.mdd.toFixed(0) + '%'}</span></td>` : '<td>—</td>').join('')}</tr>`).join('')}
-          </table>
-        </div>`).join('')}
-      ${floorStopResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">第一張:全期(年化÷MDD、前後段都是年化÷MDD)。第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
-    </div>`;
-}
-/* ===================== FLOOR_STOP 實驗區塊結束 ===================== */
-
 function renderBacktestResult(r){
   return r.error ? `
         <div class="muted neg" style="margin-top:12px;">${esc(r.label || r.id)}:${esc(r.error)}</div>
@@ -4167,7 +4093,6 @@ function renderBacktestCard(){
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
       ${renderBacktestWindow()}
-      ${renderFloorStopExperiment()}
     </div>`;
 }
 
@@ -4936,7 +4861,6 @@ function onClick(el){
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); break;
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
-    case 'floor-run': runFloorStopExperiment(); break;   // FLOOR_STOP 實驗(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);

@@ -195,33 +195,6 @@ console.log('events(指定期間檢視用):從事件推回來的狀態要跟回�
 })();
 console.log('  ok');
 
-console.log('FLOOR_STOP 實驗:預設不會停損;開了之後只在層數接完、比最後一次加碼再跌 X% 才停損');
-(function(){
-  let seed = 21; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const base = { maFast:120, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2 };
-  let stops = 0;
-  for (let k = 0; k < 30; k++){
-    const hist = []; let pr = 50; const d = new Date(2016, 0, 4);
-    while (hist.length < 1500){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0) continue;
-      pr *= 1 + (rnd() - 0.5) * 0.05 + (Math.floor(hist.length / 300) % 2 ? -0.003 : 0.002);
-      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(pr * 100) / 100 }); }
-    must(!A.runBacktest(hist, base).events.some(e => e.act === 'STOP'), '沒開實驗(預設參數)卻出現停損');
-    const res = A.runBacktest(hist, Object.assign({}, base, { floorStop: 0.2 }));
-    let n = 0, lastAdd = 0;
-    for (const e of res.events){
-      if (e.act === 'ADD'){ n = e.n; lastAdd = e.close; }
-      else if (e.act === 'STOP'){ stops++;
-        must(n >= base.pyramidLevels, `${e.d} 層數還沒接完(${n})就停損`);
-        must(e.close < lastAdd * 0.8 + 1e-9, `${e.d} 停損價 ${e.close} 沒有比最後加碼價 ${lastAdd} 再跌 20%`);
-        n = 0; }
-      else n = 0;
-    }
-  }
-  console.log('  30 組共', stops, '次停損');
-  must(stops > 0, '隨機路徑沒有觸發過停損,這個測試沒測到東西');
-})();
-console.log('  ok');
-
 console.log('completeHistoryMonths:上次只抓到一半的月份不能被當成已經抓齊而永遠跳過');
 (function testCompleteMonths(){
   const daily = (dates) => dates.map(d => ({ d, c: 100 }));
