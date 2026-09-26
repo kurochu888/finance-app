@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
-  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -472,6 +472,35 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
   p = A.computeExposurePlan();
   console.log(`  已超過目標: deltaLoan=${Math.round(p.deltaLoan)}(應為負值,代表該減碼)`);
   must(p.deltaLoan < 0, '曝險已經超過目標時 deltaLoan 應該是負值(代表該減碼),得到 ' + p.deltaLoan);
+})();
+console.log('  ok');
+
+console.log('層數上限比曝險目標設定的層數多:多出來的層沿用最後一層的目標,不能退回續抱目標(第二層 150%、續抱 130% 時會變成叫你賣)');
+(function testExtraLayer(){
+  A.state = A.emptyState();
+  A.state.leverage.exposureTargets = { byLayer:[75, 150], hold:130 };
+  const p = { maFast:5, maSlow:10, exitBuffer:0.95, recoverSlopeThreshold:1.002, recoverStrongRebound:1.5, pyramidGap:0.15, pyramidLevels:3 };
+  // 先漲一段進 HOLD,再每天跌 4%,一路接到第三層
+  const hist = []; let px = 100; const d0 = new Date(2024, 0, 1);
+  const push = () => { const d = new Date(d0); d.setDate(d0.getDate() + hist.length); hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); };
+  for (let i = 0; i < 30; i++){ px *= 1.01; push(); }
+  A.state.instruments.forEach(it => { it.trend = Object.assign({}, it.trend, p); it.priceHistory = hist; it.auto = false; });
+  let t = A.computeTrend(A.state.instruments[0]);
+  for (let i = 0; i < 80 && !(t.status === 'WAIT_RECOVER' && t.pyramidCount === 3); i++){
+    px *= 0.96; push();
+    A.state.instruments.forEach(it => { it.priceHistory = hist.slice(); });
+    t = A.computeTrend(A.state.instruments[0]);
+  }
+  must(t.status === 'WAIT_RECOVER' && t.pyramidCount === 3, `價格路徑沒有接到第三層(${t.status}/${t.pyramidCount}),測試本身要調`);
+  const plan = A.computeExposurePlan();
+  must(plan && plan.progress === 3 && plan.targetRatio === 150, `接刀第三層(設定只有兩層)的目標應該沿用第二層 150%,得到 ${plan && plan.targetRatio}%`);
+  // 設定頁要列出第三層可以填,填了要生效
+  A.levTab = 'settings';
+  const html = A.renderLeverage();
+  must(/加碼第 3 層的目標曝險/.test(html), '層數上限改成 3,設定頁沒有第 3 層可以填');
+  A.onField('expo-layer-2', { value: '170' });
+  must(JSON.stringify(A.state.leverage.exposureTargets.byLayer) === '[75,150,170]', `填第 3 層之後 byLayer 應該是 [75,150,170],得到 ${JSON.stringify(A.state.leverage.exposureTargets.byLayer)}`);
+  must(A.computeExposurePlan().targetRatio === 170, '第 3 層填了 170% 卡片要照 170% 算');
 })();
 console.log('  ok');
 

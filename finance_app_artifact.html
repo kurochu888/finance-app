@@ -609,8 +609,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-26 · 01ee686615';
-const BUILD_HASH = '01ee686615';
+const BUILD_VERSION = '2026-09-26 · 451c721cca';
+const BUILD_HASH = '451c721cca';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2620,10 +2620,10 @@ function renderHelp(){
       <p>舉例(00631L,快線恰好 100):HOLD 中續抱,收盤跌到 89(跌破快線 × 0.90 = 90)觸發 EXIT,
       轉入 WAIT_RECOVER,基準價記為 89。之後續跌到 89 打 85 折 ≈ 75.65 以下,觸發第一次 ADD,
       基準價更新為當天收盤;再跌 15% 觸發第二次 ADD(正2 加碼層數上限是 2,到此不再加碼)。
-      之後如果收盤衝到快線 103% 以上、或連兩天站上快線且快線轉為上揚,判定 RECOVER,一次補滿倉位轉回 HOLD,
+      之後如果收盤衝到快線 103% 以上、或連兩天站上快線且快線轉為上揚,判定 RECOVER,轉回 HOLD、曝險調到續抱目標(通常是補滿;接刀最後一層的目標設得比續抱高的話,這時反而是減碼),
       加碼層數歸零,整個循環重新開始。同一天如果 RECOVER 和 ADD 的條件都成立,只會回報 RECOVER。</p>
       <p><strong>EXIT 只在 HOLD 狀態下才會檢查</strong>——加碼到層數上限之後,曝險目標(見下面「正2 曝險目標」)
-      其實已經可能跟 HOLD 一樣是滿倉,但只要狀態還沒真的轉成 HOLD,就不會有任何自動停損檢查,
+      其實已經可能跟 HOLD 一樣滿、甚至更高,但只要狀態還沒真的轉成 HOLD,就不會有任何自動停損檢查,
       會一路抱著等 RECOVER,不會因為之後又繼續下跌就跳出減碼建議。這是刻意的設計取捨(用房貸不怕斷頭,
       不想在還沒確認真正反轉之前就跟著雜訊反覆進出),不是判斷邏輯漏了這段。</p>
       <p>這裡每次都是拿完整的歷史價格<strong>從頭重新回放一次整個狀態機</strong>,不是把「現在狀態」存起來
@@ -3026,7 +3026,7 @@ function runExposureSim(hist, p, targets, opt = {}){
     const e = ev.get(d);
     if (e){
       if (e.act === 'EXIT'){ status = 'WAIT_RECOVER'; trade(0, P); }
-      else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade((targets.byLayer[Math.min(e.n, N) - 1] ?? targets.hold) / 100, P); }
+      else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade(layerTarget(targets, Math.min(e.n, N)) / 100, P); }
       else { status = 'HOLD'; trade(targets.hold / 100, P); }
     }
     const nw = X + S * P - D;
@@ -3139,6 +3139,15 @@ function runAllBacktests(){
 
    算出來的 deltaCash/deltaLoan 是兩個邊界(全部用現金 vs 全部用房貸該投入多少),
    實際怎麼混用現金/房貸由使用者自己決定,app 不追蹤「手上現金」這個數字。 */
+/* 接刀第 n 層(1 起算)的目標曝險。設定裡沒有這一層(層數上限改大了,設定頁以前只列得出原本那幾格)時沿用最後一層——
+   以前退回續抱目標:第二層 150%、續抱 130% 的人把層數改成 3,接到第三層卡片反而叫他賣(壓測抓到)。 */
+function layerTarget(targets, n){
+  const list = targets.byLayer || [];
+  return list[n - 1] ?? list[list.length - 1] ?? targets.hold;
+}
+/* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
+const expoLayerCount = () => Math.max(state.leverage.exposureTargets.byLayer.length,
+  ...state.instruments.filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels));
 function computeExposurePlan(){
   const lev2 = state.instruments.filter(it => it.leverage === 2);
   if (!lev2.length) return null;
@@ -3148,7 +3157,7 @@ function computeExposurePlan(){
   const progress = Math.min(...trends.map(rawProgress));
   const targets = state.leverage.exposureTargets;
   const targetRatio = progress === 0 ? 0
-                     : progress <= N ? (targets.byLayer[progress - 1] ?? targets.hold)
+                     : progress <= N ? layerTarget(targets, progress)
                      : targets.hold;
   const risk = computeRisk();
   const R = targetRatio / 100, L = 2;
@@ -4404,7 +4413,7 @@ function renderLeverage(){
     <div class="card">
       <h3>曝險目標設定</h3>
       <details class="tip" style="margin-bottom:10px;"><summary>這個設定是做什麼用的</summary><div class="body">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「訊號」分頁會照這個算出該投入/該減碼多少錢。</div></details>
-      ${L.exposureTargets.byLayer.map((v, i) => `
+      ${Array.from({ length: expoLayerCount() }, (_, i) => layerTarget(L.exposureTargets, i + 1)).map((v, i) => `
         <div class="field"><label>加碼第 ${i+1} 層的目標曝險(%)</label>
           <input type="number" inputmode="decimal" data-k="expo-layer-${i}" value="${v}"></div>
       `).join('')}
@@ -4579,7 +4588,12 @@ function onField(key, el){
     if (rest === 'hold') state.leverage.exposureTargets.hold = v;
     else if (rest.indexOf('layer-') === 0){
       const i = Number(rest.slice(6));
-      if (Number.isInteger(i) && i >= 0) state.leverage.exposureTargets.byLayer[i] = v;
+      if (Number.isInteger(i) && i >= 0){
+        const list = state.leverage.exposureTargets.byLayer;
+        // 前面還沒存過的層先補成畫面上顯示的值(沿用最後一層),不要留空洞
+        for (let k = list.length; k < i; k++) list[k] = layerTarget(state.leverage.exposureTargets, k + 1);
+        list[i] = v;
+      }
     }
   }
   else if (kind === 'draw'){
