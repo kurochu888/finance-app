@@ -627,8 +627,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-26 · 5fbea829be';
-const BUILD_HASH = '5fbea829be';
+const BUILD_VERSION = '2026-09-26 · 5356076b7a';
+const BUILD_HASH = '5356076b7a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3042,7 +3042,8 @@ function runExposureSim(hist, p, targets, opt = {}){
       const int = D * rate / 100 * days / 365, pay = Math.min(X, int);
       X -= pay; D += int - pay;
     }
-    const e = ev.get(d);
+    // variant.pure:不看訊號(REBAL 實驗的對照組)——第一天調到續抱目標,之後出場/接刀/轉回續抱都不理,只照 months/hi/lo 再平衡
+    const e = variant.pure ? (i === start ? { act: 'RECOVER' } : null) : ev.get(d);
     if (e){
       if (e.act === 'EXIT'){ status = 'WAIT_RECOVER'; trade(0, P); }
       else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade((targets.byLayer[Math.min(e.n, N) - 1] ?? targets.hold) / 100, P); }
@@ -4241,6 +4242,9 @@ const REBAL_VARIANTS = [
   { key: 'half', name: '半年', months: 6 },
   { key: 'band', name: '160/100', hi: 1.6, lo: 1.0 },
   { key: 'both', name: '半年+160/100', months: 6, hi: 1.6, lo: 1.0 },   // 使用者要看的設定
+  // 對照組:不看訊號(使用者問「趨勢策略比市面上說的再平衡有優勢嗎」)
+  { key: 'pure', name: '純再平衡(不看訊號)', pure: true, hi: 1.6, lo: 1.0 },
+  { key: 'hold', name: '抱著不動(不看訊號)', pure: true },
 ];
 const REBAL_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
                        ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
@@ -4291,14 +4295,16 @@ function renderRebalExperiment(){
         每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。
         曝險比例 = 2 × 正2 市值 ÷ 這筆錢的總淨值,例如 130% = 這筆錢的 65% 買正2、其餘放現金。
         報酬是這整筆錢的報酬;「原策略」那列就是上面回測卡切到「照曝險目標」時的正2 結果,另外三列是同一套再加上續抱期間的再平衡。
-        一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。</div></details>
+        一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。
+        最後兩列是不看訊號的對照組:第一天就調到 ${state.leverage.exposureTargets.hold}%,之後不出場、不接刀——
+        「純再平衡」只在曝險到 160% 或 100% 時調回 ${state.leverage.exposureTargets.hold}%(市面上說的再平衡),「抱著不動」完全不動。</div></details>
       <button class="btn" data-act="rebal-run">▶ 跑再平衡實驗(用上面已經抓好的歷史)</button>
       ${(rebalResults ? rebalResults.list : []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
         <div style="margin-top:12px;">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
           <table class="bt-grid">
             <tr><th></th><th>總報酬</th><th>MDD</th><th>年化 ÷MDD</th><th>2021前</th><th>2021後</th><th>次數</th></tr>
-            ${r.rows.map(x => `<tr><th>${esc(x.v.name)}</th><td>${x.blown ? '<span class="neg">歸零</span>' : pc(x.ret)}</td><td>${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'}</td><td>${f1(x.calmar)}</td><td>${f1(x.early)}</td><td>${f1(x.late)}</td><td>${x.v.key === 'none' ? '—' : x.rebal}</td></tr>`).join('')}
+            ${r.rows.map(x => `<tr><th>${esc(x.v.name)}</th><td>${x.blown ? '<span class="neg">歸零</span>' : pc(x.ret)}</td><td>${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'}</td><td>${f1(x.calmar)}</td><td>${f1(x.early)}</td><td>${f1(x.late)}</td><td>${x.v.key === 'none' || x.v.key === 'hold' ? '—' : x.rebal}</td></tr>`).join('')}
           </table>
           <table class="bt-grid" style="margin-top:6px;">
             <tr><th></th>${REBAL_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
@@ -4306,7 +4312,8 @@ function renderRebalExperiment(){
           </table>
         </div>`).join('')}
       ${rebalResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">列名:「原策略」= 轉回續抱時調一次就不動;「半年」= 續抱期間每半年調回一次;「160/100」= 曝險到 160% 或 100% 就調回;
-          「半年+160/100」= 兩個都做(你要看的設定)。第一張:全期(年化÷MDD、前後段都是年化÷MDD),「次數」是續抱期間多做的再平衡次數;
+          「半年+160/100」= 兩個都做(你要看的設定)。最後兩列是不看訊號的對照組(沒有出場、沒有接刀):
+          「純再平衡」= 第一天調到續抱目標,之後只要曝險到 160% 或 100% 就調回;「抱著不動」= 第一天調到續抱目標之後完全不動。第一張:全期(年化÷MDD、前後段都是年化÷MDD),「次數」是續抱期間多做的再平衡次數;
           第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
     </div>`;
 }
@@ -4319,7 +4326,7 @@ function rebalReportText(){
     if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
     out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
     r.rows.forEach(x => {
-      out.push(`    ${x.v.name}:${x.blown ? '歸零' : pc(x.ret)} / ${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'} / ${f1(x.calmar)} / ${f1(x.early)} / ${f1(x.late)} / ${x.v.key === 'none' ? '—' : x.rebal}`
+      out.push(`    ${x.v.name}:${x.blown ? '歸零' : pc(x.ret)} / ${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'} / ${f1(x.calmar)} / ${f1(x.early)} / ${f1(x.late)} / ${x.v.key === 'none' || x.v.key === 'hold' ? '—' : x.rebal}`
         + ';' + REBAL_WINDOWS.map(([k], i) => `${k} ${x.wins[i] ? pc(x.wins[i].ret) + '/' + (x.wins[i].mdd == null ? '—' : x.wins[i].mdd.toFixed(0) + '%') : '—'}`).join(' '));
     });
   });

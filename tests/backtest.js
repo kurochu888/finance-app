@@ -261,6 +261,13 @@ console.log('REBAL 實驗(可拆):帳戶模擬的帳對得起來、再平衡真�
     const r1 = all.curve[all.curve.length - 1].strat / 1e6, r2 = 1 + bt.returnStrat / 100;
     must(Math.abs(r1 / r2 - 1) < 0.01, `沒有房貸、目標 200% 應該等於全押的回測:${r1.toFixed(3)} vs ${r2.toFixed(3)}`);
     // (2) 半年 + 160/100:續抱期間收盤後的曝險比例一定在範圍內;只有半年的那列不保證
+    // 不看訊號的對照組:「抱著不動」= 買進持有那條線;「純再平衡」曝險一直在 100%~160% 之間,出場/接刀都不理
+    const hold = A.runRebalSim(hist, p, T, V('hold'), 0, 0), pure = A.runRebalSim(hist, p, T, V('pure'), 0, 0);
+    // 第一天那筆手續費,買進持有是從買到的股數扣、帳戶模擬是從現金扣,之後差一點點(手續費 × 漲跌幅)
+    must(hold.curve.every(x => Math.abs(x.strat / x.bh - 1) < 0.005), '「抱著不動」應該跟買進持有那條線幾乎一樣');
+    must(hold.rebal === 0, '「抱著不動」不該再平衡');
+    must(pure.minR > 0.999 && pure.maxR < 1.601, `純再平衡曝險跑出範圍:${pure.minR}~${pure.maxR}`);
+    must(pure.curve.every(x => x.strat > 0), '純再平衡(沒有借款)不該歸零');
     for (const c of [0.5, 1, 2]){
       const both = A.runRebalSim(hist, p, T, V('both'), c, 2.6);
       rebals += both.rebal;
