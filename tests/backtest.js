@@ -24,7 +24,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS, runExposureSim, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; }, runRebalExperiment, get rebalResults(){ return rebalResults; } };`);
+  backtestReportText, set backtestResults(v){ backtestResults = v; }, runRebalExperiment, get rebalResults(){ return rebalResults; }, set btMode(v){ btMode = v; }, get btMode(){ return btMode; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -280,11 +280,13 @@ console.log('REBAL 實驗(可拆):帳戶模擬的帳對得起來、再平衡真�
 })();
 console.log('  ok');
 
-console.log('主要回測卡:正2 照曝險目標算(出場 0%、接刀 65%/130%、續抱 130%),1 倍照舊全押');
+console.log('主要回測卡兩種算法:照曝險目標(正2 出場 0%、接刀 65%/130%、續抱 130%)/單純成本(全押,預設);1 倍都是全押');
 (function testTargetsBacktest(){
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
   A.state.leverage.exposureTargets = { byLayer:[65, 130], hold:130 };
+  must(A.btMode === 'cash', '回測卡預設要是單純成本算法');
+  A.btMode = 'targets';
   let checked = 0;
   for (let k = 0; k < 10; k++){
     const hist = []; let px = 50;
@@ -317,6 +319,12 @@ console.log('主要回測卡:正2 照曝險目標算(出場 0%、接刀 65%/130%
     must(!r1.byTargets && r1.returnStrat === raw.returnStrat && r1.returnBh === raw.returnBh, '1 倍標的應該照舊全押');
   }
   must(checked >= 5, '隨機路徑幾乎沒跑到');
+  // 切回單純成本:正2 也跟 runBacktest(全押)一模一樣
+  A.btMode = 'cash';
+  const hist = []; let px = 50; const d = new Date(2014, 0, 4);
+  for (let i = 0; i < 1500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; } px *= 1 + (rnd() - 0.5) * 0.05; hist.push({ d: d.toISOString().slice(0, 10), c: px }); }
+  const rc = A.backtestFromHistory('X', hist, p, 2), raw = A.runBacktest(hist, p);
+  must(!rc.byTargets && rc.returnStrat === raw.returnStrat && rc.returnBh === raw.returnBh && rc.mddStrat === raw.mddStrat, '單純成本算法的正2 應該等於全押的 runBacktest');
   console.log('  ' + checked + ' 組');
 })();
 console.log('  ok');
@@ -333,7 +341,13 @@ console.log('複製結果:文字裡要有每一檔的總報酬、分段、每一
   A.backtestResults = [r, { id: '00675L', error: '歷史資料不夠' }];
   const txt = A.backtestReportText();
   must(!/NaN|undefined|Infinity|\[object/.test(txt), '複製的文字出現 NaN/undefined:\n' + txt.split('\n').filter(l => /NaN|undefined|Infinity|\[object/.test(l)).slice(0, 3).join('\n'));
-  must(txt.includes('■ 00631L') && txt.includes('照曝險目標算') && txt.includes('每一輪進出') && txt.includes('2022 升息'), '複製的文字少了該有的段落');
+  must(txt.includes('■ 00631L') && txt.includes('算法:單純成本') && txt.includes('每一輪進出') && txt.includes('2022 升息'), '複製的文字少了該有的段落');
+  A.btMode = 'targets';
+  const rt = A.backtestFromHistory('00631L', hist, p, 2);
+  A.backtestResults = [rt];
+  const txt2 = A.backtestReportText();
+  A.btMode = 'cash';
+  must(txt2.includes('算法:照曝險目標') && txt2.includes('照曝險目標算:接刀'), '照曝險目標算法時,複製的文字要標明');
   must(txt.includes(`總報酬 +${r.returnStrat.toFixed(1)}%`) || txt.includes(`總報酬 ${r.returnStrat.toFixed(1)}%`), '總報酬數字跟畫面上的對不起來');
   must(txt.includes('歷史資料不夠'), '抓不到資料的標的也要寫出原因');
   must(txt.split('\n').filter(l => /^    \d{4}-\d{2}-\d{2} ~ /.test(l)).length === A.tradeRounds(r).rounds.length, '每一輪明細的行數不對');
