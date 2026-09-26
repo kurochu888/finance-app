@@ -609,8 +609,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-26 · 82f7e196e5';
-const BUILD_HASH = '82f7e196e5';
+const BUILD_VERSION = '2026-09-26 · 1e5eb0533b';
+const BUILD_HASH = '1e5eb0533b';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3952,17 +3952,83 @@ function btStateBefore(r, d){
   if (last.act === 'EXIT') return `已出場,拿著現金等回歸(${last.d} 出場)`;
   return `接刀中,已加碼 ${last.n} 層(最近一次 ${last.d})`;
 }
+/* 回測結果在 from~to(含)這段期間的報酬跟期間內 MDD;沒資料回傳 null。指定期間檢視跟「複製結果」共用 */
+function windowStats(r, from, to, key){
+  const seg = r.curve.filter(pt => pt.d >= from && pt.d < nextDay(to));
+  if (seg.length < 2) return null;
+  const st = periodStats(r.curve, from, nextDay(to), key);
+  return { ret: (seg[seg.length - 1][key] / seg[0][key] - 1) * 100, mdd: st ? st.mdd : null, first: seg[0].d, last: seg[seg.length - 1].d };
+}
+/* 「📋 複製結果」:把回測卡上所有結果整理成純文字,讓使用者貼給別人(或貼回給 Claude)看,不用一張一張截圖。
+   從計算結果直接產生,不是抓畫面文字——收合起來的明細(每一輪進出)也會帶到。只讀,不動任何計算。 */
+let btCopyMsg = '', btCopyText = '';
+function backtestReportText(){
+  const L = state.leverage, T = L.exposureTargets;
+  const pc = (v, n = 1) => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(n) + '%';
+  const f2 = v => v == null ? '—' : v.toFixed(2);
+  const out = [];
+  out.push(`回測結果(${todayISO()} 複製,build ${BUILD_HASH})`);
+  out.push(`曝險目標:接刀 ${T.byLayer.join('%/')}%、續抱 ${T.hold}%`);
+  state.instruments.filter(it => it.auto && it.trend).forEach(it => {
+    const p = it.trend;
+    out.push(`${it.id} 參數:快線 ${p.maFast} / 慢線 ${p.maSlow} / 出場緩衝 ${p.exitBuffer} / 接刀間距 ${p.pyramidGap} / 層數 ${p.pyramidLevels} / 轉回斜率 ${p.recoverSlopeThreshold} / 強反彈 ${p.recoverStrongRebound}`);
+  });
+  const results = (backtestResults || []).concat(indexSimResults);   // indexSimResults:加權指數模擬(可拆)
+  results.forEach(r => {
+    out.push('');
+    out.push(`■ ${r.label || r.id}`);
+    if (r.error){ out.push(`  ${r.error}`); return; }
+    out.push(`  ${r.from} ~ ${r.to}${r.byTargets ? `(照曝險目標算:${r.targetsText};買進持有 = 第一天調到續抱目標不動)` : '(全押)'}`);
+    out.push(`  策略 總報酬 ${pc(r.returnStrat)} / MDD ${r.mddStrat.toFixed(1)}%`);
+    out.push(`  買進持有 總報酬 ${pc(r.returnBh)} / MDD ${r.mddBh.toFixed(1)}%`);
+    const per = (st) => st ? `年化 ${st.cagr == null ? '—' : pc(st.cagr)} / MDD ${st.mdd.toFixed(1)}% / 年化÷MDD ${f2(st.calmar)}` : '—';
+    [['all', '全期'], ['early', BACKTEST_SPLIT_DATE.slice(0, 4) + ' 前'], ['late', BACKTEST_SPLIT_DATE.slice(0, 4) + ' 後']].forEach(([k, label]) => {
+      out.push(`  ${label}:策略 ${per(r.periods.strat[k])};買進持有 ${per(r.periods.bh[k])}`);
+    });
+    const t = tradeRounds(r);
+    out.push(`  每一輪進出:${t.count ? `${t.wins} / ${t.count} 輪賺錢(${t.winRate.toFixed(0)}%),平均賺 ${pc(t.avgWin)} / 平均賠 ${pc(t.avgLoss)}${t.payoff != null ? `,賺賠比 ${t.payoff.toFixed(1)}` : ''}` : '還沒有出場過'}`
+      + (t.rebuys ? `;出場後買回比賣出價貴 ${t.pricier} / ${t.rebuys} 次` : ''));
+    t.rounds.forEach(x => out.push(`    ${x.from} ~ ${x.done ? x.to : '進行中'} 接刀 ${x.adds} 次:策略 ${pc(x.ret)} / 買進持有 ${pc(x.bh)}`));
+  });
+  // 指定期間:五個快捷 + 現在選的(不是快捷的話)
+  const wins = BT_WINDOW_PRESETS.map(([f, t, label]) => [f, t, label]);
+  if (!wins.some(([f, t]) => f === btWindow.from && t === btWindow.to) && btWindow.from < btWindow.to) wins.push([btWindow.from, btWindow.to, '自訂']);
+  const ok = results.filter(r => !r.error && r.curve);
+  if (ok.length){
+    out.push('');
+    out.push('■ 指定期間(報酬 / 期間內 MDD)');
+    wins.forEach(([from, to, label]) => {
+      const lines = ok.map(r => {
+        const a = windowStats(r, from, to, 'strat'), b = windowStats(r, from, to, 'bh');
+        if (!a) return null;
+        const ev = r.events.filter(e => e.d >= from && e.d <= to).map(e => `${e.d} ${e.act === 'EXIT' ? '出場' : e.act === 'ADD' ? `接刀${e.n}` : '轉回續抱'} ${e.close.toFixed(2)}`);
+        return `    ${r.label || r.id}:策略 ${pc(a.ret)} / ${pc(a.mdd)};買進持有 ${pc(b.ret)} / ${pc(b.mdd)};期初 ${btStateBefore(r, from)}${ev.length ? ';動作 ' + ev.join('、') : ''}`;
+      }).filter(Boolean);
+      if (lines.length){ out.push(`  ${label}(${from} ~ ${to})`); out.push(...lines); }
+    });
+  }
+  const rb = rebalReportText();   // REBAL 實驗(可拆)
+  if (rb) out.push('', rb);
+  return out.join('\n');
+}
+async function copyBacktestReport(){
+  btCopyText = backtestReportText();
+  try{
+    // 有些瀏覽器問權限時 promise 一直不回來(不成功也不失敗),等 2 秒沒結果就改成顯示文字讓使用者自己複製
+    await Promise.race([navigator.clipboard.writeText(btCopyText), sleep(2000).then(() => { throw new Error('timeout'); })]);
+    btCopyMsg = '已複製,直接貼上就好';
+    btCopyText = '';
+  }catch(e){
+    btCopyMsg = '這個瀏覽器不讓自動複製,請長按下面的文字全選、複製';
+  }
+  renderAll();
+}
 function renderBacktestWindowBody(){
   const { from, to } = btWindow;
   if (!(from < to)) return `<div class="muted neg">開始日要早於結束日。</div>`;
   const rows = (backtestResults || []).concat(indexSimResults).filter(r => !r.error && r.curve);   // indexSimResults:加權指數模擬(可拆)
   const pct = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
-  const segStats = (r, key) => {
-    const seg = r.curve.filter(pt => pt.d >= from && pt.d < nextDay(to));
-    if (seg.length < 2) return null;
-    const st = periodStats(r.curve, from, nextDay(to), key);
-    return { ret: (seg[seg.length - 1][key] / seg[0][key] - 1) * 100, mdd: st ? st.mdd : null, first: seg[0].d, last: seg[seg.length - 1].d };
-  };
+  const segStats = (r, key) => windowStats(r, from, to, key);
   const table = rows.map(r => {
     const s1 = segStats(r, 'strat'), s2 = segStats(r, 'bh');
     if (!s1) return `<tr><th>${esc(r.label || r.id)}</th><td colspan="2" class="muted">這段期間沒有回測資料(回測從 ${esc(r.from)} 開始)</td></tr>`;
@@ -4220,6 +4286,21 @@ function renderRebalExperiment(){
           第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
     </div>`;
 }
+function rebalReportText(){
+  if (!rebalResults) return '';
+  const f1 = v => v == null ? '—' : v.toFixed(2);
+  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
+  const out = ['■ 實驗:續抱期間再平衡(總報酬 / MDD / 年化÷MDD / 2021前 / 2021後 / 次數;五段:報酬 / MDD)'];
+  rebalResults.list.forEach(r => {
+    if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
+    out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
+    r.rows.forEach(x => {
+      out.push(`    ${x.v.name}:${x.blown ? '歸零' : pc(x.ret)} / ${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'} / ${f1(x.calmar)} / ${f1(x.early)} / ${f1(x.late)} / ${x.v.key === 'none' ? '—' : x.rebal}`
+        + ';' + REBAL_WINDOWS.map(([k], i) => `${k} ${x.wins[i] ? pc(x.wins[i].ret) + '/' + (x.wins[i].mdd == null ? '—' : x.wins[i].mdd.toFixed(0) + '%') : '—'}`).join(' '));
+    });
+  });
+  return out.join('\n');
+}
 /* ===================== REBAL 實驗區塊結束 ===================== */
 
 /* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
@@ -4322,6 +4403,10 @@ function renderBacktestCard(){
         <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : (cloudBacktestDoc ? '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不會拖慢平常記帳/存檔的同步速度。第一次按這顆之後會存一份到雲端,其他裝置打開就會自動帶入,不用再等一次。' : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存。第一次要先按這顆才有資料可以跑回測——登入雲端同步的話,其他裝置就不用再重抓一次。')}</div>
         <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
+      ${backtestResults ? `
+        <button class="btn quiet" data-act="copy-backtest" style="margin-top:10px;">📋 複製結果(貼給別人看)</button>
+        ${btCopyMsg ? `<div class="muted" style="margin-top:6px;">${esc(btCopyMsg)}</div>` : ''}
+        ${btCopyText ? `<textarea readonly style="width:100%; height:160px; margin-top:6px; font-size:11px;">${esc(btCopyText)}</textarea>` : ''}` : ''}
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
       ${renderRebalExperiment()}
@@ -4952,6 +5037,7 @@ function onClick(el){
       return;
     }
     case 'copy-json': copyJSON(); return;
+    case 'copy-backtest': copyBacktestReport(); return;
     case 'export-csv': exportCSV(); return;
     case 'add-repay': {
       const target = findById(state.leverage.draws, id);
@@ -5092,7 +5178,7 @@ function onClick(el){
     case 'fetch-quotes': fetchQuotes(true); return;
     case 'backfill-history': backfillHistory(); return;
     case 'backfill-backtest-history': backfillFullHistory(); return;
-    case 'run-backtest': runAllBacktests(); break;
+    case 'run-backtest': runAllBacktests(); btCopyMsg = ''; btCopyText = ''; break;
     case 'rebal-run': runRebalExperiment(); break;   // REBAL 實驗(可拆)
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }

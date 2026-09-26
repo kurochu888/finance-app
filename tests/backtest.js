@@ -23,7 +23,8 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS, runExposureSim, get state(){ return state; } };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS, runExposureSim, get state(){ return state; },
+  backtestReportText, set backtestResults(v){ backtestResults = v; }, runRebalExperiment, get rebalResults(){ return rebalResults; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -317,6 +318,27 @@ console.log('主要回測卡:正2 照曝險目標算(出場 0%、接刀 65%/130%
   }
   must(checked >= 5, '隨機路徑幾乎沒跑到');
   console.log('  ' + checked + ' 組');
+})();
+console.log('  ok');
+
+console.log('複製結果:文字裡要有每一檔的總報酬、分段、每一輪、指定期間,沒有 NaN/undefined');
+(function testReport(){
+  let seed = 5; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
+  const hist = []; let px = 50; const d = new Date(2016, 0, 4);
+  for (let i = 0; i < 2600; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+    px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
+    hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
+  const r = A.backtestFromHistory('00631L', hist, p, 2);
+  A.backtestResults = [r, { id: '00675L', error: '歷史資料不夠' }];
+  const txt = A.backtestReportText();
+  must(!/NaN|undefined|Infinity|\[object/.test(txt), '複製的文字出現 NaN/undefined:\n' + txt.split('\n').filter(l => /NaN|undefined|Infinity|\[object/.test(l)).slice(0, 3).join('\n'));
+  must(txt.includes('■ 00631L') && txt.includes('照曝險目標算') && txt.includes('每一輪進出') && txt.includes('2022 升息'), '複製的文字少了該有的段落');
+  must(txt.includes(`總報酬 +${r.returnStrat.toFixed(1)}%`) || txt.includes(`總報酬 ${r.returnStrat.toFixed(1)}%`), '總報酬數字跟畫面上的對不起來');
+  must(txt.includes('歷史資料不夠'), '抓不到資料的標的也要寫出原因');
+  must(txt.split('\n').filter(l => /^    \d{4}-\d{2}-\d{2} ~ /.test(l)).length === A.tradeRounds(r).rounds.length, '每一輪明細的行數不對');
+  A.backtestResults = null;
+  console.log('  ' + txt.split('\n').length + ' 行');
 })();
 console.log('  ok');
 
