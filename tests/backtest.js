@@ -23,8 +23,8 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runExposureSim, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; }, set btMode(v){ btMode = v; }, get btMode(){ return btMode; } };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, get state(){ return state; },
+  backtestReportText, set backtestResults(v){ backtestResults = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -237,93 +237,6 @@ console.log('tradeRounds(每一輪進出勝率):每輪報酬連乘 = 總報酬,�
 })();
 console.log('  ok');
 
-console.log('runExposureSim(照曝險目標的帳戶模擬):帳對得起來、借款不超過額度、利息有算');
-(function testExposureSim(){
-  let seed = 41; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
-  const T = { byLayer:[65, 130], hold:130 };
-  const sim = (h, t, c, rate) => A.runExposureSim(h, p, t, { c, rate });
-  let checked = 0, interestChecked = 0;
-  for (let k = 0; k < 20; k++){
-    const hist = []; let px = 50;
-    const d = new Date(2012, 0, 4);
-    for (let i = 0; i < 2500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
-      px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
-      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
-    if (!A.runBacktest(hist, p)) continue;
-    checked++;
-    // (1) 目標 100%/200%/200%、沒有房貸 = 全押現金,要跟 runBacktest 差不多(回測整張成交、這裡可以零股;
-    //     價格縮小讓整張的零頭可以忽略)
-    const small = hist.map(h => ({ d: h.d, c: h.c / 100 }));
-    const bt = A.runBacktest(small, p), all = sim(small, { byLayer:[100, 200], hold:200 }, 0, 2.6);
-    const r1 = all.curve[all.curve.length - 1].strat / 1e6, r2 = 1 + bt.returnStrat / 100;
-    must(Math.abs(r1 / r2 - 1) < 0.01, `沒有房貸、目標 200% 應該等於全押的回測:${r1.toFixed(3)} vs ${r2.toFixed(3)}`);
-    // (2) 續抱期間收盤後的曝險:沒有房貸時不會超過 200%(不能借錢)
-    const cash = sim(hist, T, 0, 0);
-    must(cash.maxLoan === 0 && cash.curve.every(x => x.strat > 0), '沒有房貸額度時不該借錢、不該歸零');
-    for (const c of [0.5, 1, 2]){
-      const s1 = sim(hist, T, c, 2.6);
-      must(s1.maxLoan <= s1.C * 1.05 + 1, `c=${c} 借款 ${Math.round(s1.maxLoan)} 超過額度 ${s1.C}`);
-      must(s1.curve.every(x => Number.isFinite(x.strat) && Number.isFinite(x.bh)), '淨值出現 NaN');
-      // (3) 利息真的有算:有借款時,利率 0 比 2.6% 賺得多
-      const free = sim(hist, T, c, 0);
-      if (s1.maxLoan > 0 && !s1.blown && !free.blown && ++interestChecked) must(free.curve[free.curve.length - 1].strat > s1.curve[s1.curve.length - 1].strat, `c=${c} 有借款但利率 0 沒有比較好,利息沒算到`);
-    }
-  }
-  console.log('  ' + checked + ' 組,核對利息', interestChecked, '次');
-  must(checked > 10 && interestChecked > 10, '隨機路徑幾乎沒測到');
-})();
-console.log('  ok');
-
-console.log('主要回測卡兩種算法:照曝險目標(正2 出場 0%、接刀 65%/130%、續抱 130%)/單純成本(全押,預設);1 倍都是全押');
-(function testTargetsBacktest(){
-  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
-  A.state.leverage.exposureTargets = { byLayer:[65, 130], hold:130 };
-  must(A.btMode === 'cash', '回測卡預設要是單純成本算法');
-  A.btMode = 'targets';
-  let checked = 0;
-  for (let k = 0; k < 10; k++){
-    const hist = []; let px = 50;
-    const d = new Date(2014, 0, 4);
-    for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
-      px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
-      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
-    const r2 = A.backtestFromHistory('X', hist, p, 2);
-    if (r2.error) continue;
-    checked++;
-    must(r2.byTargets && /65%\/130%/.test(r2.targetsText), '正2 的回測卡要標出照曝險目標算');
-    // 跟再平衡實驗的「原策略」是同一條曲線
-    const sim = A.runExposureSim(hist, p, { byLayer:[65, 130], hold:130 });
-    must(Math.abs(r2.returnStrat - (sim.curve[sim.curve.length - 1].strat / 1e6 - 1) * 100) < 1e-9, '回測卡跟曝險模擬的總報酬對不起來');
-    // 每個事件當天收盤後的曝險 = 那一階段的目標(從淨值跟價格反推:正2 市值 = 淨值 − 現金,這裡用 bh 那條驗 65%)
-    const bh0 = r2.curve[0], P0 = hist.find(h => h.d === r2.from).c, P1 = hist[hist.length - 1].c;
-    const expectBh = (1e6 - 0.65e6) + (0.65e6 - Math.round(Math.max(20, 0.65e6 * 0.001425))) / P0 * P1;
-    must(Math.abs(r2.curve[r2.curve.length - 1].bh - expectBh) < 1, `買進持有應該是第一天 65% 買正2 之後不動:${r2.curve[r2.curve.length - 1].bh} vs ${expectBh}`);
-    must(sim.maxR === 0 || (sim.minR > 0 && sim.maxR < 5), '續抱期間曝險範圍怪怪的');
-    // 出場當天全部現金:出場那天的淨值 = 前一天淨值 × (1 + 當天漲跌 × 曝險/2) − 手續費,不好直接驗;改驗出場到下一個事件之間淨值不動
-    const days = r2.curve.map(x => x.d);
-    r2.events.forEach((e, i) => {
-      if (e.act !== 'EXIT') return;
-      const next = r2.events[i + 1];
-      const a = days.indexOf(e.d), b = next ? days.indexOf(next.d) : days.length;
-      for (let j = a + 1; j < b; j++) if (Math.abs(r2.curve[j].strat - r2.curve[a].strat) > 1e-6){ must(false, `${e.d} 出場後淨值還在動(沒有全部賣掉)`); break; }
-    });
-    // 1 倍:跟以前一樣全押(= runBacktest)
-    const r1 = A.backtestFromHistory('Y', hist, p, 1), raw = A.runBacktest(hist, p);
-    must(!r1.byTargets && r1.returnStrat === raw.returnStrat && r1.returnBh === raw.returnBh, '1 倍標的應該照舊全押');
-  }
-  must(checked >= 5, '隨機路徑幾乎沒跑到');
-  // 切回單純成本:正2 也跟 runBacktest(全押)一模一樣
-  A.btMode = 'cash';
-  const hist = []; let px = 50; const d = new Date(2014, 0, 4);
-  for (let i = 0; i < 1500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; } px *= 1 + (rnd() - 0.5) * 0.05; hist.push({ d: d.toISOString().slice(0, 10), c: px }); }
-  const rc = A.backtestFromHistory('X', hist, p, 2), raw = A.runBacktest(hist, p);
-  must(!rc.byTargets && rc.returnStrat === raw.returnStrat && rc.returnBh === raw.returnBh && rc.mddStrat === raw.mddStrat, '單純成本算法的正2 應該等於全押的 runBacktest');
-  console.log('  ' + checked + ' 組');
-})();
-console.log('  ok');
-
 console.log('複製結果:文字裡要有每一檔的總報酬、分段、每一輪、指定期間,沒有 NaN/undefined');
 (function testReport(){
   let seed = 5; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -336,13 +249,8 @@ console.log('複製結果:文字裡要有每一檔的總報酬、分段、每一
   A.backtestResults = [r, { id: '00675L', error: '歷史資料不夠' }];
   const txt = A.backtestReportText();
   must(!/NaN|undefined|Infinity|\[object/.test(txt), '複製的文字出現 NaN/undefined:\n' + txt.split('\n').filter(l => /NaN|undefined|Infinity|\[object/.test(l)).slice(0, 3).join('\n'));
-  must(txt.includes('■ 00631L') && txt.includes('算法:單純成本') && txt.includes('每一輪進出') && txt.includes('2022 升息'), '複製的文字少了該有的段落');
-  A.btMode = 'targets';
-  const rt = A.backtestFromHistory('00631L', hist, p, 2);
-  A.backtestResults = [rt];
-  const txt2 = A.backtestReportText();
-  A.btMode = 'cash';
-  must(txt2.includes('算法:照曝險目標') && txt2.includes('照曝險目標算:接刀'), '照曝險目標算法時,複製的文字要標明');
+  must(txt.includes('■ 00631L') && txt.includes('算法:一筆錢') && txt.includes('每一輪進出') && txt.includes('2022 升息'), '複製的文字少了該有的段落');
+
   must(txt.includes(`總報酬 +${r.returnStrat.toFixed(1)}%`) || txt.includes(`總報酬 ${r.returnStrat.toFixed(1)}%`), '總報酬數字跟畫面上的對不起來');
   must(txt.includes('歷史資料不夠'), '抓不到資料的標的也要寫出原因');
   must(txt.split('\n').filter(l => /^    \d{4}-\d{2}-\d{2} ~ /.test(l)).length === A.tradeRounds(r).rounds.length, '每一輪明細的行數不對');
