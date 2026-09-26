@@ -23,7 +23,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -233,6 +233,49 @@ console.log('tradeRounds(每一輪進出勝率):每輪報酬連乘 = 總報酬,�
   const r2 = A.backtestFromHistory('U', up, p, 2), t2 = A.tradeRounds(r2);
   must(t2.count === 0 && t2.winRate === null && t2.rounds.length === 1 && !t2.rounds[0].done, `一路漲應該只有一輪進行中:${JSON.stringify(t2)}`);
   must(A.renderTradeRounds(r2).includes('還沒有出場過'), '沒出場過時勝率要顯示「還沒有出場過」');
+})();
+console.log('  ok');
+
+console.log('REBAL 實驗(可拆):帳戶模擬的帳對得起來、再平衡真的把曝險拉回範圍內');
+(function testRebal(){
+  let seed = 41; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
+  const T = { byLayer:[65, 130], hold:130 };
+  const V = k => A.REBAL_VARIANTS.find(v => v.key === k);
+  let checked = 0, rebals = 0, interestChecked = 0;
+  for (let k = 0; k < 20; k++){
+    const hist = []; let px = 50;
+    const d = new Date(2012, 0, 4);
+    for (let i = 0; i < 2500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+      px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
+      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
+    const bt0 = A.runBacktest(hist, p);
+    if (!bt0) continue;
+    checked++;
+    // 回測只能整張(1000 股)買,股價幾百元時一張就是本金的兩三成,剩下的現金會讓兩邊差很多;比對時把價格縮小,整張的零頭可以忽略
+    const small = hist.map(h => ({ d: h.d, c: h.c / 100 }));
+    const bt = A.runBacktest(small, p);
+    // (1) 目標全部 200%、沒有房貸 = 全押現金,要跟上面的回測差不多(回測整張成交、這裡可以零股,差一點點)
+    const all = A.runRebalSim(small, p, { byLayer:[100, 200], hold:200 }, V('none'), 0, 2.6);
+    const r1 = all.curve[all.curve.length - 1].strat / 1e6, r2 = 1 + bt.returnStrat / 100;
+    must(Math.abs(r1 / r2 - 1) < 0.01, `沒有房貸、目標 200% 應該等於全押的回測:${r1.toFixed(3)} vs ${r2.toFixed(3)}`);
+    // (2) 半年 + 160/100:續抱期間收盤後的曝險比例一定在範圍內;只有半年的那列不保證
+    for (const c of [0.5, 1, 2]){
+      const both = A.runRebalSim(hist, p, T, V('both'), c, 2.6);
+      rebals += both.rebal;
+      if (both.maxR > 0) must(both.minR > 0.999 && both.maxR < 1.601, `c=${c} 續抱期間曝險跑出 100%~160%:${both.minR.toFixed(3)}~${both.maxR.toFixed(3)}`);
+      must(both.maxLoan <= both.C * 1.05 + 1, `c=${c} 借款 ${Math.round(both.maxLoan)} 超過額度 ${both.C}`);
+      const none = A.runRebalSim(hist, p, T, V('none'), c, 2.6);
+      must(none.rebal === 0, '原策略不該有續抱期間的再平衡');
+      must(both.curve.every(x => Number.isFinite(x.strat)) && none.curve.every(x => Number.isFinite(x.strat)), '淨值出現 NaN');
+      // (3) 利息真的有算:有借款時,利率 0 比 2.6% 賺得多
+      const free = A.runRebalSim(hist, p, T, V('none'), c, 0);
+      if (none.maxLoan > 0 && !none.blown && !free.blown && ++interestChecked) must(free.curve[free.curve.length - 1].strat > none.curve[none.curve.length - 1].strat, `c=${c} 有借款但利率 0 沒有比較好,利息沒算到`);
+    }
+  }
+  console.log('  ' + checked + ' 組,半年+160/100 共再平衡', rebals, '次,核對利息', interestChecked, '次');
+  must(interestChecked > 10, '利息那項幾乎沒核對到');
+  must(checked > 10 && rebals > 20, '隨機路徑幾乎沒有再平衡,這個測試沒測到東西');
 })();
 console.log('  ok');
 
