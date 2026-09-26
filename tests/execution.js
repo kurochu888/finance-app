@@ -27,6 +27,8 @@ let regime = 0;
 for (let i = 0; i < days.length; i++){ if (i % 120 === 0) regime = (rnd() - 0.45) * 0.004; const r = regime + 0.012 * g(); p1 *= 1 + 2 * r; p2 *= 1 + 2 * r + 0.002 * g(); P1.push(Math.round(p1 * 100) / 100); P2.push(Math.round(p2 * 100) / 100); }
 A.state = A.emptyState();
 A.state.leverage.creditLimit = [5000000, 1500000, 500000][SEED % 3];   // 額度有時候不夠借,逼出「額度只剩」那條路
+// 曝險目標也換:預設 65/130/130,跟使用者實際用的 75/150/130(接刀第二層比續抱高,轉回續抱時要減碼)
+A.state.leverage.exposureTargets = [{ byLayer:[65, 130], hold:130 }, { byLayer:[75, 150], hold:130 }][Math.floor(SEED / 2) % 2];
 const [a, b] = A.state.instruments;
 const W = 300;
 a.priceHistory = days.slice(0, W).map((d, i) => ({ d, c: P1[i] })); b.priceHistory = days.slice(0, W).map((d, i) => ({ d, c: P2[i] }));
