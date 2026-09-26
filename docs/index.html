@@ -643,8 +643,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-26 · 125f317a90';
-const BUILD_HASH = '125f317a90';
+const BUILD_VERSION = '2026-09-26 · 4539743bc2';
+const BUILD_HASH = '4539743bc2';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4092,7 +4092,10 @@ function renderIndexSimSection(){
    每次事件調到該階段的曝險目標(出場 0、接刀第 n 層 byLayer[n-1]、轉回續抱 hold)——對應照 🔔 跟曝險卡片操作。
    「原策略」= 轉回續抱時調一次,之後不動(現在 app 的做法);其他列只差在續抱期間多做的再平衡。
    實際訊號、曝險卡片、上面的回測全部不動。
-   拆掉:刪這個區塊、renderBacktestCard() 的 renderRebalExperiment()、onClick 的 rebal-run / rebal-c。
+   使用者看了第一版(自有資金 + 房貸,額度 0.85 倍時模擬正2 在 2000 年自有淨值歸零)之後說:回測都用自己的錢算,不管借不借貸。
+   所以畫面上改成「自有資金 + 房貸額度當成同一筆錢」:c = 0(沒有另外的額度)、不計利息,曝險 130% = 這筆錢的 65% 買正2、
+   其餘放現金,報酬是整筆錢的報酬,不會歸零。runRebalSim() 還是保留 c / rate 參數(測試用)。
+   拆掉:刪這個區塊、renderBacktestCard() 的 renderRebalExperiment()、onClick 的 rebal-run。
    還原點分支 restore/pre-rebalance-experiment-2026-09-26。 */
 const REBAL_VARIANTS = [
   { key: 'none', name: '原策略' },
@@ -4104,11 +4107,6 @@ const REBAL_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-0
                        ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
 const REBAL_OWN = 1000000;   // 自有資金基準,只拿來算報酬率%
 let rebalResults = null;
-let rebalC = null;           // 房貸額度 ÷ 自有資金;null = 用你現在的比例
-function rebalCurrentC(){
-  const r = computeRisk();
-  return r.equity > 0 && r.creditLimit > 0 ? r.creditLimit / r.equity : null;
-}
 const addMonthsISO = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setMonth(x.getMonth() + n); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
 /* 一條價格 + 策略參數 + 一種再平衡設定 → 帳戶淨值曲線。c = 房貸額度 ÷ 自有資金,rate = 年利率(%) */
 function runRebalSim(hist, p, targets, variant, c, rate){
@@ -4170,8 +4168,8 @@ function runRebalSim(hist, p, targets, variant, c, rate){
   return { curve, rebal, blown, from: res.from, to: res.to, minR, maxR, maxLoan, C };
 }
 function runRebalExperiment(){
-  const targets = state.leverage.exposureTargets, rate = state.leverage.annualRate;
-  const c = rebalC ?? rebalCurrentC() ?? 1;
+  // 自有資金 + 房貸額度當成同一筆自己的錢:沒有另外的額度、沒有借款利息(使用者要的算法)
+  const targets = state.leverage.exposureTargets, rate = 0, c = 0;
   const sources = [];
   state.instruments.filter(it => it.leverage === 2 && it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
     .forEach(it => sources.push({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(2) }));
@@ -4204,22 +4202,18 @@ function renderRebalExperiment(){
   if (!QUOTES_ENABLED) return '';
   const f1 = v => v == null ? '—' : v.toFixed(2);
   const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  const cur = rebalCurrentC();
-  const cOpts = [[null, cur != null ? `你現在(${cur.toFixed(2)})` : '你現在(沒資料,用 1)'], [0.5, '0.5'], [1, '1'], [2, '2']];
   return `
     <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
       <h3 style="margin-bottom:6px;">實驗:續抱期間再平衡</h3>
       <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
-        只在回測裡試,實際訊號跟曝險卡片都不動。模擬一個「自有資金 + 房貸額度」的帳戶,進出時點跟上面的回測一樣,
+        只在回測裡試,實際訊號跟曝險卡片都不動。把「自有資金 + 房貸額度」當成同一筆自己的錢(不分借來的、不算利息),進出時點跟上面的回測一樣,
         每次出場/接刀/轉回續抱就調到那一階段的曝險目標(出場 0%、接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、續抱 ${state.leverage.exposureTargets.hold}%)。
         「原策略」是轉回續抱時調一次就不動(現在的做法);另外三列在續抱期間多做再平衡,調回 ${state.leverage.exposureTargets.hold}%:
-        每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。買進先用現金、不夠才借;賣出先還房貸;借款照年利率 ${state.leverage.annualRate}% 計息。
-        曝險比例 = 2 × 正2 市值 ÷(自有淨值 + 房貸額度),跟 app 同一個算法。報酬是自有資金的報酬,跟上面「全押現金」的回測數字不能直接比。
-        房貸額度對自有資金的比例會影響結果,下面可以切換。一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。</div></details>
-      <div class="seg" style="margin-bottom:8px;">${cOpts.map(([v, label]) => `<button class="seg-btn ${rebalC === v ? 'on' : ''}" data-act="rebal-c" data-v="${v == null ? '' : v}">${esc(label)}</button>`).join('')}</div>
-      <div class="muted" style="margin-bottom:8px;">房貸額度 ÷ 自有資金</div>
+        每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。
+        曝險比例 = 2 × 正2 市值 ÷ 這筆錢的總淨值,例如 130% = 這筆錢的 65% 買正2、其餘放現金。
+        報酬是這整筆錢的報酬,跟上面「全押現金」(等於曝險 200%)的回測數字不能直接比,只看這張表裡四列互相比。
+        一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。</div></details>
       <button class="btn" data-act="rebal-run">▶ 跑再平衡實驗(用上面已經抓好的歷史)</button>
-      ${rebalResults ? `<div class="muted" style="margin-top:6px;">這次用:額度 = 自有資金 × ${rebalResults.c.toFixed(2)},年利率 ${rebalResults.rate}%</div>` : ''}
       ${(rebalResults ? rebalResults.list : []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
         <div style="margin-top:12px;">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
@@ -4234,7 +4228,7 @@ function renderRebalExperiment(){
         </div>`).join('')}
       ${rebalResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">列名:「原策略」= 轉回續抱時調一次就不動;「半年」= 續抱期間每半年調回一次;「160/100」= 曝險到 160% 或 100% 就調回;
           「半年+160/100」= 兩個都做(你要看的設定)。第一張:全期(年化÷MDD、前後段都是年化÷MDD),「次數」是續抱期間多做的再平衡次數;
-          「歸零」= 自有淨值曾經賠光(房貸額度相對自有資金太大時會發生)。第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
+          第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
     </div>`;
 }
 /* ===================== REBAL 實驗區塊結束 ===================== */
@@ -5107,7 +5101,6 @@ function onClick(el){
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); break;
     case 'rebal-run': runRebalExperiment(); break;   // REBAL 實驗(可拆)
-    case 'rebal-c': rebalC = el.dataset.v === '' ? null : Number(el.dataset.v); if (rebalResults) runRebalExperiment(); break;   // REBAL 實驗(可拆)
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
