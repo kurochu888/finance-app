@@ -23,8 +23,8 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS, runExposureSim, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; }, runRebalExperiment, get rebalResults(){ return rebalResults; }, set btMode(v){ btMode = v; }, get btMode(){ return btMode; } };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runExposureSim, get state(){ return state; },
+  backtestReportText, set backtestResults(v){ backtestResults = v; }, set btMode(v){ btMode = v; }, get btMode(){ return btMode; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -237,53 +237,41 @@ console.log('tradeRounds(每一輪進出勝率):每輪報酬連乘 = 總報酬,�
 })();
 console.log('  ok');
 
-console.log('REBAL 實驗(可拆):帳戶模擬的帳對得起來、再平衡真的把曝險拉回範圍內');
-(function testRebal(){
+console.log('runExposureSim(照曝險目標的帳戶模擬):帳對得起來、借款不超過額度、利息有算');
+(function testExposureSim(){
   let seed = 41; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
   const T = { byLayer:[65, 130], hold:130 };
-  const V = k => A.REBAL_VARIANTS.find(v => v.key === k);
-  let checked = 0, rebals = 0, interestChecked = 0;
+  const sim = (h, t, c, rate) => A.runExposureSim(h, p, t, { c, rate });
+  let checked = 0, interestChecked = 0;
   for (let k = 0; k < 20; k++){
     const hist = []; let px = 50;
     const d = new Date(2012, 0, 4);
     for (let i = 0; i < 2500; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
       px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
       hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
-    const bt0 = A.runBacktest(hist, p);
-    if (!bt0) continue;
+    if (!A.runBacktest(hist, p)) continue;
     checked++;
-    // 回測只能整張(1000 股)買,股價幾百元時一張就是本金的兩三成,剩下的現金會讓兩邊差很多;比對時把價格縮小,整張的零頭可以忽略
+    // (1) 目標 100%/200%/200%、沒有房貸 = 全押現金,要跟 runBacktest 差不多(回測整張成交、這裡可以零股;
+    //     價格縮小讓整張的零頭可以忽略)
     const small = hist.map(h => ({ d: h.d, c: h.c / 100 }));
-    const bt = A.runBacktest(small, p);
-    // (1) 目標全部 200%、沒有房貸 = 全押現金,要跟上面的回測差不多(回測整張成交、這裡可以零股,差一點點)
-    const all = A.runRebalSim(small, p, { byLayer:[100, 200], hold:200 }, V('none'), 0, 2.6);
+    const bt = A.runBacktest(small, p), all = sim(small, { byLayer:[100, 200], hold:200 }, 0, 2.6);
     const r1 = all.curve[all.curve.length - 1].strat / 1e6, r2 = 1 + bt.returnStrat / 100;
     must(Math.abs(r1 / r2 - 1) < 0.01, `沒有房貸、目標 200% 應該等於全押的回測:${r1.toFixed(3)} vs ${r2.toFixed(3)}`);
-    // (2) 半年 + 160/100:續抱期間收盤後的曝險比例一定在範圍內;只有半年的那列不保證
-    // 不看訊號的對照組:「抱著不動」= 買進持有那條線;「純再平衡」曝險一直在 100%~160% 之間,出場/接刀都不理
-    const hold = A.runRebalSim(hist, p, T, V('hold'), 0, 0), pure = A.runRebalSim(hist, p, T, V('pure'), 0, 0);
-    // 第一天那筆手續費,買進持有是從買到的股數扣、帳戶模擬是從現金扣,之後差一點點(手續費 × 漲跌幅)
-    must(hold.curve.every(x => Math.abs(x.strat / x.bh - 1) < 0.005), '「抱著不動」應該跟買進持有那條線幾乎一樣');
-    must(hold.rebal === 0, '「抱著不動」不該再平衡');
-    must(pure.minR > 0.999 && pure.maxR < 1.601, `純再平衡曝險跑出範圍:${pure.minR}~${pure.maxR}`);
-    must(pure.curve.every(x => x.strat > 0), '純再平衡(沒有借款)不該歸零');
+    // (2) 續抱期間收盤後的曝險:沒有房貸時不會超過 200%(不能借錢)
+    const cash = sim(hist, T, 0, 0);
+    must(cash.maxLoan === 0 && cash.curve.every(x => x.strat > 0), '沒有房貸額度時不該借錢、不該歸零');
     for (const c of [0.5, 1, 2]){
-      const both = A.runRebalSim(hist, p, T, V('both'), c, 2.6);
-      rebals += both.rebal;
-      if (both.maxR > 0) must(both.minR > 0.999 && both.maxR < 1.601, `c=${c} 續抱期間曝險跑出 100%~160%:${both.minR.toFixed(3)}~${both.maxR.toFixed(3)}`);
-      must(both.maxLoan <= both.C * 1.05 + 1, `c=${c} 借款 ${Math.round(both.maxLoan)} 超過額度 ${both.C}`);
-      const none = A.runRebalSim(hist, p, T, V('none'), c, 2.6);
-      must(none.rebal === 0, '原策略不該有續抱期間的再平衡');
-      must(both.curve.every(x => Number.isFinite(x.strat)) && none.curve.every(x => Number.isFinite(x.strat)), '淨值出現 NaN');
+      const s1 = sim(hist, T, c, 2.6);
+      must(s1.maxLoan <= s1.C * 1.05 + 1, `c=${c} 借款 ${Math.round(s1.maxLoan)} 超過額度 ${s1.C}`);
+      must(s1.curve.every(x => Number.isFinite(x.strat) && Number.isFinite(x.bh)), '淨值出現 NaN');
       // (3) 利息真的有算:有借款時,利率 0 比 2.6% 賺得多
-      const free = A.runRebalSim(hist, p, T, V('none'), c, 0);
-      if (none.maxLoan > 0 && !none.blown && !free.blown && ++interestChecked) must(free.curve[free.curve.length - 1].strat > none.curve[none.curve.length - 1].strat, `c=${c} 有借款但利率 0 沒有比較好,利息沒算到`);
+      const free = sim(hist, T, c, 0);
+      if (s1.maxLoan > 0 && !s1.blown && !free.blown && ++interestChecked) must(free.curve[free.curve.length - 1].strat > s1.curve[s1.curve.length - 1].strat, `c=${c} 有借款但利率 0 沒有比較好,利息沒算到`);
     }
   }
-  console.log('  ' + checked + ' 組,半年+160/100 共再平衡', rebals, '次,核對利息', interestChecked, '次');
-  must(interestChecked > 10, '利息那項幾乎沒核對到');
-  must(checked > 10 && rebals > 20, '隨機路徑幾乎沒有再平衡,這個測試沒測到東西');
+  console.log('  ' + checked + ' 組,核對利息', interestChecked, '次');
+  must(checked > 10 && interestChecked > 10, '隨機路徑幾乎沒測到');
 })();
 console.log('  ok');
 
