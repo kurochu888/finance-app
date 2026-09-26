@@ -643,8 +643,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-26 · 5356076b7a';
-const BUILD_HASH = '5356076b7a';
+const BUILD_VERSION = '2026-09-26 · 01ee686615';
+const BUILD_HASH = '01ee686615';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3015,16 +3015,15 @@ function runBacktest(priceHistory, trendParams){
    曝險比例 = 2 × 正2 市值 ÷ 帳戶淨值,130% = 帳戶 65% 買正2、其餘現金。可以零股(整筆錢的比例,不是真的下單)。
    買進持有 = 第一天就調到續抱目標,之後完全不動——跟策略同一個曝險水準才比得公平(全押的買進持有是 200%)。
    opt.c / opt.rate:另外給房貸額度(自有資金的倍數)跟借款利率時,買進先用現金、不夠才借,賣出先還房貸
-   (REBAL 實驗第一版用的,測試也用);opt.variant:續抱期間再平衡的設定(REBAL 實驗,可拆)。 */
-const addMonthsISO = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setMonth(x.getMonth() + n); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
+   (測試用;2026-09 續抱期間再平衡實驗也用過,實驗已經拆掉,結論見 CLAUDE.md)。 */
 function runExposureSim(hist, p, targets, opt = {}){
-  const variant = opt.variant || { key: 'none' }, c = opt.c || 0, rate = opt.rate || 0;
+  const c = opt.c || 0, rate = opt.rate || 0;
   const res = runBacktest(hist, p);
   if (!res) return null;
   const ev = new Map(res.events.map(e => [e.d, e]));
   const N = Math.max(1, p.pyramidLevels);
   const C = c * BACKTEST_INITIAL_CASH;
-  let X = BACKTEST_INITIAL_CASH, S = 0, D = 0, status = 'WATCH', lastHold = '', rebal = 0, blown = false;
+  let X = BACKTEST_INITIAL_CASH, S = 0, D = 0, status = 'WATCH', blown = false;
   let minR = Infinity, maxR = 0, maxLoan = 0;   // 續抱期間收盤後的曝險比例範圍、最高借款(測試核對用)
   const trade = (R, P) => {
     const pv = S * P, K = X + pv - D + C;
@@ -3058,20 +3057,11 @@ function runExposureSim(hist, p, targets, opt = {}){
       const int = D * rate / 100 * days / 365, pay = Math.min(X, int);
       X -= pay; D += int - pay;
     }
-    // variant.pure:不看訊號(REBAL 實驗的對照組)——第一天調到續抱目標,之後出場/接刀/轉回續抱都不理,只照 months/hi/lo 再平衡
-    const e = variant.pure ? (i === start ? { act: 'RECOVER' } : null) : ev.get(d);
+    const e = ev.get(d);
     if (e){
       if (e.act === 'EXIT'){ status = 'WAIT_RECOVER'; trade(0, P); }
       else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade((targets.byLayer[Math.min(e.n, N) - 1] ?? targets.hold) / 100, P); }
-      else { status = 'HOLD'; trade(targets.hold / 100, P); lastHold = d; }
-    }else if (status === 'HOLD' && variant.key !== 'none'){
-      const K = X + S * P - D + C, ratio = K > 0 ? 2 * S * P / K : 0;
-      const due = variant.months && d >= addMonthsISO(lastHold, variant.months);
-      const out = variant.hi && (ratio >= variant.hi || ratio <= variant.lo);
-      if (due || out){
-        if (trade(targets.hold / 100, P)) rebal++;
-        lastHold = d;
-      }
+      else { status = 'HOLD'; trade(targets.hold / 100, P); }
     }
     const nw = X + S * P - D;
     if (nw <= 0){ blown = true; curve.push({ d, strat: 1, bh }); continue; }
@@ -3080,7 +3070,7 @@ function runExposureSim(hist, p, targets, opt = {}){
     curve.push({ d, strat: nw, bh });
   }
   return { curve, events: res.events, status: res.status, pyramidCount: res.pyramidCount,
-           rebal, blown, from: res.from, to: res.to, minR, maxR, maxLoan, C };
+           blown, from: res.from, to: res.to, minR, maxR, maxLoan, C };
 }
 /* 回測畫圖只需要看得出長期走勢,不用每天畫一個點——每個月只留最後一個交易日,
    十年份的日資料點數才不會爆掉(lineChart 一個點要畫圓點加可點區域,點數等於乘三)。 */
@@ -4048,8 +4038,6 @@ function backtestReportText(){
       if (lines.length){ out.push(`  ${label}(${from} ~ ${to})`); out.push(...lines); }
     });
   }
-  const rb = rebalReportText();   // REBAL 實驗(可拆)
-  if (rb) out.push('', rb);
   return out.join('\n');
 }
 async function copyBacktestReport(){
@@ -4239,116 +4227,6 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
-/* ===================== REBAL 實驗:續抱期間再平衡(2026-09,只在回測,可拆) =====================
-   使用者問「市面上說的再平衡好不好」:續抱(HOLD)期間維持曝險 130%,半年檢查一次、曝險到 160% 或 100% 也立刻調回。
-   (帳戶模擬後來搬到主程式 runExposureSim(),主要回測卡的正2 也改用它;拆這個區塊時不要刪它。)
-   當時主要回測是「全押現金、沒有房貸」,沒有曝險比例可言,所以這裡另外模擬一個帳戶:自有資金 + 房貸額度,
-   曝險比例跟 app 同一個定義 = 2 × 正2 市值 ÷(自有淨值 + 房貸額度)。買進先用現金、不夠才動用房貸;賣出先還房貸,
-   剩下留現金;借款每天照設定的年利率計息。進出時點直接用 runBacktest() 的 events(出場/接刀/轉回續抱),
-   每次事件調到該階段的曝險目標(出場 0、接刀第 n 層 byLayer[n-1]、轉回續抱 hold)——對應照 🔔 跟曝險卡片操作。
-   「原策略」= 轉回續抱時調一次,之後不動(現在 app 的做法);其他列只差在續抱期間多做的再平衡。
-   實際訊號、曝險卡片、上面的回測全部不動。
-   使用者看了第一版(自有資金 + 房貸,額度 0.85 倍時模擬正2 在 2000 年自有淨值歸零)之後說:回測都用自己的錢算,不管借不借貸。
-   所以畫面上改成「自有資金 + 房貸額度當成同一筆錢」:c = 0(沒有另外的額度)、不計利息,曝險 130% = 這筆錢的 65% 買正2、
-   其餘放現金,報酬是整筆錢的報酬,不會歸零。runRebalSim() 還是保留 c / rate 參數(測試用)。
-   拆掉:刪這個區塊、renderBacktestCard() 的 renderRebalExperiment()、onClick 的 rebal-run。
-   還原點分支 restore/pre-rebalance-experiment-2026-09-26。 */
-const REBAL_VARIANTS = [
-  { key: 'none', name: '原策略' },
-  { key: 'half', name: '半年', months: 6 },
-  { key: 'band', name: '160/100', hi: 1.6, lo: 1.0 },
-  { key: 'both', name: '半年+160/100', months: 6, hi: 1.6, lo: 1.0 },   // 使用者要看的設定
-  // 對照組:不看訊號(使用者問「趨勢策略比市面上說的再平衡有優勢嗎」)
-  { key: 'pure', name: '純再平衡(不看訊號)', pure: true, hi: 1.6, lo: 1.0 },
-  { key: 'hold', name: '抱著不動(不看訊號)', pure: true },
-];
-const REBAL_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
-                       ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
-let rebalResults = null;
-const runRebalSim = (hist, p, targets, variant, c, rate) => runExposureSim(hist, p, targets, { variant, c, rate });
-function runRebalExperiment(){
-  // 自有資金 + 房貸額度當成同一筆自己的錢:沒有另外的額度、沒有借款利息(使用者要的算法)
-  const targets = state.leverage.exposureTargets, rate = 0, c = 0;
-  const sources = [];
-  state.instruments.filter(it => it.leverage === 2 && it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
-    .forEach(it => sources.push({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(2) }));
-  if (indexSimHist.length > 1){   // 加權指數模擬(可拆:INDEX_SIM)
-    sources.push({ label: '模擬正2', hist: indexSimSeries().two, p: (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2) });
-  }
-  rebalResults = { c, rate, list: sources.map(src => {
-    const need = Math.max(src.p.maFast, src.p.maSlow) + 1;
-    if (!src.hist || src.hist.length < need || findHistoryGap(src.hist)) return { label: src.label, error: '歷史不夠或中間有缺口,先抓完整歷史' };
-    let from = '', to = '';
-    const rows = REBAL_VARIANTS.map(v => {
-      const r = runRebalSim(src.hist, src.p, targets, v, c, rate);
-      from = r.from; to = r.to;
-      const st = (f, t) => periodStats(r.curve, f, t, 'strat');
-      const all = st('0000', '9999'), early = st('0000', BACKTEST_SPLIT_DATE), late = st(BACKTEST_SPLIT_DATE, '9999');
-      const last = r.curve[r.curve.length - 1].strat;
-      const wins = REBAL_WINDOWS.map(([, f, t]) => {
-        const seg = r.curve.filter(pt => pt.d >= f && pt.d < nextDay(t));
-        if (seg.length < 2) return null;
-        const w = st(f, nextDay(t));
-        return { ret: (seg[seg.length - 1].strat / seg[0].strat - 1) * 100, mdd: w ? w.mdd : null };
-      });
-      return { v, ret: (last / BACKTEST_INITIAL_CASH - 1) * 100, mdd: all ? all.mdd : null, calmar: all && all.calmar,
-               early: early && early.calmar, late: late && late.calmar, rebal: r.rebal, blown: r.blown, wins };
-    });
-    return { label: src.label, from, to, rows };
-  }) };
-}
-function renderRebalExperiment(){
-  if (!QUOTES_ENABLED) return '';
-  const f1 = v => v == null ? '—' : v.toFixed(2);
-  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  return `
-    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
-      <h3 style="margin-bottom:6px;">實驗:續抱期間再平衡</h3>
-      <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
-        只在回測裡試,實際訊號跟曝險卡片都不動。把「自有資金 + 房貸額度」當成同一筆自己的錢(不分借來的、不算利息),進出時點跟上面的回測一樣,
-        每次出場/接刀/轉回續抱就調到那一階段的曝險目標(出場 0%、接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、續抱 ${state.leverage.exposureTargets.hold}%)。
-        「原策略」是轉回續抱時調一次就不動(現在的做法);另外三列在續抱期間多做再平衡,調回 ${state.leverage.exposureTargets.hold}%:
-        每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。
-        曝險比例 = 2 × 正2 市值 ÷ 這筆錢的總淨值,例如 130% = 這筆錢的 65% 買正2、其餘放現金。
-        報酬是這整筆錢的報酬;「原策略」那列就是上面回測卡切到「照曝險目標」時的正2 結果,另外三列是同一套再加上續抱期間的再平衡。
-        一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。
-        最後兩列是不看訊號的對照組:第一天就調到 ${state.leverage.exposureTargets.hold}%,之後不出場、不接刀——
-        「純再平衡」只在曝險到 160% 或 100% 時調回 ${state.leverage.exposureTargets.hold}%(市面上說的再平衡),「抱著不動」完全不動。</div></details>
-      <button class="btn" data-act="rebal-run">▶ 跑再平衡實驗(用上面已經抓好的歷史)</button>
-      ${(rebalResults ? rebalResults.list : []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
-        <div style="margin-top:12px;">
-          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
-          <table class="bt-grid">
-            <tr><th></th><th>總報酬</th><th>MDD</th><th>年化 ÷MDD</th><th>2021前</th><th>2021後</th><th>次數</th></tr>
-            ${r.rows.map(x => `<tr><th>${esc(x.v.name)}</th><td>${x.blown ? '<span class="neg">歸零</span>' : pc(x.ret)}</td><td>${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'}</td><td>${f1(x.calmar)}</td><td>${f1(x.early)}</td><td>${f1(x.late)}</td><td>${x.v.key === 'none' || x.v.key === 'hold' ? '—' : x.rebal}</td></tr>`).join('')}
-          </table>
-          <table class="bt-grid" style="margin-top:6px;">
-            <tr><th></th>${REBAL_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
-            ${r.rows.map(x => `<tr><th>${esc(x.v.name)}</th>${x.wins.map(w => w ? `<td><span>${pc(w.ret)}</span><span>${w.mdd == null ? '—' : w.mdd.toFixed(0) + '%'}</span></td>` : '<td>—</td>').join('')}</tr>`).join('')}
-          </table>
-        </div>`).join('')}
-      ${rebalResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">列名:「原策略」= 轉回續抱時調一次就不動;「半年」= 續抱期間每半年調回一次;「160/100」= 曝險到 160% 或 100% 就調回;
-          「半年+160/100」= 兩個都做(你要看的設定)。最後兩列是不看訊號的對照組(沒有出場、沒有接刀):
-          「純再平衡」= 第一天調到續抱目標,之後只要曝險到 160% 或 100% 就調回;「抱著不動」= 第一天調到續抱目標之後完全不動。第一張:全期(年化÷MDD、前後段都是年化÷MDD),「次數」是續抱期間多做的再平衡次數;
-          第二張:五段期間各自的報酬 / 期間內 MDD。</div>` : ''}
-    </div>`;
-}
-function rebalReportText(){
-  if (!rebalResults) return '';
-  const f1 = v => v == null ? '—' : v.toFixed(2);
-  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  const out = ['■ 實驗:續抱期間再平衡(總報酬 / MDD / 年化÷MDD / 2021前 / 2021後 / 次數;五段:報酬 / MDD)'];
-  rebalResults.list.forEach(r => {
-    if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
-    out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
-    r.rows.forEach(x => {
-      out.push(`    ${x.v.name}:${x.blown ? '歸零' : pc(x.ret)} / ${x.mdd == null ? '—' : x.mdd.toFixed(1) + '%'} / ${f1(x.calmar)} / ${f1(x.early)} / ${f1(x.late)} / ${x.v.key === 'none' || x.v.key === 'hold' ? '—' : x.rebal}`
-        + ';' + REBAL_WINDOWS.map(([k], i) => `${k} ${x.wins[i] ? pc(x.wins[i].ret) + '/' + (x.wins[i].mdd == null ? '—' : x.wins[i].mdd.toFixed(0) + '%') : '—'}`).join(' '));
-    });
-  });
-  return out.join('\n');
-}
-/* ===================== REBAL 實驗區塊結束 ===================== */
 
 /* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
    中間的接刀、轉回續抱、續抱都算在這一輪裡;頭尾都是全部現金,淨值的比值就是這一輪整體的賺賠(含手續費)。
@@ -4464,7 +4342,6 @@ function renderBacktestCard(){
         ${btCopyText ? `<textarea readonly style="width:100%; height:160px; margin-top:6px; font-size:11px;">${esc(btCopyText)}</textarea>` : ''}` : ''}
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
-      ${renderRebalExperiment()}
       ${renderBacktestWindow()}
     </div>`;
 }
@@ -5239,7 +5116,6 @@ function onClick(el){
     case 'backfill-history': backfillHistory(); return;
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); btCopyMsg = ''; btCopyText = ''; break;
-    case 'rebal-run': runRebalExperiment(); break;   // REBAL 實驗(可拆)
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
