@@ -23,7 +23,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
-  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS };`);
+  twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, runRebalSim, REBAL_VARIANTS, runExposureSim, get state(){ return state; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -276,6 +276,47 @@ console.log('REBAL 實驗(可拆):帳戶模擬的帳對得起來、再平衡真�
   console.log('  ' + checked + ' 組,半年+160/100 共再平衡', rebals, '次,核對利息', interestChecked, '次');
   must(interestChecked > 10, '利息那項幾乎沒核對到');
   must(checked > 10 && rebals > 20, '隨機路徑幾乎沒有再平衡,這個測試沒測到東西');
+})();
+console.log('  ok');
+
+console.log('主要回測卡:正2 照曝險目標算(出場 0%、接刀 65%/130%、續抱 130%),1 倍照舊全押');
+(function testTargetsBacktest(){
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const p = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
+  A.state.leverage.exposureTargets = { byLayer:[65, 130], hold:130 };
+  let checked = 0;
+  for (let k = 0; k < 10; k++){
+    const hist = []; let px = 50;
+    const d = new Date(2014, 0, 4);
+    for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+      px *= 1 + (rnd() - 0.5) * 0.06 + (Math.floor(i / 300) % 2 ? -0.001 : 0.002);
+      hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(px * 100) / 100 }); }
+    const r2 = A.backtestFromHistory('X', hist, p, 2);
+    if (r2.error) continue;
+    checked++;
+    must(r2.byTargets && /65%\/130%/.test(r2.targetsText), '正2 的回測卡要標出照曝險目標算');
+    // 跟再平衡實驗的「原策略」是同一條曲線
+    const sim = A.runExposureSim(hist, p, { byLayer:[65, 130], hold:130 });
+    must(Math.abs(r2.returnStrat - (sim.curve[sim.curve.length - 1].strat / 1e6 - 1) * 100) < 1e-9, '回測卡跟曝險模擬的總報酬對不起來');
+    // 每個事件當天收盤後的曝險 = 那一階段的目標(從淨值跟價格反推:正2 市值 = 淨值 − 現金,這裡用 bh 那條驗 65%)
+    const bh0 = r2.curve[0], P0 = hist.find(h => h.d === r2.from).c, P1 = hist[hist.length - 1].c;
+    const expectBh = (1e6 - 0.65e6) + (0.65e6 - Math.round(Math.max(20, 0.65e6 * 0.001425))) / P0 * P1;
+    must(Math.abs(r2.curve[r2.curve.length - 1].bh - expectBh) < 1, `買進持有應該是第一天 65% 買正2 之後不動:${r2.curve[r2.curve.length - 1].bh} vs ${expectBh}`);
+    must(sim.maxR === 0 || (sim.minR > 0 && sim.maxR < 5), '續抱期間曝險範圍怪怪的');
+    // 出場當天全部現金:出場那天的淨值 = 前一天淨值 × (1 + 當天漲跌 × 曝險/2) − 手續費,不好直接驗;改驗出場到下一個事件之間淨值不動
+    const days = r2.curve.map(x => x.d);
+    r2.events.forEach((e, i) => {
+      if (e.act !== 'EXIT') return;
+      const next = r2.events[i + 1];
+      const a = days.indexOf(e.d), b = next ? days.indexOf(next.d) : days.length;
+      for (let j = a + 1; j < b; j++) if (Math.abs(r2.curve[j].strat - r2.curve[a].strat) > 1e-6){ must(false, `${e.d} 出場後淨值還在動(沒有全部賣掉)`); break; }
+    });
+    // 1 倍:跟以前一樣全押(= runBacktest)
+    const r1 = A.backtestFromHistory('Y', hist, p, 1), raw = A.runBacktest(hist, p);
+    must(!r1.byTargets && r1.returnStrat === raw.returnStrat && r1.returnBh === raw.returnBh, '1 倍標的應該照舊全押');
+  }
+  must(checked >= 5, '隨機路徑幾乎沒跑到');
+  console.log('  ' + checked + ' 組');
 })();
 console.log('  ok');
 

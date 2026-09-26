@@ -627,8 +627,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-26 · 4539743bc2';
-const BUILD_HASH = '4539743bc2';
+const BUILD_VERSION = '2026-09-26 · 82f7e196e5';
+const BUILD_HASH = '82f7e196e5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2992,6 +2992,79 @@ function runBacktest(priceHistory, trendParams){
   };
 }
 
+/* 照曝險目標算的回測(2026-09 使用者要求:主要回測卡的正2 用 app 設定的曝險目標算,不是全押)。
+   進出時點直接用 runBacktest() 的 events(狀態機只有那一份,這裡不重寫規則),每次事件把帳戶調到那一階段的目標:
+   出場 0%、接刀第 n 層 byLayer[n-1]、轉回續抱 hold——對應照 🔔 跟「正2 曝險目標」卡片操作。續抱期間不再平衡(現在的做法)。
+   帳戶 = 自有資金 + 房貸額度當成同一筆自己的錢(c = 0、不計利息,使用者說「回測都用自己的錢算,不管借不借貸」):
+   曝險比例 = 2 × 正2 市值 ÷ 帳戶淨值,130% = 帳戶 65% 買正2、其餘現金。可以零股(整筆錢的比例,不是真的下單)。
+   買進持有 = 第一天就調到續抱目標,之後完全不動——跟策略同一個曝險水準才比得公平(全押的買進持有是 200%)。
+   opt.c / opt.rate:另外給房貸額度(自有資金的倍數)跟借款利率時,買進先用現金、不夠才借,賣出先還房貸
+   (REBAL 實驗第一版用的,測試也用);opt.variant:續抱期間再平衡的設定(REBAL 實驗,可拆)。 */
+const addMonthsISO = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setMonth(x.getMonth() + n); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
+function runExposureSim(hist, p, targets, opt = {}){
+  const variant = opt.variant || { key: 'none' }, c = opt.c || 0, rate = opt.rate || 0;
+  const res = runBacktest(hist, p);
+  if (!res) return null;
+  const ev = new Map(res.events.map(e => [e.d, e]));
+  const N = Math.max(1, p.pyramidLevels);
+  const C = c * BACKTEST_INITIAL_CASH;
+  let X = BACKTEST_INITIAL_CASH, S = 0, D = 0, status = 'WATCH', lastHold = '', rebal = 0, blown = false;
+  let minR = Infinity, maxR = 0, maxLoan = 0;   // 續抱期間收盤後的曝險比例範圍、最高借款(測試核對用)
+  const trade = (R, P) => {
+    const pv = S * P, K = X + pv - D + C;
+    if (!(K > 0)) return false;
+    const diff = Math.max(0, R * K / 2) - pv;
+    if (Math.abs(diff) < 1e-6 * K) return false;
+    if (diff > 0){
+      const amt = Math.min(diff, X + Math.max(0, C - D));
+      if (!(amt > 0)) return false;
+      const need = amt + defaultFee('buy', amt), cash = Math.min(X, need);
+      X -= cash; D += need - cash; S += amt / P;
+    }else{
+      const amt = Math.min(-diff, pv);
+      S -= amt / P;
+      const got = amt - defaultFee('sell', amt), rep = Math.min(D, got);
+      D -= rep; X += got - rep;
+    }
+    return true;
+  };
+  const start = hist.findIndex(h => h.d === res.from);
+  const curve = [];
+  // 買進持有:第一天就用現金買到續抱目標(不借錢),之後不動
+  const P0 = hist[start].c, bhAmt = Math.min(BACKTEST_INITIAL_CASH, Math.max(0, targets.hold / 100 * (BACKTEST_INITIAL_CASH + C) / 2));
+  const bhFee = defaultFee('buy', bhAmt), bhS = Math.max(0, bhAmt - bhFee) / P0, bhX = BACKTEST_INITIAL_CASH - bhAmt;
+  for (let i = start; i < hist.length; i++){
+    const { d, c: P } = hist[i];
+    const bh = bhX + bhS * P;
+    if (blown){ curve.push({ d, strat: 1, bh }); continue; }   // 自有淨值歸零(房貸額度相對自有資金太大、槓桿太高)就停在這裡,不再交易
+    if (i > start && D > 0){   // 借款利息:照日曆天數,現金付得出來就付,不夠就滾進借款
+      const days = (new Date(d) - new Date(hist[i - 1].d)) / 86400000;
+      const int = D * rate / 100 * days / 365, pay = Math.min(X, int);
+      X -= pay; D += int - pay;
+    }
+    const e = ev.get(d);
+    if (e){
+      if (e.act === 'EXIT'){ status = 'WAIT_RECOVER'; trade(0, P); }
+      else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade((targets.byLayer[Math.min(e.n, N) - 1] ?? targets.hold) / 100, P); }
+      else { status = 'HOLD'; trade(targets.hold / 100, P); lastHold = d; }
+    }else if (status === 'HOLD' && variant.key !== 'none'){
+      const K = X + S * P - D + C, ratio = K > 0 ? 2 * S * P / K : 0;
+      const due = variant.months && d >= addMonthsISO(lastHold, variant.months);
+      const out = variant.hi && (ratio >= variant.hi || ratio <= variant.lo);
+      if (due || out){
+        if (trade(targets.hold / 100, P)) rebal++;
+        lastHold = d;
+      }
+    }
+    const nw = X + S * P - D;
+    if (nw <= 0){ blown = true; curve.push({ d, strat: 1, bh }); continue; }
+    if (status === 'HOLD'){ const K = nw + C; if (K > 0){ const q = 2 * S * P / K; minR = Math.min(minR, q); maxR = Math.max(maxR, q); } }
+    maxLoan = Math.max(maxLoan, D);
+    curve.push({ d, strat: nw, bh });
+  }
+  return { curve, events: res.events, status: res.status, pyramidCount: res.pyramidCount,
+           rebal, blown, from: res.from, to: res.to, minR, maxR, maxLoan, C };
+}
 /* 回測畫圖只需要看得出長期走勢,不用每天畫一個點——每個月只留最後一個交易日,
    十年份的日資料點數才不會爆掉(lineChart 一個點要畫圓點加可點區域,點數等於乘三)。 */
 function monthEndSample(curve){
@@ -3049,10 +3122,19 @@ function backtestFromHistory(id, hist, p, leverage, errMissing, btn = '抓完整
   if (gap){
     return { id, error: `歷史價格中間缺了一段(${gap.from} ~ ${gap.to},約 ${gap.days} 天沒有資料),均線會被這段斷點帶偏,回測結果不可靠。請再按一次上面「${btn}」補齊之後再試一次。` };
   }
-  const res = runBacktest(hist, p);
+  // 正2 照 app 設定的曝險目標算(出場 0%、接刀各層、續抱);1 倍標的沒有曝險目標,照舊全押現金
+  const byTargets = leverage === 2;
+  const res = byTargets ? runExposureSim(hist, p, state.leverage.exposureTargets) : runBacktest(hist, p);
+  if (byTargets){
+    const end = res.curve[res.curve.length - 1];
+    const mddOf = key => { let peak = -Infinity, worst = 0; res.curve.forEach(pt => { peak = Math.max(peak, pt[key]); worst = Math.min(worst, (pt[key] - peak) / peak); }); return worst * 100; };
+    Object.assign(res, { returnStrat: (end.strat / BACKTEST_INITIAL_CASH - 1) * 100, returnBh: (end.bh / BACKTEST_INITIAL_CASH - 1) * 100,
+                         mddStrat: mddOf('strat'), mddBh: mddOf('bh') });
+  }
   const sampled = monthEndSample(res.curve);
   return {
-    id, from: res.from, to: res.to, leverage,
+    id, from: res.from, to: res.to, leverage, byTargets,
+    targetsText: byTargets ? `接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、續抱 ${state.leverage.exposureTargets.hold}%` : '',
     curve: res.curve, events: res.events,   // 指定期間檢視用
     returnStrat: res.returnStrat, returnBh: res.returnBh,
     mddStrat: res.mddStrat, mddBh: res.mddBh,
@@ -4070,7 +4152,8 @@ function renderIndexSimSection(){
 
 /* ===================== REBAL 實驗:續抱期間再平衡(2026-09,只在回測,可拆) =====================
    使用者問「市面上說的再平衡好不好」:續抱(HOLD)期間維持曝險 130%,半年檢查一次、曝險到 160% 或 100% 也立刻調回。
-   上面的回測是「全押現金、沒有房貸」,沒有曝險比例可言,所以這裡另外模擬一個帳戶:自有資金 + 房貸額度,
+   (帳戶模擬後來搬到主程式 runExposureSim(),主要回測卡的正2 也改用它;拆這個區塊時不要刪它。)
+   當時主要回測是「全押現金、沒有房貸」,沒有曝險比例可言,所以這裡另外模擬一個帳戶:自有資金 + 房貸額度,
    曝險比例跟 app 同一個定義 = 2 × 正2 市值 ÷(自有淨值 + 房貸額度)。買進先用現金、不夠才動用房貸;賣出先還房貸,
    剩下留現金;借款每天照設定的年利率計息。進出時點直接用 runBacktest() 的 events(出場/接刀/轉回續抱),
    每次事件調到該階段的曝險目標(出場 0、接刀第 n 層 byLayer[n-1]、轉回續抱 hold)——對應照 🔔 跟曝險卡片操作。
@@ -4089,68 +4172,8 @@ const REBAL_VARIANTS = [
 ];
 const REBAL_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
                        ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
-const REBAL_OWN = 1000000;   // 自有資金基準,只拿來算報酬率%
 let rebalResults = null;
-const addMonthsISO = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setMonth(x.getMonth() + n); return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate()); };
-/* 一條價格 + 策略參數 + 一種再平衡設定 → 帳戶淨值曲線。c = 房貸額度 ÷ 自有資金,rate = 年利率(%) */
-function runRebalSim(hist, p, targets, variant, c, rate){
-  const res = runBacktest(hist, p);
-  if (!res) return null;
-  const ev = new Map(res.events.map(e => [e.d, e]));
-  const N = Math.max(1, p.pyramidLevels);
-  const C = c * REBAL_OWN;
-  let X = REBAL_OWN, S = 0, D = 0, status = 'WATCH', lastHold = '', rebal = 0, blown = false;
-  let minR = Infinity, maxR = 0, maxLoan = 0;   // 續抱期間收盤後的曝險比例範圍、最高借款(測試核對用)
-  const trade = (R, P) => {
-    const pv = S * P, K = X + pv - D + C;
-    if (!(K > 0)) return false;
-    const diff = Math.max(0, R * K / 2) - pv;
-    if (Math.abs(diff) < 1e-6 * K) return false;
-    if (diff > 0){
-      const amt = Math.min(diff, X + Math.max(0, C - D));
-      if (!(amt > 0)) return false;
-      const need = amt + defaultFee('buy', amt), cash = Math.min(X, need);
-      X -= cash; D += need - cash; S += amt / P;
-    }else{
-      const amt = Math.min(-diff, pv);
-      S -= amt / P;
-      const got = amt - defaultFee('sell', amt), rep = Math.min(D, got);
-      D -= rep; X += got - rep;
-    }
-    return true;
-  };
-  const start = hist.findIndex(h => h.d === res.from);
-  const curve = [];
-  for (let i = start; i < hist.length; i++){
-    const { d, c: P } = hist[i];
-    if (blown){ curve.push({ d, strat: 1 }); continue; }   // 自有淨值歸零(房貸額度相對自有資金太大、槓桿太高)就停在這裡,不再交易
-    if (i > start && D > 0){   // 借款利息:照日曆天數,現金付得出來就付,不夠就滾進借款
-      const days = (new Date(d) - new Date(hist[i - 1].d)) / 86400000;
-      const int = D * rate / 100 * days / 365, pay = Math.min(X, int);
-      X -= pay; D += int - pay;
-    }
-    const e = ev.get(d);
-    if (e){
-      if (e.act === 'EXIT'){ status = 'WAIT_RECOVER'; trade(0, P); }
-      else if (e.act === 'ADD'){ status = 'WAIT_RECOVER'; trade((targets.byLayer[Math.min(e.n, N) - 1] ?? targets.hold) / 100, P); }
-      else { status = 'HOLD'; trade(targets.hold / 100, P); lastHold = d; }
-    }else if (status === 'HOLD' && variant.key !== 'none'){
-      const K = X + S * P - D + C, ratio = K > 0 ? 2 * S * P / K : 0;
-      const due = variant.months && d >= addMonthsISO(lastHold, variant.months);
-      const out = variant.hi && (ratio >= variant.hi || ratio <= variant.lo);
-      if (due || out){
-        if (trade(targets.hold / 100, P)) rebal++;
-        lastHold = d;
-      }
-    }
-    const nw = X + S * P - D;
-    if (nw <= 0){ blown = true; curve.push({ d, strat: 1 }); continue; }
-    if (status === 'HOLD'){ const K = nw + C; if (K > 0){ const q = 2 * S * P / K; minR = Math.min(minR, q); maxR = Math.max(maxR, q); } }
-    maxLoan = Math.max(maxLoan, D);
-    curve.push({ d, strat: nw });
-  }
-  return { curve, rebal, blown, from: res.from, to: res.to, minR, maxR, maxLoan, C };
-}
+const runRebalSim = (hist, p, targets, variant, c, rate) => runExposureSim(hist, p, targets, { variant, c, rate });
 function runRebalExperiment(){
   // 自有資金 + 房貸額度當成同一筆自己的錢:沒有另外的額度、沒有借款利息(使用者要的算法)
   const targets = state.leverage.exposureTargets, rate = 0, c = 0;
@@ -4176,7 +4199,7 @@ function runRebalExperiment(){
         const w = st(f, nextDay(t));
         return { ret: (seg[seg.length - 1].strat / seg[0].strat - 1) * 100, mdd: w ? w.mdd : null };
       });
-      return { v, ret: (last / REBAL_OWN - 1) * 100, mdd: all ? all.mdd : null, calmar: all && all.calmar,
+      return { v, ret: (last / BACKTEST_INITIAL_CASH - 1) * 100, mdd: all ? all.mdd : null, calmar: all && all.calmar,
                early: early && early.calmar, late: late && late.calmar, rebal: r.rebal, blown: r.blown, wins };
     });
     return { label: src.label, from, to, rows };
@@ -4195,7 +4218,7 @@ function renderRebalExperiment(){
         「原策略」是轉回續抱時調一次就不動(現在的做法);另外三列在續抱期間多做再平衡,調回 ${state.leverage.exposureTargets.hold}%:
         每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。
         曝險比例 = 2 × 正2 市值 ÷ 這筆錢的總淨值,例如 130% = 這筆錢的 65% 買正2、其餘放現金。
-        報酬是這整筆錢的報酬,跟上面「全押現金」(等於曝險 200%)的回測數字不能直接比,只看這張表裡四列互相比。
+        報酬是這整筆錢的報酬;「原策略」那列就是上面回測卡的正2 結果,另外三列是同一套再加上續抱期間的再平衡。
         一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。</div></details>
       <button class="btn" data-act="rebal-run">▶ 跑再平衡實驗(用上面已經抓好的歷史)</button>
       ${(rebalResults ? rebalResults.list : []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
@@ -4287,6 +4310,7 @@ function renderBacktestResult(r){
       ` : `
         <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label || r.id)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
+          ${r.byTargets ? `<div class="muted" style="font-size:11px;">照曝險目標算:${esc(r.targetsText)};買進持有 = 第一天調到續抱目標不動</div>` : ''}
           <div class="row sub"><span class="label">策略總報酬 / MDD</span><span class="val ${r.returnStrat >= 0 ? 'pos' : 'neg'}">${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(1)}% / ${r.mddStrat.toFixed(1)}%</span></div>
           <div class="row sub"><span class="label">買進持有總報酬 / MDD</span><span class="val ${r.returnBh >= 0 ? 'pos' : 'neg'}">${r.returnBh >= 0 ? '+' : ''}${r.returnBh.toFixed(1)}% / ${r.mddBh.toFixed(1)}%</span></div>
           ${lineChart('bt-' + r.id, r.labels, [
@@ -4304,9 +4328,12 @@ function renderBacktestCard(){
     <div class="card">
       <h3>策略回測</h3>
       <details class="tip" style="margin-bottom:12px;"><summary>這是什麼</summary><div class="body">
-        拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟
-        「一開始就全押買進、抱到現在都不動」誰的總報酬與最大回撤(MDD)比較好。
-        這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
+        拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟「買進後抱到現在都不動」
+        誰的總報酬與最大回撤(MDD)比較好。正2 照你設定的曝險目標算(出場 0%、接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、
+        續抱 ${state.leverage.exposureTargets.hold}%):把自有資金 + 房貸額度當成同一筆錢,曝險 ${state.leverage.exposureTargets.hold}% = 這筆錢的
+        ${(state.leverage.exposureTargets.hold / 2).toFixed(1).replace(/\.0$/, '')}% 買正2、其餘放現金(不計房貸利息);續抱期間不再平衡。
+        買進持有也是同一個曝險:第一天就調到 ${state.leverage.exposureTargets.hold}%,之後完全不動。1 倍標的(例如 0050)沒有曝險目標,照舊全押。
+        報酬是這整筆錢的報酬。這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
       </div></details>
       ${QUOTES_ENABLED ? `
         <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 10 分鐘)')}</button>

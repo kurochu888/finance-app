@@ -59,7 +59,9 @@ eval([...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]).sort((a,b)=
       const r1 = A.hist[i].c / A.hist[i - 1].c - 1, r2 = s.two[i].c / s.two[i - 1].c - 1;
       if (Math.abs(r2 - 2 * r1) > 0.0002){ bugs.push(`${A.hist[i].d} 模擬正2 漲跌 ${(r2*100).toFixed(3)}% 不是指數 ${(r1*100).toFixed(3)}% 的兩倍`); break; }
     }
-    if (!(two.mddBh < one.mddBh)) bugs.push('模擬正2 買進持有的 MDD 應該比 1 倍深');
+    // 價格本身的最大回撤:正2 那條要比指數深(回測卡的正2 買進持有現在是 65% 正2 + 現金,跟 1 倍全押不能直接比)
+    const mddOf = list => { let pk = -Infinity, w = 0; list.forEach(h => { pk = Math.max(pk, h.c); w = Math.min(w, h.c / pk - 1); }); return w; };
+    if (!(mddOf(s.two) < mddOf(s.one))) bugs.push('模擬正2 價格的最大回撤應該比指數深');
   }
   // 證交所維護中(非 OK 但不是「查無資料」)連續好幾個月:不能被當成「更早沒資料」而永遠不再往前抓
   {
