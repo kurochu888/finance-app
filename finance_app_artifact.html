@@ -609,8 +609,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-26 · 1e5eb0533b';
-const BUILD_HASH = '1e5eb0533b';
+const BUILD_VERSION = '2026-09-26 · 5fbea829be';
+const BUILD_HASH = '5fbea829be';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3094,6 +3094,12 @@ const splitStats = (curve, key) => ({
   late: periodStats(curve, BACKTEST_SPLIT_DATE, '9999', key),
 });
 
+/* 回測卡的算法切換(2026-09-26 使用者要兩種都留):
+   'cash' = 單純成本:整筆錢接刀第一層買一半、第二層買剩下的、轉回續抱全押,買進持有第一天全押(runBacktest 本身),
+            兩邊都是 100% 投入,只差進出時機——判斷「策略比一直抱著好多少」最清楚,預設用這個;
+   'targets' = 照曝險目標(接刀 byLayer、續抱 hold,runExposureSim):照 app 卡片實際操作整筆錢會怎樣。只影響正2。 */
+const BT_MODE_KEY = 'financeBacktestMode';
+let btMode = (() => { try{ return localStorage.getItem(BT_MODE_KEY) === 'targets' ? 'targets' : 'cash'; }catch(e){ return 'cash'; } })();
 /* 一份歷史價格 → 一筆回測結果(或錯誤訊息)。標的的回測跟「加權指數模擬」共用,畫面才能用同一套卡片。 */
 function backtestFromHistory(id, hist, p, leverage, errMissing, btn = '抓完整歷史'){
   const need = Math.max(p.maFast, p.maSlow) + 1;
@@ -3105,7 +3111,7 @@ function backtestFromHistory(id, hist, p, leverage, errMissing, btn = '抓完整
     return { id, error: `歷史價格中間缺了一段(${gap.from} ~ ${gap.to},約 ${gap.days} 天沒有資料),均線會被這段斷點帶偏,回測結果不可靠。請再按一次上面「${btn}」補齊之後再試一次。` };
   }
   // 正2 照 app 設定的曝險目標算(出場 0%、接刀各層、續抱);1 倍標的沒有曝險目標,照舊全押現金
-  const byTargets = leverage === 2;
+  const byTargets = leverage === 2 && btMode === 'targets';
   const res = byTargets ? runExposureSim(hist, p, state.leverage.exposureTargets) : runBacktest(hist, p);
   if (byTargets){
     const end = res.curve[res.curve.length - 1];
@@ -3968,7 +3974,7 @@ function backtestReportText(){
   const f2 = v => v == null ? '—' : v.toFixed(2);
   const out = [];
   out.push(`回測結果(${todayISO()} 複製,build ${BUILD_HASH})`);
-  out.push(`曝險目標:接刀 ${T.byLayer.join('%/')}%、續抱 ${T.hold}%`);
+  out.push(`算法:${btMode === 'targets' ? '照曝險目標' : '單純成本(接刀 50%/50%、續抱全押)'};曝險目標設定:接刀 ${T.byLayer.join('%/')}%、續抱 ${T.hold}%`);
   state.instruments.filter(it => it.auto && it.trend).forEach(it => {
     const p = it.trend;
     out.push(`${it.id} 參數:快線 ${p.maFast} / 慢線 ${p.maSlow} / 出場緩衝 ${p.exitBuffer} / 接刀間距 ${p.pyramidGap} / 層數 ${p.pyramidLevels} / 轉回斜率 ${p.recoverSlopeThreshold} / 強反彈 ${p.recoverStrongRebound}`);
@@ -3978,7 +3984,7 @@ function backtestReportText(){
     out.push('');
     out.push(`■ ${r.label || r.id}`);
     if (r.error){ out.push(`  ${r.error}`); return; }
-    out.push(`  ${r.from} ~ ${r.to}${r.byTargets ? `(照曝險目標算:${r.targetsText};買進持有 = 第一天調到續抱目標不動)` : '(全押)'}`);
+    out.push(`  ${r.from} ~ ${r.to}${r.byTargets ? `(照曝險目標算:${r.targetsText};買進持有 = 第一天調到續抱目標不動)` : '(單純成本:接刀 50%/50%、續抱全押;買進持有第一天全押)'}`);
     out.push(`  策略 總報酬 ${pc(r.returnStrat)} / MDD ${r.mddStrat.toFixed(1)}%`);
     out.push(`  買進持有 總報酬 ${pc(r.returnBh)} / MDD ${r.mddBh.toFixed(1)}%`);
     const per = (st) => st ? `年化 ${st.cagr == null ? '—' : pc(st.cagr)} / MDD ${st.mdd.toFixed(1)}% / 年化÷MDD ${f2(st.calmar)}` : '—';
@@ -4266,7 +4272,7 @@ function renderRebalExperiment(){
         「原策略」是轉回續抱時調一次就不動(現在的做法);另外三列在續抱期間多做再平衡,調回 ${state.leverage.exposureTargets.hold}%:
         每半年一次、曝險到 160% 或 100% 時立刻一次,或兩者都做。
         曝險比例 = 2 × 正2 市值 ÷ 這筆錢的總淨值,例如 130% = 這筆錢的 65% 買正2、其餘放現金。
-        報酬是這整筆錢的報酬;「原策略」那列就是上面回測卡的正2 結果,另外三列是同一套再加上續抱期間的再平衡。
+        報酬是這整筆錢的報酬;「原策略」那列就是上面回測卡切到「照曝險目標」時的正2 結果,另外三列是同一套再加上續抱期間的再平衡。
         一檔一檔各自算(實際是兩檔取比較保守的,兩檔訊號幾乎同一天,差別不大)。</div></details>
       <button class="btn" data-act="rebal-run">▶ 跑再平衡實驗(用上面已經抓好的歷史)</button>
       ${(rebalResults ? rebalResults.list : []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
@@ -4373,7 +4379,7 @@ function renderBacktestResult(r){
       ` : `
         <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label || r.id)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
-          ${r.byTargets ? `<div class="muted" style="font-size:11px;">照曝險目標算:${esc(r.targetsText)};買進持有 = 第一天調到續抱目標不動</div>` : ''}
+          <div class="muted" style="font-size:11px;">${r.byTargets ? `照曝險目標算:${esc(r.targetsText)};買進持有 = 第一天調到續抱目標不動` : '單純成本:接刀 50%/50%、續抱全押;買進持有第一天全押'}</div>
           <div class="row sub"><span class="label">策略總報酬 / MDD</span><span class="val ${r.returnStrat >= 0 ? 'pos' : 'neg'}">${r.returnStrat >= 0 ? '+' : ''}${r.returnStrat.toFixed(1)}% / ${r.mddStrat.toFixed(1)}%</span></div>
           <div class="row sub"><span class="label">買進持有總報酬 / MDD</span><span class="val ${r.returnBh >= 0 ? 'pos' : 'neg'}">${r.returnBh >= 0 ? '+' : ''}${r.returnBh.toFixed(1)}% / ${r.mddBh.toFixed(1)}%</span></div>
           ${lineChart('bt-' + r.id, r.labels, [
@@ -4392,15 +4398,23 @@ function renderBacktestCard(){
       <h3>策略回測</h3>
       <details class="tip" style="margin-bottom:12px;"><summary>這是什麼</summary><div class="body">
         拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟「買進後抱到現在都不動」
-        誰的總報酬與最大回撤(MDD)比較好。正2 照你設定的曝險目標算(出場 0%、接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、
-        續抱 ${state.leverage.exposureTargets.hold}%):把自有資金 + 房貸額度當成同一筆錢,曝險 ${state.leverage.exposureTargets.hold}% = 這筆錢的
-        ${(state.leverage.exposureTargets.hold / 2).toFixed(1).replace(/\.0$/, '')}% 買正2、其餘放現金(不計房貸利息);續抱期間不再平衡。
-        買進持有也是同一個曝險:第一天就調到 ${state.leverage.exposureTargets.hold}%,之後完全不動。1 倍標的(例如 0050)沒有曝險目標,照舊全押。
-        報酬是這整筆錢的報酬。這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
+        誰的總報酬與最大回撤(MDD)比較好。有兩種算法可以切換:<br>
+        「單純成本」:一筆錢,接刀第一層買一半、第二層買另一半,轉回續抱就全押,出場全賣;買進持有是第一天全押不動。
+        兩邊都是 100% 投入,只差進出時機,最適合判斷策略本身好不好。<br>
+        「照曝險目標」:正2 照你設定的曝險目標算(出場 0%、接刀 ${state.leverage.exposureTargets.byLayer.join('%/')}%、
+        續抱 ${state.leverage.exposureTargets.hold}%),把自有資金 + 房貸額度當成同一筆錢,曝險 ${state.leverage.exposureTargets.hold}% = 這筆錢的
+        ${(state.leverage.exposureTargets.hold / 2).toFixed(1).replace(/\.0$/, '')}% 買正2、其餘放現金(不計房貸利息),續抱期間不再平衡;
+        買進持有也是同一個曝險(第一天調到 ${state.leverage.exposureTargets.hold}% 之後不動)。比較接近照 app 卡片操作時整筆錢的變化。
+        1 倍標的(例如 0050)沒有曝險目標,兩種算法都是全押。<br>
+        兩種算法的進出日期完全一樣,只差每個階段投入多少。這是歷史模擬,不保證未來也會這樣;手續費算法跟「紀錄」分頁記交易用的是同一套。
       </div></details>
       ${QUOTES_ENABLED ? `
         <button class="btn quiet" data-act="backfill-backtest-history" ${backtestHistBusy ? 'disabled' : ''}>${backtestHistBusy ? '回補中…' : '📥 抓完整歷史' + (Object.keys(backtestFullHistory).length ? '(更新)' : '(第一次較慢,約 10 分鐘)')}</button>
         <div class="muted" style="margin-top:6px;">${backtestHistMsg ? esc(backtestHistMsg) : (cloudBacktestDoc ? '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存,不會拖慢平常記帳/存檔的同步速度。第一次按這顆之後會存一份到雲端,其他裝置打開就會自動帶入,不用再等一次。' : '回測需要 2015 年至今的每日收盤價,跟「訊號」用的近 4 年快取分開存。第一次要先按這顆才有資料可以跑回測——登入雲端同步的話,其他裝置就不用再重抓一次。')}</div>
+        <div class="seg" style="margin-top:10px;">
+          <button class="seg-btn ${btMode === 'cash' ? 'on' : ''}" data-act="bt-mode" data-v="cash">單純成本(50%/50%/全押)</button>
+          <button class="seg-btn ${btMode === 'targets' ? 'on' : ''}" data-act="bt-mode" data-v="targets">照曝險目標</button>
+        </div>
         <button class="btn" data-act="run-backtest" style="margin-top:10px;">▶ 執行回測</button>
       ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回測。</div>`}
       ${backtestResults ? `
@@ -5038,6 +5052,11 @@ function onClick(el){
     }
     case 'copy-json': copyJSON(); return;
     case 'copy-backtest': copyBacktestReport(); return;
+    case 'bt-mode':
+      btMode = el.dataset.v === 'targets' ? 'targets' : 'cash';
+      try{ localStorage.setItem(BT_MODE_KEY, btMode); }catch(e){}
+      if (backtestResults){ runAllBacktests(); btCopyMsg = ''; btCopyText = ''; }   // 已經跑過就直接用新算法重算
+      break;
     case 'export-csv': exportCSV(); return;
     case 'add-repay': {
       const target = findById(state.leverage.draws, id);
