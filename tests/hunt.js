@@ -670,6 +670,21 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     if (A.state.assets.some(a => a.id === blank)) bugs.push('空白的資產列按一下應該就刪掉');
   }
 
+  // 用「房貸借款」買進但沒有房貸動用紀錄:曝險卡片不能照「借款 0」給加碼金額,要提醒去記動用;記完一筆要提示
+  {
+    A.state = A.sampleData();
+    A.state.trades.forEach(t => { if (t.action === 'buy') t.source = 'loan'; });
+    A.state.leverage.draws = [];
+    const card = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ');
+    if (!/還沒有任何房貸動用/.test(card) || /方案A|方案B/.test(card)) bugs.push('有房貸買進但沒有動用紀錄,曝險卡片還照借款 0 給金額');
+    A.state = A.sampleData();
+    const sym = A.state.instruments[0].id;
+    A.onClick({ dataset: { act: 'draft-action', v: 'buy' } });
+    Object.assign(A.tradeDraft, { symbol: sym, action: 'buy', source: 'loan', shares: '1000', price: '20', fee: '' });
+    A.onClick({ dataset: { act: 'add-trade' } });
+    if (!/新增一筆房貸動用/.test(A.renderTrades())) bugs.push('記了一筆房貸買進,沒有提醒要去記動用');
+  }
+
   // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣
   {
     A.state = A.emptyState();
