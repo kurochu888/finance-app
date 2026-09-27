@@ -216,6 +216,21 @@ const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); 
     if (got !== 'x1,x4') bugs.push(`已經重複的月份快照沒有去掉(應該留 x1,x4,得到 ${got})`);
   }
 
+  // 11) 舊版分頁不認得「過去各段利率」,寫回雲端時整個不見:要保留本機的,不然過去的利息又照目前利率重算
+  {
+    A.state = A.sampleData();
+    A.state.leverage.rateHistory = [{ id:'rh1', until:'2026-06-01', rate: 2.1 }];
+    await A.save(); await wait(10);
+    const old = asOther(JSON.parse(JSON.stringify(cloudDocs['state/finance'])));
+    delete old.leverage.rateHistory;                     // 舊版寫的
+    old.assets[0].name = '舊版分頁改的';
+    A.applyRemote(old);
+    const rh = A.state.leverage.rateHistory || [];
+    console.log('11. 舊版分頁寫回來:過去利率', rh.length, '段 | 資產', A.state.assets[0].name);
+    if (!rh.length || rh[0].rate !== 2.1) bugs.push('舊版分頁寫回來,過去各段利率不見了(過去的利息會照目前利率重算)');
+    if (A.state.assets[0].name !== '舊版分頁改的') bugs.push('舊版分頁改的其他東西沒套用');
+  }
+
   // 7) 跨年的月份運算
   const ym = ['2026-01','2026-12'];
   console.log('7. 月份運算:', ym[0], '往前一個月 =', A.shiftMonth(ym[0], -1),

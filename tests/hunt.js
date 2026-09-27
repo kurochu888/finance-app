@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot, rateAt: (typeof rateAt === "function" ? rateAt : () => NaN),
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -707,6 +707,43 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     if (!(it.trend.pyramidLevels <= 10)) bugs.push('加碼層數沒有夾在上限內:' + it.trend.pyramidLevels);
     const n = A.normalize({ leverage: { exposureTargets: { byLayer: new Array(5000).fill(100), hold: 130 } } });
     if (n.leverage.exposureTargets.byLayer.length > 10) bugs.push('匯入的曝險目標層數沒有夾在上限內');
+  }
+
+  // 房貸利率會跟升降息變:改「目前年利率」不能讓過去已經發生的利息跟著重算(使用者回報)
+  {
+    A.state = A.emptyState();
+    const L = A.state.leverage, today = A.todayISO();
+    L.annualRate = 2.4;
+    L.draws = [{ id:'d1', label:'x', amount: 1000000, useDate:'2026-01-01', note:'', repayments:[] }];
+    const before = A.accruedInterest();
+    A.onField('lev-annualRate', { value: '3' });
+    A.onField('lev-annualRate', { value: '3.0' });
+    A.onField('lev-annualRate', { value: '3.05' });      // 一個字一個字打
+    if (Math.abs(A.accruedInterest() - before) > 0.01) bugs.push(`改利率之後今天以前的利息變了:${before.toFixed(0)} → ${A.accruedInterest().toFixed(0)}`);
+    if ((L.rateHistory || []).length !== 1 || L.rateHistory[0].until !== today || L.rateHistory[0].rate !== 2.4 || L.annualRate !== 3.05)
+      bugs.push('改利率應該記一段「到今天為止 2.4%」、目前 3.05%:' + JSON.stringify(L.rateHistory) + ' / ' + L.annualRate);
+    // 今天以後照新利率
+    const fut = '2027-01-01', days = (new Date(fut) - new Date(today)) / 864e5;
+    const later = A.accrue(L.draws[0], L, fut);
+    const expect = before + 1000000 * 0.0305 * days / 365.25;
+    if (Math.abs(later - expect) > 1) bugs.push(`今天以後應該照新利率算:${later.toFixed(0)} vs ${expect.toFixed(0)}`);
+    // 生效日往前改到 2026-06-01:1/1~6/1 照 2.4%,6/1 起照 3.05%
+    if ((L.rateHistory || []).length) A.onField('rate-until-' + L.rateHistory[0].id, { value: '2026-06-01' });
+    const d1 = (new Date('2026-06-01') - new Date('2026-01-01')) / 864e5, d2 = (new Date(today) - new Date('2026-06-01')) / 864e5;
+    const manual = 1000000 * (0.024 * d1 + 0.0305 * d2) / 365.25;
+    if (Math.abs(A.accruedInterest() - manual) > 1) bugs.push(`生效日改成 6/1 之後分段利息不對:${A.accruedInterest().toFixed(0)} vs 手算 ${manual.toFixed(0)}`);
+    if (A.rateAt(L, '2026-05-31') !== 2.4 || A.rateAt(L, '2026-06-01') !== 3.05) bugs.push('rateAt 分段不對');
+    // XIRR 用的利息現金流要跟帳上的利息一樣
+    // 沒有持股,負的現金流 = 每月利息 + 最後「今天結清」還掉的借款餘額
+    const interestFlows = A.cashFlows(false).filter(f => f.amount < 0).reduce((x, f) => x - f.amount, 0) - A.outstanding(L.draws[0]);
+    if (Math.abs(interestFlows - A.accruedInterest()) > 0.5) bugs.push(`XIRR 的利息 ${interestFlows.toFixed(0)} 跟帳上 ${A.accruedInterest().toFixed(0)} 對不起來`);
+    // 讀進來再讀一次不變
+    const n1 = A.normalize(JSON.parse(JSON.stringify(A.state))), n2 = A.normalize(JSON.parse(JSON.stringify(n1)));
+    if (JSON.stringify(n1.leverage.rateHistory) !== JSON.stringify(n2.leverage.rateHistory) || (n1.leverage.rateHistory || []).length !== 1) bugs.push('過去利率讀進來不穩定');
+    // 還沒有借款在跑(剛設定):直接改,不記過去
+    A.state = A.emptyState();
+    A.onField('lev-annualRate', { value: '2.1' });
+    if ((A.state.leverage.rateHistory || []).length || A.state.leverage.annualRate !== 2.1) bugs.push('還沒借款時改利率不該記過去的一段');
   }
 
   // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣

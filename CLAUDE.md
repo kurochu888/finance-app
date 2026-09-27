@@ -68,6 +68,12 @@ note, repayments[]}`。這是整個 app 的房貸帳本:借款餘額、利息、
 tranches/core 的形狀區分已經沒有意義。`normalize()` 裡有舊資料 → `draws[]` 的遷移邏輯,
 id 沿用舊值以確保重複呼叫不會飄動。
 
+**房貸利率分段(`annualRate` + `rateHistory`,2026-09 使用者回報)**——`annualRate` 是**目前**的利率,`rateHistory` 是過去各段
+`[{id, until, rate}]`(until 那天之前是 rate);`rateAt(L, 日期)`、`interestBetween()` 照日期分段算,`accrue(item, L)` 用它。
+以前只有一個 `annualRate`,銀行升降息一改,過去已經發生的利息全部照新利率重算。改「目前年利率」走 `setCurrentRate()`:
+有借款在跑就先記「到今天為止是舊利率」,同一天再改只換目前利率;還沒借款就直接改。舊版分頁不認得 `rateHistory`,
+寫回來時 `keepFieldsOldVersionsDrop()` 保留本機的。`accrue(item, 2.4)` 傳數字 = 全程同一個利率(測試用)。
+
 `DEFAULT_LEVERAGE` 裡還留著 `marketHigh`/`marketCurrent`/`historicalHighValue`/`autoHigh`
 這幾個欄位——**這些是舊觸發邏輯的遺跡,現在沒有任何 UI 讀寫它們**(只有 `tests/longrun.js`
 拿來當模擬腳本的心跳,不是在測真的 app 邏輯)。純粹是為了舊存檔資料能讀得進來不出錯才留著,
