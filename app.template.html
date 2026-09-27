@@ -586,8 +586,9 @@ function normalize(raw){
   [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
     const it = s.instruments.find(x => x.id === id);
     if (!it) return;
-    if (!it.shares && num(L[sk])) it.shares = num(L[sk]);
-    if (!it.price && num(L[pk])) it.price = num(L[pk]);
+    // 跟標的本身的股數/股價一樣不收負數:以前照搬,讀第一次是負的、再讀一次才被夾成 0(壞資料壓測抓到 normalize 不冪等)
+    if (!it.shares && num(L[sk]) > 0) it.shares = num(L[sk]);
+    if (!it.price && num(L[pk]) > 0) it.price = num(L[pk]);
   });
   return s;
 }
