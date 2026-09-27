@@ -646,8 +646,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-27 · 6156edcc4a';
-const BUILD_HASH = '6156edcc4a';
+const BUILD_VERSION = '2026-09-27 · 8ab1102aab';
+const BUILD_HASH = '8ab1102aab';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2117,6 +2117,7 @@ let viewMonth = thisMonth();
 let editingTx = null;
 let editingTrade = null;
 let tradeError = '';
+let tradeNote = '';   // 記完一筆後的提醒(例如用房貸買的要去記動用),不是錯誤
 let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'' };
 let pendingConfirm = null;   // iframe 內 confirm() 可能被擋,改用頁面內二次確認
 let dataMsg = '';
@@ -2185,6 +2186,7 @@ function switchTab(tab){
   editingTx = null;
   editingTrade = null;
   tradeError = '';
+  tradeNote = '';
   repayError = '';
   pendingConfirm = null;
   draftError = '';
@@ -3425,6 +3427,8 @@ function renderTrades(){
       <div class="muted" id="pd-gross" style="margin-bottom:8px; ${(gross && d.action !== 'dividend') ? '' : 'display:none;'}">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>
       <button class="btn solid" data-act="add-trade">新增紀錄</button>
       ${tradeError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(tradeError)}</div>` : ''}
+      ${tradeNote ? `<div class="muted" style="text-align:center; margin-top:8px;">${esc(tradeNote)}</div>` : ''}
+      ${loanLedgerMissing() ? `<div class="muted neg" style="margin-top:8px;">${LOAN_LEDGER_MSG}</div>` : ''}
     </div>
 
     <div class="card">
@@ -3612,9 +3616,19 @@ function trendBadge(status){
 }
 /* 正2 曝險目標卡片:目前曝險 vs 目標曝險,以及該加碼/減碼多少(現金/房貸兩個邊界值,
    兩檔 00631L/00675L 均分)。只在有正2(槓桿2倍)標的時顯示。 */
+/* 有「房貸借款」的買進紀錄,房貸動用紀錄卻一筆都沒有:借款餘額當成 0,部位淨值被高估、曝險比例被低估 */
+const loanLedgerMissing = () => state.trades.some(t => t.action === 'buy' && t.source === 'loan') && !state.leverage.draws.some(d => d.amount > 0);
+const LOAN_LEDGER_MSG = '有用「房貸借款」買進的紀錄,但「紀錄」分頁還沒有任何房貸動用:借款餘額被當成 0,曝險比例會偏低、曝險目標卡片會叫你多買。先到「紀錄」分頁新增動用。';
 function renderExposurePlanCard(){
   const p = computeExposurePlan();
   if (!p) return '';
+  if (loanLedgerMissing()){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="muted neg">${LOAN_LEDGER_MSG}</div>
+    </div>`;
+  }
   const n = p.instruments.length;
   const lev2 = p.instruments.map(findInstrumentByKey).filter(Boolean);
   // 歷史價格還不夠算慢線的那檔,computeTrend 回的 WATCH 不是真的出場訊號——照算的話目標變 0%,
@@ -5029,6 +5043,10 @@ function onClick(el){
         }));
       }
       tradeError = '';
+      // 「房貸借款」只是標記資金來源,不會自動記動用:借款餘額、利息、曝險比例都靠「紀錄」分頁的動用紀錄,
+      // 忘了記的話曝險比例被低估,曝險卡片會叫你再多借多買
+      const last = state.trades[state.trades.length - 1];
+      tradeNote = base.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(last.shares * last.price + last.fee)}),借款餘額跟曝險比例才會算對。` : '';
       tradeDraft = { date: d0.date, symbol: d0.symbol, action: d0.action, source: d0.source,
                      shares:'', price:'', amount:'', fee:'', note:'' };
       break;
