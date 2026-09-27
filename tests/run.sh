@@ -58,6 +58,12 @@ echo
 echo "=== 雲端同步(假後端) ==="
 node cloud.js | tail -3 || fail=1
 echo
+echo "=== 刪除紀錄(兩台裝置固定情境) ==="
+node tombs.js || fail=1
+echo
+echo "=== 兩台裝置隨機同步(6 組) ==="
+node twodevice.js 6 | tail -1 || fail=1
+echo
 echo "=== 離線時記的帳,關掉再打開 ==="
 node offline.js | tail -1 || fail=1
 echo

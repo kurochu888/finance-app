@@ -48,6 +48,9 @@ globalThis.A = {
 
 const bugs = [];
 const wait = ms => new Promise(r => setTimeout(r, ms));
+// 模擬「別台裝置寫入」:真的裝置推上去時會帶新的版本編號,_parent 是它看到的那一版(這裡就是雲端現在那份)
+let otherN = 0;
+const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); return d; };
 
 (async () => {
   // 1) 雲端已有資料 → 應該拉下來覆蓋本機
@@ -72,6 +75,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 
   // 3) 別台裝置改了 → 應該套用
   cloudDocs['state/finance'].assets[0].name = '另一台改的';
+  asOther(cloudDocs['state/finance']);
   snapCb({ exists:true, data: () => JSON.parse(JSON.stringify(cloudDocs['state/finance'])) });
   await wait(10);
   console.log('3. 別台的改動:', A.state.assets[0].name);
@@ -80,6 +84,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   // 4) 正在打字時,遠端改動要先擱著
   focused = { tagName:'INPUT' };
   cloudDocs['state/finance'].assets[0].name = '打字中來的';
+  asOther(cloudDocs['state/finance']);
   snapCb({ exists:true, data: () => JSON.parse(JSON.stringify(cloudDocs['state/finance'])) });
   await wait(10);
   const held = A.state.assets[0].name !== '打字中來的' && A.pendingRemote;
@@ -110,7 +115,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     // 本機刪掉一筆,雲端那邊沒動它:要維持刪掉
     A.state.transactions = A.state.transactions.filter(t => t.id !== 'ltx');
     A.scheduleSave();
-    const remote2 = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    const remote2 = asOther(JSON.parse(JSON.stringify(cloudDocs['state/finance'])));
     remote2.liabilities = [{ id:'rl', name:'遠端新增的負債', amount:10 }];
     A.applyRemote(remote2);
     if (A.state.transactions.some(t => t.id === 'ltx')) bugs.push('本機刪掉的交易被遠端那份加回來');
@@ -179,7 +184,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     Object.assign(A.state.leverage, { autoInterest: true, interestPosted: [last], annualRate: 2.4,
       draws: [{ id:'dd1', label:'x', amount:3000000, useDate: last + '-01', note:'', repayments:[] }] });
     await A.save(); await wait(10);                       // 兩台一致的起點
-    const fromA = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    const fromA = asOther(JSON.parse(JSON.stringify(cloudDocs['state/finance'])));
     fromA.transactions.push({ id:'fromA', date: m + '-01', cat:'房貸利息', desc:'槓桿借款利息(自動記入)', amount:-6000 });
     fromA.leverage.interestPosted.push(m);
     A.maybePostInterest();                                // B 自己也記了一筆(還在 400ms 存檔延遲裡)
@@ -197,7 +202,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     A.state = A.sampleData();
     A.state.netWorthHistory = A.state.netWorthHistory.filter(h => h.m !== m);
     await A.save(); await wait(10);
-    const fromA = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    const fromA = asOther(JSON.parse(JSON.stringify(cloudDocs['state/finance'])));
     fromA.netWorthHistory.push({ id:'nwA', m, v: 123, pv: 1, pnl: 0, loan: 0, items: [], auto: true });
     A.state.netWorthHistory.push({ id:'nwB', m, v: 456, pv: 1, pnl: 0, loan: 0, items: [], auto: true });
     A.onRemote(fromA);
