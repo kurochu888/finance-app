@@ -586,8 +586,9 @@ function normalize(raw){
   [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
     const it = s.instruments.find(x => x.id === id);
     if (!it) return;
-    if (!it.shares && num(L[sk])) it.shares = num(L[sk]);
-    if (!it.price && num(L[pk])) it.price = num(L[pk]);
+    // 跟標的本身的股數/股價一樣不收負數:以前照搬,讀第一次是負的、再讀一次才被夾成 0(壞資料壓測抓到 normalize 不冪等)
+    if (!it.shares && num(L[sk]) > 0) it.shares = num(L[sk]);
+    if (!it.price && num(L[pk]) > 0) it.price = num(L[pk]);
   });
   return s;
 }
@@ -614,8 +615,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-27 · 4e97c328a8';
-const BUILD_HASH = '4e97c328a8';
+const BUILD_VERSION = '2026-09-27 · 05b453752f';
+const BUILD_HASH = '05b453752f';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
