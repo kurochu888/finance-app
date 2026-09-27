@@ -411,7 +411,7 @@ const DEFAULT_LEVERAGE = {
   // marketHigh/marketCurrent/historicalHighValue/autoHigh:舊的跌幅觸發判斷用的欄位,
   // 那套邏輯已經拿掉,現在沒有任何 UI 讀寫它們(只是讓舊存檔資料讀得進來不出錯)。
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
-  stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, autoHigh:true,
+  stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, rateHistory:[], autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
@@ -567,6 +567,12 @@ function normalize(raw){
    'historicalHighValue','stressDeclinePct','creditLimit','annualRate'].forEach(k => {
     if (L[k] !== undefined) base[k] = Math.max(0, num(L[k]));   // 這些欄位沒有負值的意義
   });
+  // 過去各段利率(見 rateAt):日期壞掉的不收,照日期排好,同一天只留最後一筆
+  base.rateHistory = objs(L.rateHistory)
+    .map(e => ({ id: safeId(e.id), until: isoDate(str(e.until), ''), rate: Math.max(0, num(e.rate)) }))
+    .filter(e => e.until)
+    .sort((a, b) => a.until < b.until ? -1 : (a.until > b.until ? 1 : 0))
+    .filter((e, i, arr) => i === arr.length - 1 || e.until !== arr[i + 1].until);
   {
     const mapDraw = d => ({
       id: safeId(d.id),          // 新格式跟舊格式(tranches/core)兩條路都會經過這裡,id 檢查放這才不會漏
@@ -649,8 +655,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-27 · 05b453752f';
-const BUILD_HASH = '05b453752f';
+const BUILD_VERSION = '2026-09-27 · d9b48324c7';
+const BUILD_HASH = 'd9b48324c7';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -723,6 +729,7 @@ function keyedLists(st){
     out.push(['draws', L.draws, mergeKey]);
     L.draws.forEach(d => { if (d && Array.isArray(d.repayments)) out.push(['draws/' + mergeKey(d) + '/repayments', d.repayments, mergeKey]); });
   }
+  if (L && Array.isArray(L.rateHistory)) out.push(['rates', L.rateHistory, mergeKey]);
   return out;
 }
 function keySets(st){
@@ -1054,6 +1061,12 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
       restored = true;
     }
   });
+  // 過去各段利率同理:舊版分頁不認得,寫回來整個不見,過去的利息又會照目前利率重算
+  const rawL = raw.leverage && typeof raw.leverage === 'object' ? raw.leverage : null;
+  if (rawL && !Array.isArray(rawL.rateHistory) && prev.leverage && (prev.leverage.rateHistory || []).length){
+    next.leverage.rateHistory = JSON.parse(JSON.stringify(prev.leverage.rateHistory));
+    restored = true;
+  }
   const rawInst = new Map((Array.isArray(raw.instruments) ? raw.instruments : []).filter(x => x).map(x => [String(x.key || ''), x]));
   next.instruments.forEach(it => {
     const r = rawInst.get(it.key), p = (prev.instruments || []).find(x => x.key === it.key);
@@ -1856,23 +1869,53 @@ function defaultFee(action, gross){
   const broker = Math.max(20, gross * 0.001425);
   return Math.round(action === 'sell' ? broker + gross * 0.001 : broker);
 }
-/* 一筆借款從動用日到 until(預設今天),依「實際餘額」分段累積。
+/* 房貸利率會跟著升降息變。annualRate 是「目前」的利率;rateHistory 是過去各段 [{id, until, rate}]:
+   until 那天之前(不含)是 rate。某一天的利率 = 第一段 until 比它晚的,都沒有就是目前利率。
+   以前只有一個 annualRate,改了之後從動用日起全部照新利率重算,過去已經發生的利息跟著變(使用者回報)。 */
+function rateAt(L, d){
+  const past = (L.rateHistory || []).find(e => d < e.until);
+  return past ? past.rate : L.annualRate;
+}
+/* 餘額 balance 從 a 到 b(不含)的利息,中間碰到利率變動就分段 */
+function interestBetween(L, balance, a, b){
+  if (!(b > a) || !(balance > 0)) return 0;
+  const cuts = (L.rateHistory || []).map(e => e.until).filter(u => u > a && u < b);
+  let total = 0, cur = a;
+  cuts.concat(b).forEach(next => {
+    total += balance * (rateAt(L, cur) / 100) * (daysBetweenISO(cur, next) / 365.25);
+    cur = next;
+  });
+  return total;
+}
+/* 改「目前利率」:已經有借款在跑(動用日在今天之前)的話,先把「到今天為止是舊利率」記成過去一段,過去的利息才不會跟著變;
+   同一天再改(一個字一個字打)只換目前利率。還沒有借款在跑(剛設定)就直接改 */
+function setCurrentRate(L, v){
+  const today = todayISO();
+  const running = L.draws.some(d => d.useDate && d.useDate < today);
+  const hist = L.rateHistory || (L.rateHistory = []);
+  const last = hist[hist.length - 1];
+  if (running && v !== L.annualRate && !(last && last.until >= today)){
+    hist.push({ id: uid(), until: today, rate: L.annualRate });
+  }
+  L.annualRate = v;
+}
+/* 一筆借款從動用日到 until(預設今天),依「實際餘額」跟「當時的利率」分段累積。
    還款之後只對剩下的餘額繼續算。 */
-function accrue(item, annualPct, until = todayISO()){
+function accrue(item, L, until = todayISO()){
+  if (typeof L === 'number') L = { annualRate: L, rateHistory: [] };   // 直接給一個利率 = 全程同一個
   if (!item.useDate || until <= item.useDate) return 0;
-  const today = until;
   const events = effectiveRepayments(item).filter(r => r.date <= until);
   let balance = item.amount;
   let cursor = item.useDate;
   let total = 0;
   events.forEach(r => {
     if (r.date > cursor){
-      total += balance * (annualPct / 100) * (daysBetweenISO(cursor, r.date) / 365.25);
+      total += interestBetween(L, balance, cursor, r.date);
       cursor = r.date;
     }
     balance = Math.max(0, balance - r.amount);
   });
-  total += balance * (annualPct / 100) * (daysBetweenISO(cursor, today) / 365.25);
+  total += interestBetween(L, balance, cursor, until);
   return total;
 }
 /* 只認動用日之後、今天以前的還款 —— 未來日期的還款不能讓餘額先歸零,
@@ -1895,7 +1938,7 @@ function outstanding(item){
 /* 已動用的房貸,從動用日算到今天的累積利息 */
 function accruedInterest(){
   const L = state.leverage;
-  return sum(L.draws, t => accrue(t, L.annualRate));
+  return sum(L.draws, t => accrue(t, L));
 }
 /* 某一天當下,這筆借款還欠多少 */
 function balanceAt(item, dateISO){
@@ -1941,7 +1984,7 @@ function cashFlows(merge = true){   // merge=false 回傳合併前的明細(測�
     let cursor = item.useDate.slice(0, 7), paid = 0;
     for (let guard = 0; cursor <= thisMonth() && guard < 600; guard++){
       const end = monthEndISO(cursor), upTo = end > today ? today : end;
-      const acc = accrue(item, L.annualRate, upTo);
+      const acc = accrue(item, L, upTo);
       add(upTo, -(acc - paid));
       paid = acc;
       cursor = shiftMonth(cursor, 1);
@@ -2006,7 +2049,7 @@ function posSignature(){
   return JSON.stringify([
     state.trades,
     state.instruments.map(it => [it.id, it.price, it.shares, it.leverage]),
-    L.draws, L.annualRate, todayISO()
+    L.draws, L.annualRate, L.rateHistory, todayISO()
   ]);
 }
 
@@ -2714,7 +2757,8 @@ function renderHelp(){
       <h4>為什麼一定要扣利息</h4>
       <p>借錢買股,利息每天都在跑。不扣的話,槓桿部位看起來會永遠比實際好看。
       利息從每一筆動用記錄的動用日算到今天,而且是<strong>依實際餘額分段計算</strong> ——
-      你記了還款之後,只對剩下的部分繼續算。</p>
+      你記了還款之後,只對剩下的部分繼續算。<strong>利率也分段</strong>:銀行調利率(升降息)時直接改「目前年利率」,
+      已經借出去的錢今天以前照舊利率、今天起照新利率,過去的利息不會跟著重算;生效日不是今天的話,改「過去的利率」那段的日期。</p>
       <h4>手續費</h4>
       <p>留空的話自動用 0.1425%(最低 20 元)估算,賣出再加 0.1% 證交稅。填了就用你填的。</p>
     </div>
@@ -3649,7 +3693,7 @@ function renderDrawRecords(){
       ` : t.useDate ? `
         <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
           <span class="val ${t.balance ? '' : 'pos'}" id="out-balance-${t.id}">${t.balance ? 'NT$ ' + fmt(t.balance) : '已還清'}</span></div>
-        <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L.annualRate))}</span><span class="val"></span></div>
+        <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L))}</span><span class="val"></span></div>
       ` : ''}
       <div class="grid2">
         <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="draw-date-${t.id}" value="${esc(t.useDate)}"></div>
@@ -4564,8 +4608,20 @@ function renderLeverage(){
       <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
       <div class="grid2" style="margin-top:8px;">
         <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>
-        <div class="field"><label>年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-annualRate" value="${L.annualRate || ''}"></div>
+        <div class="field"><label>目前年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lev-annualRate" value="${L.annualRate || ''}"></div>
       </div>
+      ${(L.rateHistory || []).length ? `
+      <div class="muted" style="margin-top:6px;">過去的利率(那段期間的利息照當時的利率算):</div>
+      ${L.rateHistory.map((e, i) => `
+      <div class="muted" style="margin-top:6px; font-size:12px;">${i ? esc(L.rateHistory[i - 1].until) + ' 起' : '最早'},到下面這天之前:</div>
+      <div class="erow" style="margin-top:4px; flex-wrap:nowrap;">
+        <input type="date" data-k="rate-until-${e.id}" value="${esc(e.until)}" style="flex:1 1 0; min-width:0;">
+        <input type="number" inputmode="decimal" step="0.01" data-k="rate-val-${e.id}" value="${e.rate}" style="flex:0 0 72px; width:72px; min-width:0;">
+        <span class="muted">%</span>
+        ${xDel('del-rate', e.id)}
+      </div>`).join('')}` : ''}
+      <div class="muted" style="margin-top:6px;">銀行調利率時直接改「目前年利率」就好:已經借出去的錢,今天以前的利息照舊利率算,今天起照新利率。
+        生效日不是今天的話,改上面那段的日期。</div>
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
       <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
@@ -4639,7 +4695,7 @@ function maybePostInterest(){
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
     const balance = m === cur ? computeLeverage().usedAmount : sum(L.draws, d => balanceAt(d, m + '-01'));
-    const amt = balance * (L.annualRate / 100) / 12;
+    const amt = balance * (rateAt(L, m + '-01') / 100) / 12;   // 補記過去的月份用那個月的利率
     if (!(amt > 0)) continue;
     state.transactions.push({
       id: uid(),
@@ -4672,6 +4728,18 @@ function onField(key, el){
   else if (kind === 'nh'){
     const h = findById(state.netWorthHistory, rest);
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
+  }
+  else if (kind === 'lev' && rest === 'annualRate'){
+    if (String(el.value).trim() === '') return;          // 清空準備打新數字的那一下不算
+    setCurrentRate(state.leverage, Math.max(0, num(el.value)));
+  }
+  else if (kind === 'rate'){                       // 過去各段利率:rate-until-<id> / rate-val-<id>
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), rid = rest.slice(cut + 1);
+    const e = findById(state.leverage.rateHistory || [], rid);
+    if (e){
+      if (what === 'until'){ const d = isoDate(el.value, ''); if (d) e.until = d; state.leverage.rateHistory.sort((a, b) => a.until < b.until ? -1 : 1); }
+      else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
+    }
   }
   else if (kind === 'lev'){ state.leverage[rest] = Math.max(0, num(el.value)); }
   else if (kind === 'in'){                       // 標的清單,用內部 key 定位
@@ -5076,7 +5144,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument'];
+const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
@@ -5097,6 +5165,10 @@ function onClick(el){
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
+    case 'del-rate':   // 刪掉一段過去的利率:那段期間改照下一段(或目前)的利率算
+      if (needsConfirm('del-rate:' + id)) return;
+      state.leverage.rateHistory = (state.leverage.rateHistory || []).filter(e => e.id !== id);
+      break;
     case 'del-hist': if (needsConfirm('del-hist:' + id)) return; state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
     case 'snap-networth': {
       const m = thisMonth();
