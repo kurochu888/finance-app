@@ -645,8 +645,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-27 · 21311eb3f8';
-const BUILD_HASH = '21311eb3f8';
+const BUILD_VERSION = '2026-09-27 · dad8ec19c5';
+const BUILD_HASH = 'dad8ec19c5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4488,6 +4488,7 @@ function maybePostInterest(){
 
 /* ===================== 輸入處理 ===================== */
 const findById = (list, id) => list.find(x => x.id === id);
+const idEditStash = new Map();   // 改標的代號途中收起來的原本歷史(見 onField 的 in-id),改回原代號就還回去
 
 function onField(key, el){
   const dash = key.indexOf('-');
@@ -4512,18 +4513,31 @@ function onField(key, el){
       if (what === 'id'){
         const next = el.value.trim();
         const taken = state.instruments.some(x => x.key !== it.key && x.id === next);
-        if (next && !taken){
+        if (next && next === it.id){
+          // 代號其實沒變(多打一個空白又刪掉):什麼都不做。以前照樣清掉價格歷史跟「上次看過的狀態」
+        }else if (next && !taken){
           const prev = it.id;
           state.trades.forEach(t => { if (t.symbol === prev) t.symbol = next; });
           if (tradeDraft.symbol === prev) tradeDraft.symbol = next;
+          // 欄位是每打一個字就處理一次:改「00631L」刪掉 L 再打回去,中間的「00631」會把歷史清掉,
+          // 最後代號沒變、歷史卻沒了(訊號跟曝險卡片變「歷史不夠」,提醒的基準也丟了)。第一次改之前先收起來,改回原代號就還回去
+          if (!idEditStash.has(it.key)) idEditStash.set(it.key, JSON.parse(JSON.stringify({ id: prev, priceHistory: it.priceHistory,
+            splits: it.splits, splitsAcked: it.splitsAcked, lastSeenStatus: it.trend.lastSeenStatus, lastSeenLayers: it.trend.lastSeenLayers, lastSeenDate: it.trend.lastSeenDate })));
+          const back = idEditStash.get(it.key);
           it.id = next;
-          it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
-          it.splits = [];
-          // 「上次看過的狀態」也是舊代號的:留著的話,新代號的歷史補齊後會跳「狀態從(舊代號的)X 變成 Y」的提醒
-          it.splitsAcked = [];
-          it.trend.lastSeenStatus = '';
-          it.trend.lastSeenLayers = -1;
-          it.trend.lastSeenDate = '';
+          if (back.id === next){
+            it.priceHistory = back.priceHistory; it.splits = back.splits; it.splitsAcked = back.splitsAcked;
+            Object.assign(it.trend, { lastSeenStatus: back.lastSeenStatus, lastSeenLayers: back.lastSeenLayers, lastSeenDate: back.lastSeenDate });
+            idEditStash.delete(it.key);
+          }else{
+            it.priceHistory = [];   // 舊歷史是抓舊代號的,換代號後不再有效
+            it.splits = [];
+            // 「上次看過的狀態」也是舊代號的:留著的話,新代號的歷史補齊後會跳「狀態從(舊代號的)X 變成 Y」的提醒
+            it.splitsAcked = [];
+            it.trend.lastSeenStatus = '';
+            it.trend.lastSeenLayers = -1;
+            it.trend.lastSeenDate = '';
+          }
           levMsg = '';
           structural = true;
         }else if (taken){
@@ -4531,7 +4545,7 @@ function onField(key, el){
         }
       }
       else if (what === 'name') it.name = el.value;
-      else if (what === 'lev') it.leverage = num(el.value);
+      else if (what === 'lev'){ const v = num(el.value); if (v > 0) it.leverage = v; }   // 空白/0 保留原值:清空的那一下正2 會變 0 倍,曝險卡片漏掉這檔
       else if (what === 'price') it.price = Math.max(0, num(el.value));
       else if (what === 'shares') it.shares = Math.max(0, num(el.value));
     }
@@ -4542,6 +4556,9 @@ function onField(key, el){
     const it = findInstrumentByKey(ikey);
     if (it && it.trend){
       const v = num(el.value);
+      // 空白/0 保留原值(跟曝險目標設定一樣):欄位是每打一個字就存,想把 120 改成 100 先全選刪掉的那一下,
+      // 以前會存成 1 日均線/1 層,這時候離開欄位或 app 被關掉,訊號就照 1 日均線算(壓測抓到)
+      if (['maFast', 'maSlow', 'pyramidLevels'].includes(what) && !(v > 0)) return;
       if (what === 'maFast' || what === 'maSlow') it.trend[what] = Math.max(1, Math.round(v));
       else if (what === 'pyramidLevels') it.trend[what] = Math.max(1, Math.round(v));
       else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];

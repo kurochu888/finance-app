@@ -597,6 +597,36 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
   }catch(e){ bugs.push('抓報價測試例外:' + e.message); }
   global.setTimeout = realST;
 
+  // 改標的代號:多打空白、刪一個字再打回去,代號最後沒變,價格歷史跟「上次看過的狀態」不能被清掉;真的改成別的代號才清
+  {
+    A.state = A.sampleData();
+    const it = A.state.instruments[0], key = it.key, id0 = it.id, n0 = it.priceHistory.length;
+    it.trend.lastSeenStatus = 'HOLD'; it.trend.lastSeenLayers = 0;
+    const nTrades = A.state.trades.filter(t => t.symbol === id0).length;
+    A.onField('in-id-' + key, { value: id0 + ' ' });
+    if (it.priceHistory.length !== n0 || it.trend.lastSeenStatus !== 'HOLD') bugs.push('代號後面多打一個空白(代號沒變),價格歷史/提醒基準被清掉了');
+    A.onField('in-id-' + key, { value: id0.slice(0, -1) });
+    A.onField('in-id-' + key, { value: id0 });
+    const cur = A.state.instruments.find(x => x.key === key);
+    if (cur.id !== id0 || cur.priceHistory.length !== n0 || cur.trend.lastSeenStatus !== 'HOLD' || cur.trend.lastSeenLayers !== 0)
+      bugs.push(`代號刪一個字再打回去,價格歷史/提醒基準沒有還原(歷史 ${cur.priceHistory.length}/${n0}、基準 ${cur.trend.lastSeenStatus})`);
+    if (A.state.trades.filter(t => t.symbol === id0).length !== nTrades) bugs.push('代號改來改去之後,買賣紀錄的代號沒有跟回來');
+    A.onField('in-id-' + key, { value: 'ZZ99' });
+    if (cur.priceHistory.length !== 0 || cur.trend.lastSeenStatus !== '') bugs.push('真的改成別的代號,舊代號的歷史應該清掉');
+  }
+
+  // 設定欄位清空的那一下(準備打新數字):訊號參數跟槓桿倍數要保留原值,不能變成 1 日均線/0 倍
+  {
+    A.state = A.sampleData();
+    const it = A.state.instruments[0], key = it.key, before = JSON.stringify(it.trend), lev = it.leverage;
+    ['maFast', 'maSlow', 'pyramidLevels'].forEach(w => A.onField('sig-' + w + '-' + key, { value: '' }));
+    A.onField('in-lev-' + key, { value: '' });
+    if (JSON.stringify(it.trend) !== before) bugs.push('訊號參數欄位清空時被存成 1:' + JSON.stringify(it.trend));
+    if (it.leverage !== lev) bugs.push(`槓桿倍數欄位清空時被存成 ${it.leverage}`);
+    A.onField('sig-maFast-' + key, { value: '100' });
+    if (it.trend.maFast !== 100) bugs.push('清空之後打新數字沒有生效');
+  }
+
   // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣
   {
     A.state = A.emptyState();
