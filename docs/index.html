@@ -646,8 +646,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-27 · 62223c828a';
-const BUILD_HASH = '62223c828a';
+const BUILD_VERSION = '2026-09-27 · a9e0758b18';
+const BUILD_HASH = 'a9e0758b18';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -676,15 +676,123 @@ let syncBase = '';
    下次打開第一次同步是「雲端那份整份蓋掉本機」,離線記的就不見了(壓測重現)。記下帳號,換帳號登入時不套用。 */
 const SYNC_BASE_KEY = 'financeSyncBase';
 let cloudUid = '';
+/* 版本編號(2026-09 兩台裝置隨機同步壓測抓到的):雲端是整份覆蓋的。A 推了 X、B 還沒看到 X 就推了 Y,雲端只剩 Y;
+   A 收到 Y 時如果拿「自己剛推的 X」當基準,A 看起來沒有新修改、整份接受 Y,A 在 X 裡新增的就不見了。
+   反過來,B 看過 X 才刪掉一筆再推 Y 的話,基準又必須是 X(不然被刪的那筆會被當成 A 新增的救回來)。
+   兩種情況 A 收到的 Y 長得一樣,差別只在 Y 是從哪個版本改出來的——所以每次推上去都附 _rev(這一版的編號)
+   跟 _parent(推的那台當時的基準是哪一版),收到時用 _parent 找回正確的共同基準。舊版分頁寫的沒有這兩個欄位,
+   就照舊用 syncBase。這兩個欄位不進 state(normalize 會丟掉),回音比對跟基準都用去掉它們的內容。 */
+let syncRev = '';                 // syncBase 是哪一版
+const myRevs = [];                // 自己最近推的版本編號:認回音用(內容剛好跟別台推的一樣時,不能當成自己的回音忽略)
+const knownRevs = new Map();      // 最近見過的版本:編號 → 內容(canon),找 _parent 用
+function rememberRev(rev, c){
+  if (!rev || !c) return;
+  knownRevs.delete(rev); knownRevs.set(rev, c);
+  while (knownRevs.size > 12) knownRevs.delete(knownRevs.keys().next().value);
+}
+/* 雲端那份拆成「內容」跟版本資訊 */
+function splitRev(data){
+  if (!data || typeof data !== 'object') return { clean: data, rev: '', parent: '', tomb: null };
+  const { _rev, _parent, _tomb, ...clean } = data;
+  return { clean, rev: typeof _rev === 'string' ? _rev : '', parent: typeof _parent === 'string' ? _parent : '', tomb: _tomb };
+}
+/* 刪除紀錄(tombstone,2026-09 兩台隨機同步壓測抓到的「交叉合併」):A、B 各自推了一版沒看到對方的,
+   兩邊各自合併之後 B 又刪掉一筆,A 收到時不管拿哪一版當共同基準,都有情況會把 B 刪掉的當成 A 新增的救回來
+   (或反過來把 A 新增的當成被刪掉)——單一共同基準在交叉合併時就是會判錯。所以用 id 對應的清單改成:
+   刪掉時記下「路徑|key」跟時間,跟著雲端那份一起傳(_tomb);合併時「兩邊有的都留、任何一邊刪過的都刪」,
+   新增跟刪除就不再靠猜基準。價格歷史、每日快照這類照日期的清單會自動修剪/重抓,不記。
+   記在 localStorage(TOMB_KEY),保留 180 天、最多 4000 筆;舊版分頁寫的沒有 _tomb,就照原本的三方合併。
+   值是時間:正的 = 那時刪掉,負的 = 那時又重新出現(從舊備份還原、匯入),兩台合併時比時間,晚的算數。 */
+const TOMB_KEY = 'financeTombstones';
+const TOMB_DAYS = 180, TOMB_MAX = 4000;
+let tombs = (() => { try{ const t = JSON.parse(localStorage.getItem(TOMB_KEY) || '{}'); return t && typeof t === 'object' && !Array.isArray(t) ? t : {}; }catch(e){ return {}; } })();
+let lastSavedObj = null;          // 上次存檔(或套用雲端)時的內容,存檔時比對出這次刪掉了哪些
+/* 用 id 對應、要記刪除的清單:[路徑, 清單, 取 key 的函式]。標的用內部 key(改代號不算刪掉重建) */
+function keyedLists(st){
+  const out = [];
+  if (!st || typeof st !== 'object') return out;
+  ['transactions', 'trades', 'assets', 'liabilities', 'netWorthHistory', 'budgets'].forEach(k => {
+    if (Array.isArray(st[k])) out.push([k, st[k], mergeKey]);
+  });
+  if (Array.isArray(st.instruments)) out.push(['instruments', st.instruments, x => x && x.key != null ? 'k:' + x.key : null]);
+  const L = st.leverage;
+  if (L && Array.isArray(L.draws)){
+    out.push(['draws', L.draws, mergeKey]);
+    L.draws.forEach(d => { if (d && Array.isArray(d.repayments)) out.push(['draws/' + mergeKey(d) + '/repayments', d.repayments, mergeKey]); });
+  }
+  return out;
+}
+function keySets(st){
+  const m = new Map();
+  keyedLists(st).forEach(([path, list, kf]) => m.set(path, new Set(list.map(kf).filter(k => k != null))));
+  return m;
+}
+const isDeleted = k => tombs[k] > 0;
+/* 從上次存檔到現在刪掉的記成刪除;記過刪除、現在又出現的(還原備份、匯入)記成重新出現 */
+function recordTombs(prev, cur){
+  const now = Date.now(), before = keySets(prev), after = keySets(cur);
+  let changed = false;
+  before.forEach((keys, path) => {
+    const still = after.get(path) || new Set();
+    keys.forEach(k => { if (!still.has(k)){ tombs[path + '|' + k] = now; changed = true; } });
+  });
+  after.forEach((keys, path) => {
+    const was = before.get(path) || new Set();
+    keys.forEach(k => { if (!was.has(k) && isDeleted(path + '|' + k)){ tombs[path + '|' + k] = -now; changed = true; } });
+  });
+  if (changed) saveTombs();
+}
+function saveTombs(){
+  const cutoff = Date.now() - TOMB_DAYS * 86400000;
+  let list = Object.entries(tombs).filter(([, t]) => typeof t === 'number' && Math.abs(t) > cutoff);
+  if (list.length > TOMB_MAX) list = list.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, TOMB_MAX);
+  tombs = Object.fromEntries(list);
+  try{ localStorage.setItem(TOMB_KEY, JSON.stringify(tombs)); }catch(e){}
+}
+function mergeTombs(remoteTomb){
+  if (!remoteTomb || typeof remoteTomb !== 'object' || Array.isArray(remoteTomb)) return;
+  let changed = false;
+  Object.entries(remoteTomb).forEach(([k, t]) => {
+    if (typeof t === 'number' && Number.isFinite(t) && !(Math.abs(tombs[k] || 0) >= Math.abs(t))){ tombs[k] = t; changed = true; }
+  });
+  if (changed) saveTombs();
+}
+/* 合併完的結果照刪除紀錄補齊:有刪除紀錄的拿掉;雲端那份有、沒有刪除紀錄、合併結果卻沒有的補回來
+   (三方合併以為「本機刪掉了」,其實本機從沒刪過——交叉合併時基準選錯就會這樣)。
+   只補雲端那邊的,不補本機那邊的:剛更新到有刪除紀錄的版本時還沒有任何紀錄,本機資料比較舊的那台
+   (裡面還有另一台早就刪掉的東西)會把它們全部救回來;本機新增的交給三方合併本來的規則。回傳有沒有動到 */
+function reconcileTombs(merged, remote){
+  let changed = false;
+  const lists = new Map(keyedLists(merged).map(([path, list, kf]) => [path, { list, kf }]));
+  const sides = [remote].map(st => new Map(keyedLists(st).map(([path, list, kf]) => [path, list.map(x => [kf(x), x])])));
+  // 先補:合併結果也有這個清單時才補(例如某筆動用整個被刪了,它的還款清單就不用補)
+  lists.forEach(({ list, kf }, path) => {
+    const have = new Set(list.map(kf));
+    sides.forEach(side => (side.get(path) || []).forEach(([k, x]) => {
+      if (k == null || have.has(k) || isDeleted(path + '|' + k)) return;
+      list.push(JSON.parse(JSON.stringify(x))); have.add(k); changed = true;
+    }));
+  });
+  // 再刪
+  keyedLists(merged).forEach(([path, list, kf]) => {
+    for (let i = list.length - 1; i >= 0; i--){
+      const k = kf(list[i]);
+      if (k != null && isDeleted(path + '|' + k)){ list.splice(i, 1); changed = true; }
+    }
+  });
+  return changed;
+}
 function rememberPendingBase(){
   if (!syncBase) return;
-  try{ if (!localStorage.getItem(SYNC_BASE_KEY)) localStorage.setItem(SYNC_BASE_KEY, JSON.stringify({ uid: cloudUid, base: syncBase })); }catch(e){}
+  try{ if (!localStorage.getItem(SYNC_BASE_KEY)) localStorage.setItem(SYNC_BASE_KEY, JSON.stringify({ uid: cloudUid, base: syncBase, rev: syncRev })); }catch(e){}
 }
 function forgetPendingBase(){ try{ localStorage.removeItem(SYNC_BASE_KEY); }catch(e){} }
 function loadPendingBase(){
   try{
     const p = JSON.parse(localStorage.getItem(SYNC_BASE_KEY) || 'null');
-    return p && p.uid === cloudUid && typeof p.base === 'string' ? p.base : '';
+    if (!(p && p.uid === cloudUid && typeof p.base === 'string')) return '';
+    if (typeof p.rev === 'string' && p.rev){ syncRev = p.rev; rememberRev(p.rev, p.base); }
+    return p.base;
   }catch(e){ return ''; }
 }
 
@@ -736,15 +844,20 @@ function scheduleSave(){
 }
 async function save(){
   const data = JSON.parse(JSON.stringify(state));
+  if (lastSavedObj) recordTombs(lastSavedObj, data);
+  lastSavedObj = data;
   if (canon(data) !== syncBase) rememberPendingBase();   // 推成功之前,這份修改只在本機
   const ok = writeLocal(data);
   if (cloud){
     try{
       lastPushed = canon(data);
       recentPushed = recentPushed.concat(lastPushed).slice(-8);
-      const pushing = lastPushed;
-      await cloud.set(data);
+      const pushing = lastPushed, rev = uid();
+      rememberRev(rev, pushing);
+      myRevs.push(rev); if (myRevs.length > 16) myRevs.shift();
+      await cloud.set(Object.assign({}, data, { _rev: rev, _parent: syncRev, _tomb: tombs }));
       syncBase = pushing;
+      syncRev = rev;
       if (canon(JSON.parse(JSON.stringify(state))) === pushing) forgetPendingBase();   // 推上去之後又改了的話先留著
       storageMode = 'cloud';
       updateStorageStatus();
@@ -792,22 +905,38 @@ function updateStorageStatus(){
 /* 收到雲端資料:正在打字就先擱著,等游標離開欄位再套用 */
 function onRemote(data){
   if (!data || !looksLikeState(data)) return;   // 壞掉的雲端資料不要拿來蓋本機
-  const c = canon(data);
-  if (c === lastPushed || recentPushed.includes(c)) return;   // 自己的回音(包括晚到的舊回音)
+  const { clean, rev } = splitRev(data), c = canon(clean);
+  // 自己的回音(包括晚到的舊回音)。有版本編號就認編號:別台推的內容剛好跟自己推過的一樣(例如兩邊都刪光)時,
+  // 以前照內容當成回音忽略,那一版沒記下來,之後收到從那版改出來的就找不到共同基準,把本機新增的判成被刪掉(壓測抓到)
+  if (rev ? myRevs.includes(rev) : (c === lastPushed || recentPushed.includes(c))) return;
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){
     pendingRemote = data;
     return;
   }
   applyRemote(data);
 }
-function applyRemote(data){
+function applyRemote(raw){
   clearPosMemo();
+  const { clean: data, rev, parent, tomb } = splitRev(raw);
   const prev = state;
+  // 按了刪除、還在 400ms 存檔延遲裡就收到雲端:這些刪除還沒記,先記下來,不然下面補齊時會從雲端那份補回來
+  if (lastSavedObj) recordTombs(lastSavedObj, JSON.parse(JSON.stringify(prev)));
+  mergeTombs(tomb);
   state = normalize(data);
   const restored = keepFieldsOldVersionsDrop(prev, data, state);
   const remoteC = canon(JSON.parse(JSON.stringify(state)));
-  const kept = mergeLocalEdits(prev, state);
+  // 共同基準:雲端這份是從哪一版改出來的(見 knownRevs 的說明);不知道就用上次一致的那份
+  let kept = mergeLocalEdits(prev, state, (parent && knownRevs.get(parent)) || syncBase);
+  // 用 id 對應的清單照刪除紀錄補齊:兩邊有的都留、刪過的都刪(交叉合併時單一基準會判錯,見 tombs)
+  if (reconcileTombs(state, normalize(data))){
+    state = normalize(JSON.parse(JSON.stringify(state)));
+    if (canon(JSON.parse(JSON.stringify(state))) !== remoteC) kept = true;
+  }
+  saveTombs();
+  lastSavedObj = JSON.parse(JSON.stringify(state));
   syncBase = remoteC;
+  syncRev = rev;
+  rememberRev(rev, remoteC);
   if (!kept) forgetPendingBase();   // 本機沒有另外的修改了,這份就是雲端那份
   lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
@@ -820,12 +949,12 @@ function applyRemote(data){
    清單逐筆用 id 對應(本機新增/修改/刪除的照本機,雲端新增/修改的照雲端),兩邊改到同一個值時以眼前這台為準。
    不能整個清單二選一:別台自動記的房貸利息(交易 + interestPosted)會被這台剛新增的交易整批蓋掉,
    interestPosted 卻留著,那筆利息就永遠不會再補記。回傳有沒有留下本機的東西。 */
-function mergeLocalEdits(local, next){
-  if (!syncBase || !local) return false;
+function mergeLocalEdits(local, next, baseStr = syncBase){
+  if (!baseStr || !local) return false;
   const localData = JSON.parse(JSON.stringify(local));
-  if (canon(localData) === syncBase) return false;   // 本機沒有未推上去的修改
+  if (canon(localData) === baseStr) return false;   // 從共同基準之後本機沒有另外的修改
   let base;
-  try{ base = JSON.parse(syncBase); }catch(e){ return false; }
+  try{ base = JSON.parse(baseStr); }catch(e){ return false; }
   const remoteData = JSON.parse(JSON.stringify(next));
   const merged = merge3(localData, base, remoteData);
   dropDuplicateAutoInterest(merged, remoteData, base);
@@ -851,7 +980,12 @@ function dropLocalCopies(merged, remote, base, field, keyOf){
   const remoteIds = new Set(list(remote).map(x => x && x.id)), baseIds = new Set(list(base).map(x => x && x.id));
   const remoteKeys = new Set(list(remote).map(keyOf).filter(k => k != null));
   if (!Array.isArray(merged[field]) || !remoteKeys.size) return;
-  merged[field] = merged[field].filter(x => { const k = keyOf(x); return !(k != null && remoteKeys.has(k) && !remoteIds.has(x.id) && !baseIds.has(x.id)); });
+  const now = Date.now();
+  merged[field] = merged[field].filter(x => {
+    const k = keyOf(x), drop = k != null && remoteKeys.has(k) && !remoteIds.has(x.id) && !baseIds.has(x.id);
+    if (drop) tombs[field + '|' + mergeKey(x)] = now;   // 記成刪除,不然合併後的補齊(reconcileTombs)又會把它加回來
+    return !drop;
+  });
 }
 const mergeKey = x => (x && typeof x === 'object' && !Array.isArray(x))
   ? (x.id != null ? 'i:' + x.id : x.key != null ? 'k:' + x.key : x.d != null ? 'd:' + x.d : x.m != null ? 'm:' + x.m : null)
@@ -1033,7 +1167,8 @@ async function connectCloud(){
         authUser = user;
         authBusy = false;
         if (user){
-          if (cloudUid && cloudUid !== user.uid) syncBase = '';   // 換了帳號:上一個帳號的基準不能拿來合併
+          // 換了帳號:上一個帳號的基準、刪除紀錄都不能拿來合併(預設標的的內部 key 是固定的,上個帳號刪過會連帶刪掉這個帳號的)
+          if (cloudUid && cloudUid !== user.uid){ syncBase = ''; syncRev = ''; knownRevs.clear(); tombs = {}; saveTombs(); }
           cloudUid = user.uid;
           cloud = fb.docApi();
           cloudBacktestDoc = fb.namedDoc('backtestHistory');
@@ -5229,6 +5364,7 @@ function init(){
 
   const local = readLocal();
   if (local) state = normalize(local);
+  lastSavedObj = JSON.parse(JSON.stringify(state));   // 刪除紀錄從這裡開始比(見 recordTombs)
   loadBacktestHistoryCache();
 
   const content = document.getElementById('content');
