@@ -715,10 +715,16 @@ function saveTombs(){
   tombs = Object.fromEntries(list);
   try{ localStorage.setItem(TOMB_KEY, JSON.stringify(tombs)); }catch(e){}
 }
+/* 傳上雲端的格式:[{k, t}] 陣列。不用「key 當欄位名稱」的物件:key 裡有 / | : 這些字元,
+   Firestore 的欄位名稱有限制,萬一不收,每次存檔都失敗、默默退回只存本機,同步整個停掉卻看不出來 */
+const tombsWire = () => Object.entries(tombs).map(([k, t]) => ({ k, t }));
 function mergeTombs(remoteTomb){
-  if (!remoteTomb || typeof remoteTomb !== 'object' || Array.isArray(remoteTomb)) return;
+  if (!remoteTomb || typeof remoteTomb !== 'object') return;
+  const entries = Array.isArray(remoteTomb)
+    ? remoteTomb.filter(x => x && typeof x.k === 'string').map(x => [x.k, x.t])
+    : Object.entries(remoteTomb);
   let changed = false;
-  Object.entries(remoteTomb).forEach(([k, t]) => {
+  entries.forEach(([k, t]) => {
     if (typeof t === 'number' && Number.isFinite(t) && !(Math.abs(tombs[k] || 0) >= Math.abs(t))){ tombs[k] = t; changed = true; }
   });
   if (changed) saveTombs();
@@ -821,7 +827,7 @@ async function save(){
       const pushing = lastPushed, rev = uid();
       rememberRev(rev, pushing);
       myRevs.push(rev); if (myRevs.length > 16) myRevs.shift();
-      await cloud.set(Object.assign({}, data, { _rev: rev, _parent: syncRev, _tomb: tombs }));
+      await cloud.set(Object.assign({}, data, { _rev: rev, _parent: syncRev, _tomb: tombsWire() }));
       syncBase = pushing;
       syncRev = rev;
       if (canon(JSON.parse(JSON.stringify(state))) === pushing) forgetPendingBase();   // 推上去之後又改了的話先留著
