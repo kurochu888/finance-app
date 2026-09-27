@@ -30,7 +30,7 @@ const src = require('fs').readFileSync(__dirname + '/../docs/index.html', 'utf8'
 const js = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 const A = (0, eval)('(() => {' + js.replace(/\ninit\(\);\s*$/, '\n') + `; return { init, normalize,
   get state(){ return state; }, set state(v){ state = v; },
-  onForeground, get draft(){ return draft; }, get tradeDraft(){ return tradeDraft; }, get viewMonth(){ return viewMonth; } }; })()`);
+  onForeground, get repayDraft(){ return repayDraft; }, get draft(){ return draft; }, get tradeDraft(){ return tradeDraft; }, get viewMonth(){ return viewMonth; } }; })()`);
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const bugs = [];
 
@@ -71,6 +71,7 @@ const bugs = [];
   if (quoteCalls === before) bugs.push('隔天切回前景沒有抓新收盤價(🔔 還是前一天的訊號)');
   if (A.draft.date !== '2026-10-02') bugs.push('記帳的預設日期還停在前一天:' + A.draft.date);
   if (A.tradeDraft.date !== '2026-10-02') bugs.push('買賣紀錄的預設日期還停在前一天:' + A.tradeDraft.date);
+  if (A.repayDraft.date !== '2026-10-02') bugs.push('還款的預設日期還停在前一天:' + A.repayDraft.date);
   if (A.viewMonth !== '2026-10') bugs.push('記帳頁還停在上個月:' + A.viewMonth);
   if (!s.leverage.interestPosted.includes('2026-10')) bugs.push('跨月切回前景沒有記當月的房貸利息');
   if (!s.dailyHistory.some(h => h.d === '2026-10-02')) bugs.push('切回前景沒有記當天的每日快照');

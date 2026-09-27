@@ -530,6 +530,19 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
   if (A.state.trades[0].shares !== 1000) return '選「不用換算」卻動了資料';
   A.renderAll();
   if (/分割過/.test(document.getElementById('content').innerHTML)) return '選了不用換算,提醒還在';
+  // 從價格反推的比例有誤差(0.04348 → 1/22.999):提醒寫 ×23,換算也要剛好 ×23(以前乘 22.999,1000 股變 22999 股)
+  it = mk(); it.splits = [{ d:'2026-03-10', ratio: 0.04348 }];
+  A.renderAll();
+  if (!/1 拆 23/.test(document.getElementById('content').innerHTML)) return '比例 0.04348 的提醒應該寫「1 拆 23」';
+  A.onClick({ dataset:{ act:'split-convert', id: it.key + '|2026-03-10' } });
+  if (A.state.trades[0].shares !== 23000) return '比例 0.04348 換算後應該剛好 23000 股(提醒寫 ×23),得到 ' + A.state.trades[0].shares;
+  // 反分割(2 合 1):提醒要寫「2 合 1」、股數減半
+  it = mk(); it.splits = [{ d:'2026-03-10', ratio: 2 }];
+  A.renderAll();
+  const html = document.getElementById('content').innerHTML;
+  if (!/2 合 1/.test(html) || /1 拆 0/.test(html)) return '反分割的提醒應該寫「2 合 1」';
+  A.onClick({ dataset:{ act:'split-convert', id: it.key + '|2026-03-10' } });
+  if (A.state.trades[0].shares !== 500 || Math.abs(A.state.trades[0].price - 880) > 0.01) return `反分割換算後應該 500 股 @ 880,得到 ${A.state.trades[0].shares} @ ${A.state.trades[0].price}`;
   return '';
 });
 
