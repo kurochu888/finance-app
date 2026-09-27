@@ -698,6 +698,17 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     if (!/新增一筆房貸動用/.test(A.renderTrades())) bugs.push('記了一筆房貸買進,沒有提醒要去記動用');
   }
 
+  // 加碼層數打錯成超大數字:設定頁不能當掉,層數夾在上限內
+  {
+    A.state = A.sampleData();
+    const it = A.state.instruments[0];
+    A.onField('sig-pyramidLevels-' + it.key, { value: '99999999999999' });
+    try{ A.currentTab = 'leverage'; ['setup', 'signal', 'overview'].forEach(t => { A.levTab = t; A.renderAll(); }); }catch(e){ bugs.push('加碼層數填超大數字,設定頁當掉:' + e.message); }
+    if (!(it.trend.pyramidLevels <= 10)) bugs.push('加碼層數沒有夾在上限內:' + it.trend.pyramidLevels);
+    const n = A.normalize({ leverage: { exposureTargets: { byLayer: new Array(5000).fill(100), hold: 130 } } });
+    if (n.leverage.exposureTargets.byLayer.length > 10) bugs.push('匯入的曝險目標層數沒有夾在上限內');
+  }
+
   // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣
   {
     A.state = A.emptyState();
