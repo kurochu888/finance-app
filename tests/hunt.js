@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard,
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot,
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -596,6 +596,19 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     if (gapLeft.length) bugs.push('一個多月沒開 app 後更新報價,中間那個月沒有補回來(' + gapLeft.map(it => it.id).join('、') + ')');
   }catch(e){ bugs.push('抓報價測試例外:' + e.message); }
   global.setTimeout = realST;
+
+  // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣
+  {
+    A.state = A.emptyState();
+    A.state.assets = [{ id:'a1', name:'x', amount: 1 }];
+    A.state.instruments[0].shares = 1e12; A.state.instruments[0].price = 1e6; A.state.instruments[0].auto = false;
+    A.maybeSnapshot(); A.maybeDailySnapshot();
+    const h = A.state.netWorthHistory[A.state.netWorthHistory.length - 1], dd = A.state.dailyHistory[A.state.dailyHistory.length - 1];
+    const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+    const h2 = back.netWorthHistory[back.netWorthHistory.length - 1], d2 = back.dailyHistory[back.dailyHistory.length - 1];
+    if (!h || h.pv !== h2.pv) bugs.push(`每月快照的市值超過上限:當下 ${h && h.pv},重新打開變 ${h2 && h2.pv}`);
+    if (!dd || dd.pv !== d2.pv) bugs.push(`每日快照的市值超過上限:當下 ${dd && dd.pv},重新打開變 ${d2 && d2.pv}`);
+  }
 
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i) => '  ' + (i+1) + '. ' + b).join('\n') : '沒有發現問題');
 if (bugs.length) process.exitCode = 1;

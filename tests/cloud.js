@@ -43,7 +43,7 @@ globalThis.A = {
   get storageMode(){return storageMode}, get lastPushed(){return lastPushed},
   get pendingRemote(){return pendingRemote},
   connectCloud, save, onRemote, applyRemote, scheduleSave, maybeBackup, emptyState, sampleData, normalize, renderAll,
-  importJSON, todayISO, shiftMonth
+  importJSON, todayISO, shiftMonth, maybePostInterest, thisMonth
 };`);
 
 const bugs = [];
@@ -169,6 +169,47 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   await wait(10);
   console.log('8. 舊回音遲到:資產金額', A.state.assets[0].amount, '(應該還是 222)');
   if (A.state.assets[0].amount !== 222) bugs.push('自己較早一次寫入的回音遲到,把狀態倒回去了(後來的修改會被弄丟)');
+
+  // 9) 兩台都開著、已經同步好,換月後各自回到前景補記當月房貸利息:B 記完、還沒推上去就收到 A 記的那筆
+  //    → 合併後同一個月只能有一筆自動利息(以前兩筆都是「新增的」,三方合併兩筆都留,利息記兩次)
+  {
+    const m = A.thisMonth(), last = A.shiftMonth(m, -1);
+    A.state = A.sampleData();
+    A.state.transactions = A.state.transactions.filter(t => t.desc !== '槓桿借款利息(自動記入)');
+    Object.assign(A.state.leverage, { autoInterest: true, interestPosted: [last], annualRate: 2.4,
+      draws: [{ id:'dd1', label:'x', amount:3000000, useDate: last + '-01', note:'', repayments:[] }] });
+    await A.save(); await wait(10);                       // 兩台一致的起點
+    const fromA = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    fromA.transactions.push({ id:'fromA', date: m + '-01', cat:'房貸利息', desc:'槓桿借款利息(自動記入)', amount:-6000 });
+    fromA.leverage.interestPosted.push(m);
+    A.maybePostInterest();                                // B 自己也記了一筆(還在 400ms 存檔延遲裡)
+    A.onRemote(fromA);                                    // 這時收到 A 的
+    await wait(10);
+    const auto = A.state.transactions.filter(t => t.desc === '槓桿借款利息(自動記入)' && t.date.slice(0, 7) === m);
+    console.log('9. 兩台同時補記當月利息:合併後這個月的自動利息', auto.length, '筆');
+    if (auto.length !== 1) bugs.push(`兩台裝置同時補記當月房貸利息,合併後同一個月記了 ${auto.length} 筆`);
+    if (!A.state.leverage.interestPosted.includes(m)) bugs.push('合併後當月沒標成已記過,之後會再補一次');
+  }
+
+  // 10) 同樣的情況,每月淨資產快照:B 換月建了當月那筆、還沒推上去就收到 A 建的 → 同一個月只能一筆
+  {
+    const m = A.thisMonth();
+    A.state = A.sampleData();
+    A.state.netWorthHistory = A.state.netWorthHistory.filter(h => h.m !== m);
+    await A.save(); await wait(10);
+    const fromA = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    fromA.netWorthHistory.push({ id:'nwA', m, v: 123, pv: 1, pnl: 0, loan: 0, items: [], auto: true });
+    A.state.netWorthHistory.push({ id:'nwB', m, v: 456, pv: 1, pnl: 0, loan: 0, items: [], auto: true });
+    A.onRemote(fromA);
+    await wait(10);
+    const n = A.state.netWorthHistory.filter(h => h.m === m).length;
+    console.log('10. 兩台同時建當月快照:合併後這個月', n, '筆');
+    if (n !== 1) bugs.push(`兩台裝置同時建當月淨資產快照,合併後同一個月有 ${n} 筆`);
+    // 已經重複的舊資料:讀進來就只剩一筆(手動改過的優先)
+    const dup = A.normalize({ netWorthHistory: [{ id:'x1', m:'2026-05', v:1, auto:false }, { id:'x2', m:'2026-05', v:2, auto:true }, { id:'x3', m:'2026-06', v:3 }, { id:'x4', m:'2026-06', v:4 }] });
+    const got = dup.netWorthHistory.map(h => h.id).join(',');
+    if (got !== 'x1,x4') bugs.push(`已經重複的月份快照沒有去掉(應該留 x1,x4,得到 ${got})`);
+  }
 
   // 7) 跨年的月份運算
   const ym = ['2026-01','2026-12'];

@@ -521,7 +521,9 @@ function normalize(raw){
         .filter(it => it.id),
       auto: h.auto !== false                           // 手動改過的不再被自動覆蓋
     }))
-    .filter(h => isoDate(h.m + '-01', ''));   // 2026-13 這種月份不收
+    .filter(h => isoDate(h.m + '-01', ''))   // 2026-13 這種月份不收
+    // 同一個月只留一筆(舊版兩台同時換月時會各建一筆,合併後重複):手動改過的優先,不然留後面那筆
+    .filter((h, i, arr) => !arr.some((o, j) => j !== i && o.m === h.m && ((o.auto === false) > (h.auto === false) || ((o.auto === false) === (h.auto === false) && j > i))));
   const L = raw.leverage && typeof raw.leverage === 'object' ? raw.leverage : {};
   const base = s.leverage;
   ['shares675L','price675L','shares631L','price631L','marketHigh','marketCurrent',
@@ -609,8 +611,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-26 · 032adf6947';
-const BUILD_HASH = '032adf6947';
+const BUILD_VERSION = '2026-09-27 · 21311eb3f8';
+const BUILD_HASH = '21311eb3f8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -791,11 +793,30 @@ function mergeLocalEdits(local, next){
   try{ base = JSON.parse(syncBase); }catch(e){ return false; }
   const remoteData = JSON.parse(JSON.stringify(next));
   const merged = merge3(localData, base, remoteData);
+  dropDuplicateAutoInterest(merged, remoteData, base);
   if (canon(merged) === canon(remoteData)) return false;
   const norm = normalize(merged);
   Object.keys(next).forEach(k => delete next[k]);
   Object.assign(next, norm);
   return true;
+}
+/* 兩台都開著、換月後各自補記當月房貸利息(maybePostInterest,開 app 或回到前景時):這台記完還沒推上去就收到別台記的,
+   兩筆 id 不同、都是「新增的」,三方合併兩筆都會留,同一個月的利息記兩次(壓測抓到)。
+   雲端已經有那個月的自動利息時,本機剛新增(基準裡也沒有)的同月自動利息丟掉,以雲端那筆為準。 */
+const AUTO_INTEREST_DESC = '槓桿借款利息(自動記入)';
+function dropDuplicateAutoInterest(merged, remote, base){
+  const isAuto = t => t && t.desc === AUTO_INTEREST_DESC && typeof t.date === 'string';
+  dropLocalCopies(merged, remote, base, 'transactions', t => isAuto(t) ? t.date.slice(0, 7) : null);
+  // 每月快照同一個道理:兩台換月後各自建當月那筆(id 不同),合併後同一個月兩筆
+  dropLocalCopies(merged, remote, base, 'netWorthHistory', h => h && typeof h.m === 'string' ? h.m : null);
+}
+/* merged[field] 裡「本機剛新增(雲端跟基準都沒有這個 id)、但雲端已經有同一個 key」的那幾筆丟掉 */
+function dropLocalCopies(merged, remote, base, field, keyOf){
+  const list = x => (x && Array.isArray(x[field]) ? x[field] : []);
+  const remoteIds = new Set(list(remote).map(x => x && x.id)), baseIds = new Set(list(base).map(x => x && x.id));
+  const remoteKeys = new Set(list(remote).map(keyOf).filter(k => k != null));
+  if (!Array.isArray(merged[field]) || !remoteKeys.size) return;
+  merged[field] = merged[field].filter(x => { const k = keyOf(x); return !(k != null && remoteKeys.has(k) && !remoteIds.has(x.id) && !baseIds.has(x.id)); });
 }
 const mergeKey = x => (x && typeof x === 'object' && !Array.isArray(x))
   ? (x.id != null ? 'i:' + x.id : x.key != null ? 'k:' + x.key : x.d != null ? 'd:' + x.d : x.m != null ? 'm:' + x.m : null)
@@ -1946,11 +1967,13 @@ function maybeSnapshot(){
   if (state.netWorthHistory.some(h => h.m > m)) return false;
   const found = state.netWorthHistory.find(h => h.m === m);
   if (found && !found.auto) return false;
+  // 寫進快照的數字跟 normalize() 一樣夾在 finNum 範圍內:股數、股價各自都在 num() 上限內,乘起來的市值還是可能超過,
+  // 以前當下存原值、重新打開被 normalize 夾掉,兩邊對不起來(隨機壓測抓到)
   const snap = {
-    v: Math.round(nw),
-    pv: Math.round(p.hasData ? p.marketValue : r.totalValue),
-    pnl: p.hasData ? Math.round(p.total) : null,
-    loan: Math.round(r.usedAmount),
+    v: finNum(Math.round(nw)),
+    pv: finNum(Math.round(p.hasData ? p.marketValue : r.totalValue)),
+    pnl: p.hasData ? finNum(Math.round(p.total)) : null,
+    loan: finNum(Math.round(r.usedAmount)),
     items: currentItems(),
     auto: true
   };
@@ -2004,10 +2027,10 @@ function maybeDailySnapshot(){
   const today = todayISO();
   const rec = {
     d: today,
-    pv: Math.round(pv),
-    loan: Math.round(r.usedAmount),
-    eq: Math.round(r.equityValue),
-    pnl: p.hasData ? Math.round(p.total) : null
+    pv: finNum(Math.round(pv)),            // 同 maybeSnapshot:跟 normalize() 一樣夾範圍
+    loan: finNum(Math.round(r.usedAmount)),
+    eq: finNum(Math.round(r.equityValue)),
+    pnl: p.hasData ? finNum(Math.round(p.total)) : null
   };
   const list = state.dailyHistory;
   const last = list.length ? list[list.length - 1] : null;
@@ -4419,7 +4442,7 @@ function maybePostInterest(){
       id: uid(),
       date: m + '-01',
       cat: '房貸利息',
-      desc: '槓桿借款利息(自動記入)',
+      desc: AUTO_INTEREST_DESC,
       amount: -Math.round(amt)
     });
     posted.push(m);
