@@ -390,6 +390,8 @@ const DEFAULT_CATEGORIES = ['餐飲','房貸 / 房租','交通','娛樂','其他
 /* 均線趨勢訊號的參數預設值:槓桿倍數 >=2(正2類)用較慢、較寬鬆的組合,
    避免被槓桿本身的波動洗出場;1倍(0050類)用稍快一點的組合。
    這兩組是使用者自己長期在用、驗證過樣本外表現的參數,不是隨便挑的。 */
+/* 加碼層數上限:設定頁會照層數列出每一層的曝險目標,打錯成 99999999 會列一百兆格、整個設定頁當掉(隨機壓測抓到) */
+const MAX_PYRAMID_LEVELS = 10;
 function defaultTrendParams(leverage){
   const base = (num(leverage) >= 2)
     ? { maFast:120, maSlow:240, exitBuffer:0.90, recoverSlopeThreshold:1.002, recoverStrongRebound:1.03, pyramidGap:0.15, pyramidLevels:2 }
@@ -459,7 +461,7 @@ function normalize(raw){
           recoverSlopeThreshold: finiteNum(t.recoverSlopeThreshold, 0) > 0 ? finiteNum(t.recoverSlopeThreshold, def.recoverSlopeThreshold) : def.recoverSlopeThreshold,
           recoverStrongRebound: finiteNum(t.recoverStrongRebound, 0) > 0 ? finiteNum(t.recoverStrongRebound, def.recoverStrongRebound) : def.recoverStrongRebound,
           pyramidGap: finiteNum(t.pyramidGap, 0) > 0 ? finiteNum(t.pyramidGap, def.pyramidGap) : def.pyramidGap,
-          pyramidLevels: Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels)),
+          pyramidLevels: Math.min(MAX_PYRAMID_LEVELS, Math.max(1, Math.round(finiteNum(t.pyramidLevels, 0) || def.pyramidLevels))),
           lastSeenStatus: str(t.lastSeenStatus),
           // 看過的時候已經接刀加碼到第幾層(-1 = 還沒記過)。只記狀態的話,接刀中從第 1 層加到第 2 層狀態都是
           // WAIT_RECOVER,提醒不會跳——照 🔔 執行的話兩次加碼都會漏掉
@@ -565,7 +567,7 @@ function normalize(raw){
     const posNum = (v, fallback) => { const n = finiteNum(v, 0); return n > 0 ? n : fallback; };
     const ET = L.exposureTargets && typeof L.exposureTargets === 'object' ? L.exposureTargets : {};
     const defByLayer = DEFAULT_LEVERAGE.exposureTargets.byLayer;
-    const byLayer = (Array.isArray(ET.byLayer) ? ET.byLayer : [])
+    const byLayer = (Array.isArray(ET.byLayer) ? ET.byLayer : []).slice(0, MAX_PYRAMID_LEVELS)
       .map((v, i) => posNum(v, defByLayer[i] ?? defByLayer[defByLayer.length - 1]));
     base.exposureTargets = {
       byLayer: byLayer.length ? byLayer : defByLayer.slice(),
@@ -3234,8 +3236,8 @@ function layerTarget(targets, n){
   return list[n - 1] ?? list[list.length - 1] ?? targets.hold;
 }
 /* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
-const expoLayerCount = () => Math.max(state.leverage.exposureTargets.byLayer.length,
-  ...state.instruments.filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels));
+const expoLayerCount = () => Math.min(MAX_PYRAMID_LEVELS, Math.max(state.leverage.exposureTargets.byLayer.length,
+  ...state.instruments.filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels)));
 function computeExposurePlan(){
   const lev2 = state.instruments.filter(it => it.leverage === 2);
   if (!lev2.length) return null;
@@ -4692,7 +4694,7 @@ function onField(key, el){
       // 以前會存成 1 日均線/1 層,這時候離開欄位或 app 被關掉,訊號就照 1 日均線算(壓測抓到)
       if (['maFast', 'maSlow', 'pyramidLevels'].includes(what) && !(v > 0)) return;
       if (what === 'maFast' || what === 'maSlow') it.trend[what] = Math.max(1, Math.round(v));
-      else if (what === 'pyramidLevels') it.trend[what] = Math.max(1, Math.round(v));
+      else if (what === 'pyramidLevels') it.trend[what] = Math.min(MAX_PYRAMID_LEVELS, Math.max(1, Math.round(v)));
       else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
     }
   }
@@ -4704,7 +4706,7 @@ function onField(key, el){
     if (rest === 'hold') state.leverage.exposureTargets.hold = v;
     else if (rest.indexOf('layer-') === 0){
       const i = Number(rest.slice(6));
-      if (Number.isInteger(i) && i >= 0){
+      if (Number.isInteger(i) && i >= 0 && i < MAX_PYRAMID_LEVELS){
         const list = state.leverage.exposureTargets.byLayer;
         // 前面還沒存過的層先補成畫面上顯示的值(沿用最後一層),不要留空洞
         for (let k = list.length; k < i; k++) list[k] = layerTarget(state.leverage.exposureTargets, k + 1);
