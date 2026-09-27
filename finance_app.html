@@ -179,6 +179,7 @@
     background:var(--card); color:var(--sub); font-size:15px; cursor:pointer; font-family:inherit;
   }
   .xbtn:hover{color:var(--red); border-color:var(--red);}
+  .xbtn.armed{flex:0 0 auto; padding:0 8px; font-size:12px; color:var(--red); border-color:var(--red); white-space:nowrap;}
   .xbtn.step:hover{color:var(--accent); border-color:var(--accent);}
   .xbtn:disabled{opacity:.4; cursor:default;}
   .xbtn:disabled:hover{color:var(--sub); border-color:var(--line);}
@@ -629,8 +630,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-27 · dad8ec19c5';
-const BUILD_HASH = 'dad8ec19c5';
+const BUILD_VERSION = '2026-09-27 · 6156edcc4a';
+const BUILD_HASH = '6156edcc4a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2233,7 +2234,7 @@ function renderOverview(){
         <div class="erow">
           <div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}</div>
           <input class="f-amt" type="number" inputmode="decimal" data-k="nh-${h.id}" value="${h.v || ''}">
-          <button class="xbtn" data-act="del-hist" data-id="${h.id}" aria-label="刪除">✕</button>
+          ${xDel('del-hist', h.id)}
         </div>`).join('')}</div>` : ''}
     </div>
 
@@ -2381,7 +2382,7 @@ function renderAssets(){
           <div class="erow">
             <input class="f-name" data-k="an-${a.id}" value="${esc(a.name)}" placeholder="項目名稱">
             <input class="f-amt" type="number" inputmode="decimal" data-k="aa-${a.id}" value="${a.amount || ''}" placeholder="金額">
-            <button class="xbtn" data-act="del-asset" data-id="${a.id}" aria-label="刪除">✕</button>
+            ${xDel('del-asset', a.id)}
           </div>
           <div class="row"><span class="muted"><span class="legend-dot" style="background:${seriesColor(i)}"></span>佔比</span>
             <span class="muted" id="a-pct-${a.id}">${pct.toFixed(1)}%</span></div>
@@ -2399,7 +2400,7 @@ function renderAssets(){
         <div class="erow">
           <input class="f-name" data-k="ln-${l.id}" value="${esc(l.name)}" placeholder="項目名稱">
           <input class="f-amt" type="number" inputmode="decimal" data-k="la-${l.id}" value="${l.amount || ''}" placeholder="金額">
-          <button class="xbtn" data-act="del-liab" data-id="${l.id}" aria-label="刪除">✕</button>
+          ${xDel('del-liab', l.id)}
         </div>
         ${itemRowExtras(l, true, 'var(--red)')}
         </div>`).join('') : `<div class="empty">還沒有負債項目。<br>例如:房貸、信用貸款。</div>`}
@@ -3491,7 +3492,7 @@ function renderDrawRecords(){
         <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="draw-amt-${t.id}" value="${t.amount || ''}"></div>
       </div>
       <div class="field"><label>備註(買了什麼)</label><input data-k="draw-note-${t.id}" value="${esc(t.note || '')}" placeholder="00631L 27,000 股"></div>
-      <button class="btn" data-act="del-draw" data-id="${t.id}" style="margin-top:8px;">刪除這筆</button>
+      <button class="btn${pendingConfirm === 'del-draw:' + t.id ? ' danger' : ''}" data-act="del-draw" data-id="${t.id}" style="margin-top:8px;">${pendingConfirm === 'del-draw:' + t.id ? '⚠️ 有還款紀錄,再按一次刪除' : '刪除這筆'}</button>
     </div>`;
   return `
     <div class="card">
@@ -4309,7 +4310,7 @@ function renderLeverage(){
           <div class="erow" style="margin-top:0;">
             <input class="f-code" data-k="in-id-${it.key}" value="${esc(it.id)}" placeholder="代號">
             <input class="f-title" data-k="in-name-${it.key}" value="${esc(it.name)}" placeholder="名稱 如 元大台灣50">
-            <button class="xbtn" data-act="del-instrument" data-id="${it.key}" aria-label="刪除">✕</button>
+            ${xDel('del-instrument', it.key)}
           </div>
           ${h.dup ? `<div class="muted neg">代號和上面某一列重複了,這一列不計入市值。</div>` : ''}
           <div class="grid2">
@@ -4615,7 +4616,8 @@ function onField(key, el){
     const what = rest.slice(0, cut), tid = rest.slice(cut + 1);
     const t = findById(state.trades, tid);
     if (t){
-      if (what === 'date') t.date = isoDate(el.value, todayISO());
+      // 日期選擇器按「清除」會送空字串:保留原日期。以前換成今天,那筆的日期就回不去了
+      if (what === 'date'){ const d = isoDate(el.value, ''); if (d) t.date = d; }
       else if (what === 'note') t.note = el.value;
       else t[what] = Math.max(0, num(el.value));   // 股數、價格、費用都不會是負的
     }
@@ -4624,7 +4626,7 @@ function onField(key, el){
   else if (kind === 'tdate' || kind === 'tamt' || kind === 'tcat' || kind === 'tdesc'){
     const t = findById(state.transactions, rest);
     if (t){
-      if (kind === 'tdate') t.date = isoDate(el.value, todayISO());
+      if (kind === 'tdate'){ const d = isoDate(el.value, ''); if (d) t.date = d; }   // 清除日期:保留原日期(同買賣紀錄)
       else if (kind === 'tamt') t.amount = num(el.value);
       else if (kind === 'tcat') t.cat = el.value || '其他';   // 跟 normalize() 一致,空的類別就是「其他」
       else t.desc = el.value;
@@ -4725,6 +4727,9 @@ function sampleData(){
   return s;
 }
 
+/* 列表上的 ✕ 刪除鈕:第一次按變成紅色「確定刪除」,再按一次才刪(needsConfirm 的 token = act:id) */
+const xDel = (act, id) => { const armed = pendingConfirm === act + ':' + id;
+  return `<button class="xbtn${armed ? ' armed' : ''}" data-act="${act}" data-id="${id}" aria-label="${armed ? '再按一次確定刪除' : '刪除'}">${armed ? '確定刪除' : '✕'}</button>`; };
 function needsConfirm(token){
   if (pendingConfirm === token){ pendingConfirm = null; return false; }
   pendingConfirm = token;
@@ -4887,22 +4892,28 @@ async function copyJSON(){
   renderAll();
 }
 
+const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
   let rerender = true;
-  if (!['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore'].includes(act)) pendingConfirm = null;
+  // 要按兩次確認的動作不能在這裡清掉「待確認」,不然第二次按又從頭開始、永遠刪不掉
+  // (以前 del-draw 不在名單裡:有還款紀錄的動用紀錄怎麼按都刪不掉,壓測抓到)
+  if (!CONFIRM_ACTS.includes(act)) pendingConfirm = null;
   if (!['export', 'export-csv', 'import', 'copy-json'].includes(act)) dataMsg = '';
 
   switch (act){
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
-    case 'del-asset': state.assets = state.assets.filter(a => a.id !== id); break;
+    // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
+    case 'del-asset': { const a = findById(state.assets, id); if (a && (a.name || a.amount) && needsConfirm('del-asset:' + id)) return;
+      state.assets = state.assets.filter(a => a.id !== id); break; }
     case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0 }); break;
-    case 'del-liab': state.liabilities = state.liabilities.filter(l => l.id !== id); break;
+    case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
+      state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
-    case 'del-hist': state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
+    case 'del-hist': if (needsConfirm('del-hist:' + id)) return; state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
     case 'snap-networth': {
       const m = thisMonth();
       const found = state.netWorthHistory.find(h => h.m === m);
@@ -4958,6 +4969,7 @@ function onClick(el){
         levMsg = '「' + (it.id || '未命名') + '」還有 ' + used + ' 筆買賣紀錄,先把那些紀錄刪掉或改成別的代號。';
         break;
       }
+      if ((it.id || (it.priceHistory || []).length) && needsConfirm('del-instrument:' + id)) return;
       state.instruments = state.instruments.filter(x => x.key !== id);
       break;
     }

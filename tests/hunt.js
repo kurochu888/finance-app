@@ -286,6 +286,7 @@ check('標的重新命名成已存在的代號', () => {
 check('刪掉沒有紀錄的標的', () => {
   A.state = A.emptyState();
   const before = A.state.instruments.length;
+  A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });   // 刪除要按兩次確認
   A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });
   if (A.state.instruments.length !== before - 1) return '刪不掉(還有 ' + A.state.instruments.length + ' 列)';
   return '';
@@ -306,6 +307,7 @@ check('配息紀錄要能改金額(以前編輯只給股數/成交價,改了也�
 
 check('預設標的刪掉後記一筆買賣:選單畫面上是第一檔,要記得進去', () => {
   A.state = A.emptyState();
+  A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });   // 刪除要按兩次確認
   A.onClick({ dataset:{ act:'del-instrument', id: A.state.instruments[0].key } });
   const shown = A.state.instruments[0].id;
   A.renderTrades();
@@ -325,6 +327,7 @@ check('兩列同代號:壓力測試、CSV 持股不能把同一批持股算兩�
   const rows = csv.split('# 持股')[1].split('\n\n')[0].split('\n').filter(l => l.startsWith('00631L'));
   const total = rows.reduce((s, l) => s + Number(l.split(',')[5]), 0);
   if (total !== 100000) return 'CSV 持股市值加總 ' + total + ',應該是 100000';
+  A.onClick({ dataset:{ act:'del-instrument', id:'b' } });   // 刪除要按兩次確認
   A.onClick({ dataset:{ act:'del-instrument', id:'b' } });
   if (A.state.instruments.length !== 1) return '重複的那列刪不掉';
   A.onClick({ dataset:{ act:'del-instrument', id:'a' } });
@@ -625,6 +628,46 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     if (it.leverage !== lev) bugs.push(`槓桿倍數欄位清空時被存成 ${it.leverage}`);
     A.onField('sig-maFast-' + key, { value: '100' });
     if (it.trend.maFast !== 100) bugs.push('清空之後打新數字沒有生效');
+  }
+
+  // 日期選擇器按「清除」(送空字串):買賣紀錄、記帳的日期要保留原本的,不能變成今天
+  {
+    A.state = A.sampleData();
+    const tr = A.state.trades.find(t => t.date !== A.todayISO()), tx = A.state.transactions.find(t => t.date !== A.todayISO());
+    const d1 = tr.date, d2 = tx.date;
+    A.onField('pt-date-' + tr.id, { value: '' });
+    A.onField('tdate-' + tx.id, { value: '' });
+    if (tr.date !== d1) bugs.push(`買賣紀錄的日期清除後變成 ${tr.date}(原本 ${d1})`);
+    if (tx.date !== d2) bugs.push(`記帳的日期清除後變成 ${tx.date}(原本 ${d2})`);
+  }
+
+  // 要確認的刪除:按一次不刪、連按兩次要刪掉(以前 del-draw 清掉自己的待確認,有還款的動用紀錄永遠刪不掉);
+  // 資產/負債/每月紀錄/標的也要確認(以前按一下 ✕ 就刪)
+  {
+    A.state = A.sampleData();
+    const click = (act, id) => A.onClick({ dataset: { act, id } });
+    const draw = A.state.leverage.draws.find(d => (d.repayments || []).length) || (() => { const d = A.state.leverage.draws[0]; d.repayments = [{ id:'r1', date: d.useDate, amount: 1 }]; return d; })();
+    const cases = [
+      ['del-draw', draw.id, () => A.state.leverage.draws.some(d => d.id === draw.id)],
+      ['del-asset', A.state.assets[0].id, id => A.state.assets.some(a => a.id === id)],
+      ['del-liab', A.state.liabilities[0].id, id => A.state.liabilities.some(l => l.id === id)],
+      ['del-hist', A.state.netWorthHistory[0].id, id => A.state.netWorthHistory.some(h => h.id === id)],
+    ];
+    const noTrades = A.state.instruments.find(it => !A.state.trades.some(t => t.symbol === it.id));
+    if (noTrades) cases.push(['del-instrument', noTrades.key, k => A.state.instruments.some(it => it.key === k)]);
+    for (const [act, id, exists] of cases){
+      click(act, id);
+      if (!exists(id)) { bugs.push(`${act} 按一下就刪掉了,沒有再確認`); continue; }
+      click('month', '');          // 中間按了別的:要重新確認
+      click(act, id);
+      if (!exists(id)) { bugs.push(`${act} 中間按了別的,回來按一下就刪了`); continue; }
+      click(act, id);
+      if (exists(id)) bugs.push(`${act} 連按兩次還是刪不掉`);
+    }
+    // 剛新增、還沒填的空白資產列:按一下直接刪
+    click('add-asset'); const blank = A.state.assets[A.state.assets.length - 1].id;
+    click('del-asset', blank);
+    if (A.state.assets.some(a => a.id === blank)) bugs.push('空白的資產列按一下應該就刪掉');
   }
 
   // 股數、股價各自都在上限內,乘起來的市值超過快照欄位的上限:快照當下寫的值要跟重新打開(normalize)後一樣
