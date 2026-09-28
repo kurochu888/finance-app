@@ -655,8 +655,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-28 · 89748cd749';
-const BUILD_HASH = '89748cd749';
+const BUILD_VERSION = '2026-09-28 · 818bc63153';
+const BUILD_HASH = '818bc63153';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3224,7 +3224,7 @@ function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實�
       // REBOUND 實驗(可拆):還沒買反彈時跟著收盤找最低點;買了之後低點固定(停損看它),從低點漲到門檻就各買一份,同一天兩個都到就兩份都買
       if (rb && status === 'WAIT_RECOVER' && action !== 'EXIT'){   // 只在出場(或接刀)之後;一開始還沒進場的 WATCH 不算
         if (rbDone === 0) rbLow = Math.min(rbLow, close);
-        while (rbDone < rbUps.length && rbStops < rb.maxStops && close >= rbLow * (1 + rbUps[rbDone])){
+        while (rbDone < rbUps.length && rbStops < rb.maxStops && (!rb.afterAdds || pyramidCount >= p.pyramidLevels) && close >= rbLow * (1 + rbUps[rbDone])){   // afterAdds:接刀層數都接完才反彈加碼(B 版)
           rbShares += rbBuy(cashAtExit / (p.pyramidLevels + 2), close);
           rbDone += 1;
           events.push({ d: dates[i], act: 'REB', close, n: rbDone });
@@ -4440,6 +4440,12 @@ const REBOUND_ROWS = [
   { name: '反彈 20/40%、停損 5%', rb: { up1: 0.20, up2: 0.40, stop: 0.05, maxStops: 2 } },
   { name: '反彈 15/30%、停損 3%', rb: { up1: 0.15, up2: 0.30, stop: 0.03, maxStops: 2 } },
   { name: '反彈 15/30%、停損 8%', rb: { up1: 0.15, up2: 0.30, stop: 0.08, maxStops: 2 } },
+  // B 版(2026-09-28 使用者要看):一樣分四份,但接刀層數都接完(確認跌深)才開始反彈加碼;A 版沒接刀也會先買反彈,V 型急跌、熊市假反彈容易被洗
+  { name: '接完才反彈 10/20%、停損 5%', rb: { up1: 0.10, up2: 0.20, stop: 0.05, maxStops: 2, afterAdds: true } },
+  { name: '接完才反彈 15/30%、停損 5%', rb: { up1: 0.15, up2: 0.30, stop: 0.05, maxStops: 2, afterAdds: true } },
+  { name: '接完才反彈 20/40%、停損 5%', rb: { up1: 0.20, up2: 0.40, stop: 0.05, maxStops: 2, afterAdds: true } },
+  { name: '接完才反彈 15/30%、停損 3%', rb: { up1: 0.15, up2: 0.30, stop: 0.03, maxStops: 2, afterAdds: true } },
+  { name: '接完才反彈 15/30%、停損 8%', rb: { up1: 0.15, up2: 0.30, stop: 0.08, maxStops: 2, afterAdds: true } },
 ];
 const REBOUND_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
                          ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
@@ -4496,7 +4502,8 @@ function renderReboundExperiment(){
       <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
         只在回測裡試,實際訊號不動。出場後現金分四份:接刀 1、接刀 2 照舊各一份,另外從出場後的最低收盤反彈到門檻時
         「反彈加碼 1」「反彈加碼 2」各買一份,轉回續抱照舊把剩下的全買。買了反彈之後,收盤跌破低點再往下停損%,
-        就只把反彈買的賣掉(「反彈停損」),重新找下一個低點;每次出場最多停損 2 次。「分四份、不反彈」是對照組:
+        就只把反彈買的賣掉(「反彈停損」),重新找下一個低點;每次出場最多停損 2 次。
+        「反彈」那幾列只要出場後反彈到門檻就買(沒接刀也會買);「接完才反彈」那幾列要接刀的層數都接完(確認跌深)才開始反彈加碼。「分四份、不反彈」是對照組:
         只改資金切法,用來分辨差別是反彈加碼帶來的,還是接刀每層少買造成的。正2 上市前(2000、2008)用加權指數模擬。
         看的時候注意:門檻、停損稍微改一點會不會突然差很多(斷崖)、2021 前後兩段是不是都變好、2020/2022 短空頭有沒有被傷到。</div></details>
       <button class="btn" data-act="rebound-run">▶ 跑反彈加碼實驗(用上面已經抓好的歷史)</button>
