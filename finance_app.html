@@ -639,8 +639,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-28 · 818bc63153';
-const BUILD_HASH = '818bc63153';
+const BUILD_VERSION = '2026-09-28 · d9b48324c7';
+const BUILD_HASH = 'd9b48324c7';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3119,7 +3119,7 @@ const computeAllTrends = () => state.instruments.map(computeTrend);
    資金使用效率比實際能做到的更高,長期複利下來會膨脹回測報酬。 */
 const BACKTEST_INITIAL_CASH = 1000000;
 const LOT_SIZE = 1000;
-function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實驗的參數(可拆,見 REBOUND 區塊);不傳就是原策略
+function runBacktest(priceHistory, trendParams){
   const p = trendParams;
   const hist = priceHistory || [];
   const window_ = Math.max(p.maFast, p.maSlow);   // 跟 computeTrend 同一套:快線設得比慢線長也要算得出來
@@ -3139,14 +3139,6 @@ function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實�
   const bhCashLeft = BACKTEST_INITIAL_CASH - bhQty * closes[start] - (bhQty > 0 ? defaultFee('buy', bhQty * closes[start]) : 0);
   const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhCashLeft + bhShares * closes[start] }];
   const events = [];   // 每次策略動作(出場/接刀/轉回續抱)的日期跟價格,給「指定期間」檢視列出來;只記錄,不影響淨值計算
-  // REBOUND 實驗(可拆):出場後的最低收盤、已買幾次反彈、反彈買進的股數、這次出場已經反彈停損幾次
-  let rbLow = Infinity, rbDone = 0, rbShares = 0, rbStops = 0;
-  const rbUps = rb && rb.up1 ? [rb.up1, rb.up2] : [];
-  const rbBuy = (amount, close) => {
-    const qty = Math.floor(Math.min(cash, amount) / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
-    if (qty > 0){ cash -= qty * close + defaultFee('buy', qty * close); shares += qty; }
-    return qty;
-  };
 
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
@@ -3166,14 +3158,6 @@ function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實�
         else action = status;
       }
 
-      // REBOUND 實驗(可拆):買了反彈之後,收盤跌破「出場後最低點 × (1 − 停損%)」就只賣反彈買的那些,重新找低點
-      if (rb && status !== 'HOLD' && action !== 'RECOVER' && rbDone > 0 && close < rbLow * (1 - rb.stop)){
-        const gross = rbShares * close;
-        if (gross > 0) cash += gross - defaultFee('sell', gross);
-        shares -= rbShares;
-        rbShares = 0; rbDone = 0; rbStops += 1; rbLow = close;
-        events.push({ d: dates[i], act: 'RSTOP', close, n: rbStops });
-      }
       if (action === 'RECOVER'){
         // 全押 = 把剩下的現金買滿;加碼時已經買進的張數本來就在手上,不能當成重買一次再扣一次手續費。
         const qty = Math.floor(cash / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
@@ -3183,10 +3167,9 @@ function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實�
           shares += qty;
         }
         basePrice = close; pyramidCount = 0; status = 'HOLD';
-        rbLow = Infinity; rbDone = 0; rbShares = 0; rbStops = 0;   // REBOUND 實驗(可拆)
         events.push({ d: dates[i], act: 'RECOVER', close });
       }else if (action === 'ADD'){
-        const unit = Math.min(cash, cashAtExit / (rb ? p.pyramidLevels + 2 : p.pyramidLevels));   // REBOUND 實驗(可拆):多分兩份給反彈
+        const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
         const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
         if (qty > 0){
           const fee = defaultFee('buy', qty * close);
@@ -3202,17 +3185,7 @@ function runBacktest(priceHistory, trendParams, rb = null){   // rb:REBOUND 實�
         shares = 0;
         cashAtExit = cash;
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
-        rbLow = close; rbDone = 0; rbShares = 0; rbStops = 0;   // REBOUND 實驗(可拆)
         events.push({ d: dates[i], act: 'EXIT', close });
-      }
-      // REBOUND 實驗(可拆):還沒買反彈時跟著收盤找最低點;買了之後低點固定(停損看它),從低點漲到門檻就各買一份,同一天兩個都到就兩份都買
-      if (rb && status === 'WAIT_RECOVER' && action !== 'EXIT'){   // 只在出場(或接刀)之後;一開始還沒進場的 WATCH 不算
-        if (rbDone === 0) rbLow = Math.min(rbLow, close);
-        while (rbDone < rbUps.length && rbStops < rb.maxStops && (!rb.afterAdds || pyramidCount >= p.pyramidLevels) && close >= rbLow * (1 + rbUps[rbDone])){   // afterAdds:接刀層數都接完才反彈加碼(B 版)
-          rbShares += rbBuy(cashAtExit / (p.pyramidLevels + 2), close);
-          rbDone += 1;
-          events.push({ d: dates[i], act: 'REB', close, n: rbDone });
-        }
       }
     }
     curve.push({ d: dates[i], strat: cash + shares * close, bh: bhCashLeft + bhShares * close });
@@ -4215,7 +4188,6 @@ function backtestReportText(){
       if (lines.length){ out.push(`  ${label}(${from} ~ ${to})`); out.push(...lines); }
     });
   }
-  out.push(...reboundReportLines());   // REBOUND 實驗(可拆)
   return out.join('\n');
 }
 async function copyBacktestReport(){
@@ -4405,109 +4377,6 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
-/* ===================== REBOUND 實驗:反彈加碼(2026-09-28,只在回測,可拆) =====================
-   使用者的想法:出場後除了跌深接刀(ADD1/ADD2),從出場後最低收盤反彈 up1、up2 時也各接一次(「反彈加碼 1/2」)。規則:
-   - 出場時的現金分成(層數 + 2)份:接刀每層一份、反彈加碼各一份(正2 兩層 = 四等份);轉回續抱照舊把剩下的全買。
-   - 低點 = 出場後最低收盤,跟著創新低往下移;買了反彈之後低點固定,收盤跌破「低點 × (1 − 停損%)」就只賣反彈買的那些
-     (「反彈停損」),接刀買的不動,低點從那天重新找、可以再反彈加碼;每次出場最多反彈停損 2 次,之後這輪不再反彈加碼。
-   - 反彈加碼不改接刀的基準價(接刀判斷照舊)、出場/轉回續抱照舊;回測不管曝險目標(一筆錢)、兩檔各算各的。
-   對照組「分四份、不反彈」:只改資金切法,看差別是反彈加碼帶來的還是少押造成的。
-   判斷照 CLAUDE.md 的規矩:門檻/停損稍微變會不會斷崖、2021 前後段都要成立、五段(2000/2008 用加權指數模擬)短空頭不能傷太多。
-   拆掉:刪這個區塊、runBacktest() 裡標了 REBOUND 的幾行(rb 參數、rbLow 那幾個變數、ADD 的份數、停損/反彈兩段、RECOVER/EXIT 的重設)、
-   renderBacktestCard() 的 renderReboundExperiment()、onClick 的 rebound-run、backtestReportText() 的 reboundReportLines()。
-   還原點分支 restore/pre-rebound-experiment-2026-09-28。 */
-const REBOUND_ROWS = [
-  { name: '原策略', rb: null },
-  { name: '分四份、不反彈', rb: { maxStops: 2 } },
-  { name: '反彈 10/20%、停損 5%', rb: { up1: 0.10, up2: 0.20, stop: 0.05, maxStops: 2 } },
-  { name: '反彈 15/30%、停損 5%', rb: { up1: 0.15, up2: 0.30, stop: 0.05, maxStops: 2 } },
-  { name: '反彈 20/40%、停損 5%', rb: { up1: 0.20, up2: 0.40, stop: 0.05, maxStops: 2 } },
-  { name: '反彈 15/30%、停損 3%', rb: { up1: 0.15, up2: 0.30, stop: 0.03, maxStops: 2 } },
-  { name: '反彈 15/30%、停損 8%', rb: { up1: 0.15, up2: 0.30, stop: 0.08, maxStops: 2 } },
-  // B 版(2026-09-28 使用者要看):一樣分四份,但接刀層數都接完(確認跌深)才開始反彈加碼;A 版沒接刀也會先買反彈,V 型急跌、熊市假反彈容易被洗
-  { name: '接完才反彈 10/20%、停損 5%', rb: { up1: 0.10, up2: 0.20, stop: 0.05, maxStops: 2, afterAdds: true } },
-  { name: '接完才反彈 15/30%、停損 5%', rb: { up1: 0.15, up2: 0.30, stop: 0.05, maxStops: 2, afterAdds: true } },
-  { name: '接完才反彈 20/40%、停損 5%', rb: { up1: 0.20, up2: 0.40, stop: 0.05, maxStops: 2, afterAdds: true } },
-  { name: '接完才反彈 15/30%、停損 3%', rb: { up1: 0.15, up2: 0.30, stop: 0.03, maxStops: 2, afterAdds: true } },
-  { name: '接完才反彈 15/30%、停損 8%', rb: { up1: 0.15, up2: 0.30, stop: 0.08, maxStops: 2, afterAdds: true } },
-];
-const REBOUND_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
-                         ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
-let reboundResults = null;
-function reboundSources(){
-  const sources = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
-    .map(it => ({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(it.leverage) }));
-  if (indexSimHist.length > 1){   // 正2 上市前沒有資料:用加權指數模擬(可拆)
-    const { one, two } = indexSimSeries();
-    sources.push({ label: '模擬正2', hist: two, p: (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2) });
-    sources.push({ label: '加權指數', hist: one, p: (state.instruments.find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1) });
-  }
-  return sources;
-}
-function reboundRow(hist, p, row){
-  const res = runBacktest(hist, p, row.rb);
-  const st = (f, t) => periodStats(res.curve, f, t, 'strat');
-  const all = st('0000', '9999'), early = st('0000', BACKTEST_SPLIT_DATE), late = st(BACKTEST_SPLIT_DATE, '9999');
-  const wins = REBOUND_WINDOWS.map(([, f, t]) => windowStats(res, f, t, 'strat'));
-  const cnt = act => res.events.filter(e => e.act === act).length;
-  return { name: row.name, rebound: !!(row.rb && row.rb.up1), from: res.from, to: res.to, ret: res.returnStrat, mdd: res.mddStrat,
-           calmar: all && all.calmar, early: early && early.calmar, late: late && late.calmar, rebs: cnt('REB'), stops: cnt('RSTOP'), wins };
-}
-function runReboundExperiment(){
-  reboundResults = reboundSources().map(src => {
-    const need = Math.max(src.p.maFast, src.p.maSlow) + 1;
-    if (!src.hist || src.hist.length < need || findHistoryGap(src.hist)) return { label: src.label, error: '歷史不夠或中間有缺口,先抓完整歷史' };
-    const rows = REBOUND_ROWS.map(row => reboundRow(src.hist, src.p, row));
-    const parts = src.p.pyramidLevels + 2;
-    rows[1].name = `分${parts === 4 ? '四' : ' ' + parts + ' '}份、不反彈`;
-    return { label: src.label, from: rows[0].from, to: rows[0].to, rows };
-  });
-}
-function reboundReportLines(){
-  if (!reboundResults) return [];
-  const f2 = v => v == null ? '—' : v.toFixed(2);
-  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  const out = ['', '■ 實驗:反彈加碼(總報酬 / MDD / 年化÷MDD / 2021前 / 2021後 / 反彈加碼次數 / 反彈停損次數;五段是報酬 / 期間內 MDD)'];
-  reboundResults.forEach(r => {
-    if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
-    out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
-    r.rows.forEach(x => out.push(`    ${x.name}:${pc(x.ret)} / ${x.mdd.toFixed(1)}% / ${f2(x.calmar)} / ${f2(x.early)} / ${f2(x.late)} / ${x.rebound ? x.rebs : '—'} / ${x.rebound ? x.stops : '—'}`
-      + ';' + REBOUND_WINDOWS.map(([k], j) => { const w = x.wins[j]; return `${k} ${w ? pc(w.ret) + '/' + (w.mdd == null ? '—' : w.mdd.toFixed(0) + '%') : '—'}`; }).join(' ')));
-  });
-  return out;
-}
-function renderReboundExperiment(){
-  if (!QUOTES_ENABLED) return '';
-  const f2 = v => v == null ? '—' : v.toFixed(2);
-  const pc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
-  return `
-    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
-      <h3 style="margin-bottom:6px;">實驗:反彈加碼</h3>
-      <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
-        只在回測裡試,實際訊號不動。出場後現金分四份:接刀 1、接刀 2 照舊各一份,另外從出場後的最低收盤反彈到門檻時
-        「反彈加碼 1」「反彈加碼 2」各買一份,轉回續抱照舊把剩下的全買。買了反彈之後,收盤跌破低點再往下停損%,
-        就只把反彈買的賣掉(「反彈停損」),重新找下一個低點;每次出場最多停損 2 次。
-        「反彈」那幾列只要出場後反彈到門檻就買(沒接刀也會買);「接完才反彈」那幾列要接刀的層數都接完(確認跌深)才開始反彈加碼。「分四份、不反彈」是對照組:
-        只改資金切法,用來分辨差別是反彈加碼帶來的,還是接刀每層少買造成的。正2 上市前(2000、2008)用加權指數模擬。
-        看的時候注意:門檻、停損稍微改一點會不會突然差很多(斷崖)、2021 前後兩段是不是都變好、2020/2022 短空頭有沒有被傷到。</div></details>
-      <button class="btn" data-act="rebound-run">▶ 跑反彈加碼實驗(用上面已經抓好的歷史)</button>
-      ${(reboundResults || []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
-        <div style="margin-top:12px;">
-          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
-          <table class="bt-grid">
-            <tr><th></th><th>總報酬</th><th>MDD</th><th>年化÷MDD</th><th>2021前</th><th>2021後</th><th>反彈加碼</th><th>反彈停損</th></tr>
-            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th><td>${pc(x.ret)}</td><td>${x.mdd.toFixed(1)}%</td><td>${f2(x.calmar)}</td><td>${f2(x.early)}</td><td>${f2(x.late)}</td><td>${x.rebound ? x.rebs : '—'}</td><td>${x.rebound ? x.stops : '—'}</td></tr>`).join('')}
-          </table>
-          <table class="bt-grid" style="margin-top:6px;">
-            <tr><th></th>${REBOUND_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
-            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th>${x.wins.map(w => w ? `<td><span>${pc(w.ret)}</span><span>${w.mdd == null ? '—' : w.mdd.toFixed(0) + '%'}</span></td>` : '<td>—</td>').join('')}</tr>`).join('')}
-          </table>
-        </div>`).join('')}
-      ${reboundResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">第一張:全期(2021 前/後也是年化÷MDD;反彈加碼、反彈停損是全期次數)。第二張:五段期間各自的報酬 / 期間內 MDD。「📋 複製結果」會一起帶到。</div>` : ''}
-    </div>`;
-}
-/* ===================== REBOUND 實驗區塊結束 ===================== */
-
 
 /* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
    中間的接刀、轉回續抱、續抱都算在這一輪裡;頭尾都是全部現金,淨值的比值就是這一輪整體的賺賠(含手續費)。
@@ -4613,7 +4482,6 @@ function renderBacktestCard(){
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
       ${renderBacktestWindow()}
-      ${renderReboundExperiment()}
     </div>`;
 }
 
@@ -5448,7 +5316,6 @@ function onClick(el){
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); btCopyMsg = ''; btCopyText = ''; break;
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
-    case 'rebound-run': runReboundExperiment(); break;   // REBOUND 實驗(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);

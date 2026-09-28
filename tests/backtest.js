@@ -24,8 +24,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; },
-  reboundRow, reboundReportLines, renderReboundExperiment, REBOUND_ROWS, set reboundResults(v){ reboundResults = v; } };`);
+  backtestReportText, set backtestResults(v){ backtestResults = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -318,88 +317,6 @@ await (async function testTwseThrottle(){
     global.setTimeout = realST;
     Date.now = realNow;
   }
-})();
-console.log('  ok');
-
-console.log('REBOUND 實驗(反彈加碼,只在回測):反彈買一份、跌破低點停損只賣反彈的、最多停損 2 次、不傳參數跟原策略一樣');
-(function testRebound(){
-  // 手刻路徑:上漲進場 → 急跌出場 → 跌到 60 → 反彈 15%/30% 各買一份 → 跌破 57(60 × 0.95)停損 → 新低 50 →
-  // 再反彈買一份 → 跌破 47.5 第二次停損 → 再反彈:已經停損 2 次,不再買。接刀門檻、轉回續抱設到不會觸發。
-  const px = [];
-  for (let i = 0; i < 40; i++) px.push(80 * Math.pow(1.03, i));  // 急漲:強反彈進場
-  for (let i = 1; i <= 16; i++) px.push(px[39] - i * (px[39] - 60) / 16);   // 急跌出場,一路跌到 60
-  for (let i = 1; i <= 10; i++) px.push(60 + i * 2);            // → 80(69 買反彈 1、78.x 買反彈 2)
-  for (let i = 1; i <= 6; i++) px.push(80 - i * 4);             // → 56 停損
-  for (let i = 1; i <= 3; i++) px.push(56 - i * 2);             // → 50 新低
-  for (let i = 1; i <= 4; i++) px.push(50 + i * 2.5);           // → 60(57.5 買反彈 1)
-  for (let i = 1; i <= 4; i++) px.push(60 - i * 3.2);           // → 47.2 停損
-  for (let i = 1; i <= 6; i++) px.push(47.2 + i * 3);           // 反彈 38%:停損 2 次了,不再買
-  const hist = mkHist(px);
-  const p = { maFast:20, maSlow:20, exitBuffer:0.9, recoverSlopeThreshold:9, recoverStrongRebound:1.3, pyramidGap:0.7, pyramidLevels:2 };
-  const rb = { up1: 0.15, up2: 0.30, stop: 0.05, maxStops: 2 };
-  const r = A.runBacktest(hist, p, rb);
-  const seq = r.events.map(e => e.act + (e.n || '')).join(',');
-  must(seq === 'RECOVER,EXIT,REB1,REB2,RSTOP1,REB1,RSTOP2', `事件順序不對:${seq}`);
-  // 接完才反彈(B 版):這條路徑接刀一層都沒接,不該反彈加碼,跟「分四份、不反彈」一樣
-  const b = A.runBacktest(hist, p, Object.assign({}, rb, { afterAdds: true }));
-  must(!b.events.some(e => e.act === 'REB') && JSON.stringify(b.curve) === JSON.stringify(A.runBacktest(hist, p, { maxStops: 2 }).curve), '接完才反彈:還沒接完接刀層數就不該反彈加碼');
-  const ev = act => r.events.filter(e => e.act === act);
-  const reb1 = ev('REB')[0], stop1 = ev('RSTOP')[0], exit = ev('EXIT')[0];
-  must(reb1 && reb1.close >= 60 * 1.15 && reb1.close - 2 < 60 * 1.15, `反彈加碼 1 應該在第一次收盤 ≥ 69 那天:${reb1 && reb1.close}`);
-  must(stop1 && stop1.close < 57 && stop1.close + 4 >= 57, `反彈停損應該在第一次收盤 < 57 那天:${stop1 && stop1.close}`);
-  // 反彈加碼買的是出場現金的四分之一(整張)
-  const at = d => r.curve.findIndex(pt => pt.d === d);
-  const k = at(reb1.d), cashAtExit = r.curve[at(exit.d)].strat;
-  const qty = Math.floor(cashAtExit / 4 / (reb1.close * 1.001425) / 1000) * 1000;
-  const dv = r.curve[k + 1].strat - r.curve[k].strat;
-  const cA = px[px.length - r.curve.length + k], cB = px[px.length - r.curve.length + k + 1];
-  must(qty > 0 && Math.abs(dv - qty * (cB - cA)) < 1e-6, `反彈加碼 1 的股數不對:淨值變動 ${dv},預期 ${qty} 股 × ${cB - cA}`);
-  // 停損之後沒有部位(沒有接刀、反彈的都賣了):淨值每天一樣,直到下一次反彈加碼
-  const s1 = at(stop1.d), nextReb = at(ev('REB')[2].d);
-  must(r.curve.slice(s1, nextReb).every(pt => Math.abs(pt.strat - r.curve[s1].strat) < 1e-6), '反彈停損之後應該全部是現金,淨值不該再變');
-  const last = r.curve.slice(at(ev('RSTOP')[1].d));
-  must(last.every(pt => Math.abs(pt.strat - last[0].strat) < 1e-6), '停損 2 次之後不該再反彈加碼');
-  // 門檻設到不可能到 = 只分四份、不反彈
-  const q = A.runBacktest(hist, p, { maxStops: 2 }), never = A.runBacktest(hist, p, { up1: 1e9, up2: 2e9, stop: 0.05, maxStops: 2 });
-  must(JSON.stringify(q.curve) === JSON.stringify(never.curve), '反彈門檻永遠到不了時應該跟「分四份、不反彈」一模一樣');
-  must(JSON.stringify(A.runBacktest(hist, p).curve) === JSON.stringify(A.runBacktest(hist, p, null).curve), '不傳實驗參數要跟原策略一樣');
-
-  // 隨機路徑:不變量
-  let seed = 31, n = 0, rebs = 0, stops = 0, afterRebs = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const pp = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
-  for (let t = 0; t < 30; t++){
-    const h = []; let c = 50; const d = new Date(2012, 0, 4);
-    for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
-      c *= 1 + (rnd() - 0.5) * 0.07 + (Math.floor(i / 250) % 2 ? -0.002 : 0.0015);
-      h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 100) / 100 }); }
-    A.REBOUND_ROWS.forEach(row => {
-      const res = A.runBacktest(h, pp, row.rb);
-      n++;
-      must(res.curve.every(pt => Number.isFinite(pt.strat) && pt.strat > 0), `${row.name} 淨值出現 NaN 或 ≤ 0`);
-      let st = 'WATCH', done = 0, sc = 0, adds = 0;
-      res.events.forEach(e => {
-        if (e.act === 'EXIT'){ st = 'WAIT'; done = 0; sc = 0; adds = 0; }
-        else if (e.act === 'RECOVER'){ st = 'HOLD'; done = 0; sc = 0; adds = 0; }
-        else if (e.act === 'ADD'){ st = 'WAIT'; adds = e.n; }
-        else if (e.act === 'REB'){ rebs++; must(st === 'WAIT' && e.n === done + 1 && e.n <= 2 && sc < 2, `${e.d} 反彈加碼時機不對(${st}, 第 ${e.n} 次, 已停損 ${sc})`); done = e.n;
-          if (row.rb.afterAdds){ afterRebs++; must(adds >= pp.pyramidLevels, `${row.name} ${e.d} 接刀只接了 ${adds} 層就反彈加碼`); } }
-        else if (e.act === 'RSTOP'){ stops++; sc++; must(st === 'WAIT' && done > 0 && sc <= 2, `${e.d} 反彈停損時機不對`); done = 0; }
-      });
-      if (!row.rb || !row.rb.up1) must(!res.events.some(e => e.act === 'REB' || e.act === 'RSTOP'), `${row.name} 不該有反彈動作`);
-    });
-    const x = A.reboundRow(h, pp, A.REBOUND_ROWS[3]);
-    must(x.wins.length === 5 && Number.isFinite(x.calmar), '實驗表的一列少了欄位');
-  }
-  console.log('  ' + n + ' 次回測,反彈加碼', rebs, '次、反彈停損', stops, '次');
-  must(rebs > 30 && stops > 5, '隨機路徑幾乎沒有反彈動作,這個測試沒測到東西');
-  must(afterRebs > 5, '「接完才反彈」在隨機路徑幾乎沒有觸發,這個測試沒測到東西');
-  // 畫面跟複製結果
-  const h = mkHist(px);
-  A.reboundResults = [{ label: '00631L', from: '2020-01-01', to: '2020-03-01', rows: A.REBOUND_ROWS.map(row => A.reboundRow(h, p, row)) }, { label: '模擬正2', error: '歷史不夠' }];
-  const html = A.renderReboundExperiment(), txt = A.reboundReportLines().join('\n');
-  must(!/NaN|undefined|\[object/.test(html + txt), '反彈實驗的表格或複製文字出現 NaN/undefined');
-  must(txt.includes('反彈 15/30%、停損 5%') && txt.includes('模擬正2:歷史不夠'), '複製文字少了實驗的列');
-  A.reboundResults = null;
 })();
 console.log('  ok');
 
