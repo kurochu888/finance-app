@@ -17,7 +17,7 @@ const fs = require('fs');
 const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
-eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize,
+eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
   computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
@@ -501,6 +501,33 @@ console.log('層數上限比曝險目標設定的層數多:多出來的層沿用
   A.onField('expo-layer-2', { value: '170' });
   must(JSON.stringify(A.state.leverage.exposureTargets.byLayer) === '[75,150,170]', `填第 3 層之後 byLayer 應該是 [75,150,170],得到 ${JSON.stringify(A.state.leverage.exposureTargets.byLayer)}`);
   must(A.computeExposurePlan().targetRatio === 170, '第 3 層填了 170% 卡片要照 170% 算');
+})();
+console.log('  ok');
+
+console.log('訊號只留最近 PRICE_HIST_KEEP 筆歷史,算出來的狀態要跟從頭(回測那種完整歷史)算的一樣');
+(function testTrimmedHistory(){
+  // 訊號分頁的 priceHistory 只留約 4 年,回測用 2016 起的完整歷史;狀態機從留下來那段的開頭(WATCH)重放,
+  // 要在這段裡收斂到跟完整歷史一樣的狀態、層數、接刀基準價,不然 🔔 會跟「照策略」的狀態不同(續抱時的基準價不會被用到,不比)
+  let seed = 7, checks = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const g = () => Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd());
+  for (const lev of [2, 1]){
+    const p = A.defaultTrendParams(lev);
+    for (let k = 0; k < 10; k++){
+      const hist = []; let c = 20; const d = new Date(2005, 0, 3);
+      for (let i = 0; i < 4000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+        c *= Math.exp((Math.floor(i / 400) % 3 === 2 ? -0.0015 : 0.0006) + (lev === 2 ? 0.024 : 0.012) * g());
+        hist.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 100) / 100 }); }
+      for (let end = 2500; end <= hist.length; end += 53){
+        const full = hist.slice(0, end), cut = full.slice(-A.PRICE_HIST_KEEP);
+        const a = A.computeTrend({ key: 'k', id: 'X', leverage: lev, trend: p, priceHistory: full });
+        const b = A.computeTrend({ key: 'k', id: 'X', leverage: lev, trend: p, priceHistory: cut });
+        checks++;
+        must(a.status === b.status && a.pyramidCount === b.pyramidCount && (a.status === 'HOLD' || Math.abs(a.basePrice - b.basePrice) < 1e-9),
+          `${lev} 倍 ${full[full.length - 1].d}:完整歷史 ${a.status}/${a.pyramidCount}/${a.basePrice},只留近 ${cut.length} 筆 ${b.status}/${b.pyramidCount}/${b.basePrice}`);
+      }
+    }
+  }
+  console.log('  比對 ' + checks + ' 次');
 })();
 console.log('  ok');
 
