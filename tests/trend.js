@@ -85,6 +85,10 @@ console.log('cushionPct:只有 HOLD 時才有意義');
 const holdPoint = trendAt(20);
 must(holdPoint.status === 'HOLD' && typeof holdPoint.cushionPct === 'number' && holdPoint.cushionPct > 0,
      'HOLD 時 cushionPct 應該是正數,實際是 ' + holdPoint.cushionPct);
+const exitLineAt20 = holdPoint.maFast * holdPoint.params.exitBuffer;
+must(Math.abs(holdPoint.cushionPct - (1 - exitLineAt20 / holdPoint.lastClose) * 100) < 1e-9,
+     'cushionPct 應該是「再跌幾 % 就出場」= (1 − 出場線 ÷ 收盤) × 100,實際是 ' + holdPoint.cushionPct);
+must(holdPoint.cushionPct < 100, 'cushionPct 是往下跌的百分比,不可能超過 100%');
 const waitPoint = trendAt(50);
 must(waitPoint.status === 'WAIT_RECOVER' && waitPoint.cushionPct === null,
      'WAIT_RECOVER 時 cushionPct 應該是 null,實際是 ' + waitPoint.cushionPct);
