@@ -340,6 +340,9 @@ console.log('REBOUND 實驗(反彈加碼,只在回測):反彈買一份、跌破�
   const r = A.runBacktest(hist, p, rb);
   const seq = r.events.map(e => e.act + (e.n || '')).join(',');
   must(seq === 'RECOVER,EXIT,REB1,REB2,RSTOP1,REB1,RSTOP2', `事件順序不對:${seq}`);
+  // 接完才反彈(B 版):這條路徑接刀一層都沒接,不該反彈加碼,跟「分四份、不反彈」一樣
+  const b = A.runBacktest(hist, p, Object.assign({}, rb, { afterAdds: true }));
+  must(!b.events.some(e => e.act === 'REB') && JSON.stringify(b.curve) === JSON.stringify(A.runBacktest(hist, p, { maxStops: 2 }).curve), '接完才反彈:還沒接完接刀層數就不該反彈加碼');
   const ev = act => r.events.filter(e => e.act === act);
   const reb1 = ev('REB')[0], stop1 = ev('RSTOP')[0], exit = ev('EXIT')[0];
   must(reb1 && reb1.close >= 60 * 1.15 && reb1.close - 2 < 60 * 1.15, `反彈加碼 1 應該在第一次收盤 ≥ 69 那天:${reb1 && reb1.close}`);
@@ -362,7 +365,7 @@ console.log('REBOUND 實驗(反彈加碼,只在回測):反彈買一份、跌破�
   must(JSON.stringify(A.runBacktest(hist, p).curve) === JSON.stringify(A.runBacktest(hist, p, null).curve), '不傳實驗參數要跟原策略一樣');
 
   // 隨機路徑:不變量
-  let seed = 31, n = 0, rebs = 0, stops = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  let seed = 31, n = 0, rebs = 0, stops = 0, afterRebs = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const pp = { maFast:60, maSlow:240, exitBuffer:0.9, recoverSlopeThreshold:1.001, recoverStrongRebound:1.1, pyramidGap:0.15, pyramidLevels:2 };
   for (let t = 0; t < 30; t++){
     const h = []; let c = 50; const d = new Date(2012, 0, 4);
@@ -373,12 +376,13 @@ console.log('REBOUND 實驗(反彈加碼,只在回測):反彈買一份、跌破�
       const res = A.runBacktest(h, pp, row.rb);
       n++;
       must(res.curve.every(pt => Number.isFinite(pt.strat) && pt.strat > 0), `${row.name} 淨值出現 NaN 或 ≤ 0`);
-      let st = 'WATCH', done = 0, sc = 0;
+      let st = 'WATCH', done = 0, sc = 0, adds = 0;
       res.events.forEach(e => {
-        if (e.act === 'EXIT'){ st = 'WAIT'; done = 0; sc = 0; }
-        else if (e.act === 'RECOVER'){ st = 'HOLD'; done = 0; sc = 0; }
-        else if (e.act === 'ADD') st = 'WAIT';
-        else if (e.act === 'REB'){ rebs++; must(st === 'WAIT' && e.n === done + 1 && e.n <= 2 && sc < 2, `${e.d} 反彈加碼時機不對(${st}, 第 ${e.n} 次, 已停損 ${sc})`); done = e.n; }
+        if (e.act === 'EXIT'){ st = 'WAIT'; done = 0; sc = 0; adds = 0; }
+        else if (e.act === 'RECOVER'){ st = 'HOLD'; done = 0; sc = 0; adds = 0; }
+        else if (e.act === 'ADD'){ st = 'WAIT'; adds = e.n; }
+        else if (e.act === 'REB'){ rebs++; must(st === 'WAIT' && e.n === done + 1 && e.n <= 2 && sc < 2, `${e.d} 反彈加碼時機不對(${st}, 第 ${e.n} 次, 已停損 ${sc})`); done = e.n;
+          if (row.rb.afterAdds){ afterRebs++; must(adds >= pp.pyramidLevels, `${row.name} ${e.d} 接刀只接了 ${adds} 層就反彈加碼`); } }
         else if (e.act === 'RSTOP'){ stops++; sc++; must(st === 'WAIT' && done > 0 && sc <= 2, `${e.d} 反彈停損時機不對`); done = 0; }
       });
       if (!row.rb || !row.rb.up1) must(!res.events.some(e => e.act === 'REB' || e.act === 'RSTOP'), `${row.name} 不該有反彈動作`);
@@ -388,6 +392,7 @@ console.log('REBOUND 實驗(反彈加碼,只在回測):反彈買一份、跌破�
   }
   console.log('  ' + n + ' 次回測,反彈加碼', rebs, '次、反彈停損', stops, '次');
   must(rebs > 30 && stops > 5, '隨機路徑幾乎沒有反彈動作,這個測試沒測到東西');
+  must(afterRebs > 5, '「接完才反彈」在隨機路徑幾乎沒有觸發,這個測試沒測到東西');
   // 畫面跟複製結果
   const h = mkHist(px);
   A.reboundResults = [{ label: '00631L', from: '2020-01-01', to: '2020-03-01', rows: A.REBOUND_ROWS.map(row => A.reboundRow(h, p, row)) }, { label: '模擬正2', error: '歷史不夠' }];
