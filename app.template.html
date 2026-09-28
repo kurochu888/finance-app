@@ -2849,7 +2849,7 @@ function renderHelp(){
       快線/慢線天數、出場緩衝、加碼間距與層數都可以在<strong>「設定」分頁</strong>每檔標的自己調,
       改壞了按「重設為預設值」就好。</p>
       <p><strong>這只是訊號顯示,不會自動下單。</strong>該買該賣一樣要自己到「紀錄」分頁記一筆——
-      這個分頁只負責告訴你現在是什麼狀態、距離出場線還有多少緩衝。</p>
+      這個分頁只負責告訴你現在是什麼狀態、收盤再跌多少就會跌破出場線。</p>
     </div>
 
     <div class="sect">正2 曝險目標</div>
@@ -3083,7 +3083,9 @@ function computeTrend(it){
   let cushionPct = null;
   if (status === 'HOLD' && fLast){
     const exitLine = fLast * p.exitBuffer;
-    cushionPct = exitLine > 0 ? (lastClose / exitLine - 1) * 100 : null;
+    // 「再跌 X% 就出場」:從收盤往下算(1 − 出場線 ÷ 收盤)。以前是收盤 ÷ 出場線 − 1(從出場線往上算),
+    // 收盤高出場線很多時會高估能跌的空間:顯示 +67.9% 其實跌 40% 就出場(2000-02 模擬正2 那次)
+    cushionPct = lastClose > 0 && exitLine > 0 ? (1 - exitLine / lastClose) * 100 : null;
   }
   return { ...base, status, pyramidCount, basePrice,
            maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct };
@@ -4035,7 +4037,7 @@ function renderTrendTab(){
     ${renderExposurePlanCard()}
     <div class="card">
       <h3>均線趨勢訊號</h3>
-      <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場緩衝」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div></details>
+      <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場線」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div></details>
       ${trends.map(t => {
         const it = findInstrumentByKey(t.key);
         if (!it) return '';
@@ -4064,7 +4066,7 @@ function renderTrendTab(){
           <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast == null ? '—' : t.maFast.toFixed(2)} / ${t.maSlow == null ? '—' : t.maSlow.toFixed(2)}</span></div>
           <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
-            ? `<div class="row sub"><span class="label">距出場緩衝</span><span class="val">${t.cushionPct == null ? '—' : t.cushionPct.toFixed(2) + '%'}</span></div>`
+            ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `再跌 ${t.cushionPct.toFixed(1)}% 就出場`}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
         </div>`;
       }).join('')}
