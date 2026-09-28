@@ -3101,7 +3101,7 @@ const computeAllTrends = () => state.instruments.map(computeTrend);
    資金使用效率比實際能做到的更高,長期複利下來會膨脹回測報酬。 */
 const BACKTEST_INITIAL_CASH = 1000000;
 const LOT_SIZE = 1000;
-function runBacktest(priceHistory, trendParams){
+function runBacktest(priceHistory, trendParams, bx = null){   // bx:BOUNCE_ADD 實驗的參數(可拆,見 BOUNCE_ADD 區塊);不傳就是原策略
   const p = trendParams;
   const hist = priceHistory || [];
   const window_ = Math.max(p.maFast, p.maSlow);   // 跟 computeTrend 同一套:快線設得比慢線長也要算得出來
@@ -3121,6 +3121,9 @@ function runBacktest(priceHistory, trendParams){
   const bhCashLeft = BACKTEST_INITIAL_CASH - bhQty * closes[start] - (bhQty > 0 ? defaultFee('buy', bhQty * closes[start]) : 0);
   const curve = [{ d: dates[start], strat: BACKTEST_INITIAL_CASH, bh: bhCashLeft + bhShares * closes[start] }];
   const events = [];   // 每次策略動作(出場/接刀/轉回續抱)的日期跟價格,給「指定期間」檢視列出來;只記錄,不影響淨值計算
+  // BOUNCE_ADD 實驗(可拆):出場價、出場後最低收盤(接刀的基準)
+  let bxExit = 0, bxLow = Infinity;
+  const bxUps = bx ? [bx.up1, bx.up2] : [];
 
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
@@ -3136,6 +3139,15 @@ function runBacktest(priceHistory, trendParams){
         const effectiveBase = Math.min(manualPrice, s);
         const gapTriggered = close < effectiveBase * (1 - p.pyramidGap);
         if ((priceStable && slopeOk) || strongRebound) action = 'RECOVER';
+        else if (bx){
+          // BOUNCE_ADD 實驗(可拆):接刀改成「出場後跌破出場價、從最低收盤反彈 up1/up2 才買」;接了之後收盤跌破最低點 × (1 − stop) 就全部賣掉,當成重新出場
+          if (status === 'WAIT_RECOVER' && pyramidCount > 0 && close < bxLow * (1 - bx.stop)) action = 'BSTOP';
+          else {
+            if (status === 'WAIT_RECOVER' && pyramidCount === 0) bxLow = Math.min(bxLow, close);   // 還沒接之前跟著創新低移動;接了之後固定(停損看它)
+            action = status === 'WAIT_RECOVER' && pyramidCount < p.pyramidLevels && bxLow < bxExit
+              && close >= bxLow * (1 + bxUps[pyramidCount]) ? 'ADD' : status;
+          }
+        }
         else if (gapTriggered && pyramidCount < p.pyramidLevels) action = 'ADD';
         else action = status;
       }
@@ -3151,23 +3163,27 @@ function runBacktest(priceHistory, trendParams){
         basePrice = close; pyramidCount = 0; status = 'HOLD';
         events.push({ d: dates[i], act: 'RECOVER', close });
       }else if (action === 'ADD'){
-        const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
-        const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
-        if (qty > 0){
-          const fee = defaultFee('buy', qty * close);
-          cash -= qty * close + fee;
-          shares += qty;
-        }
-        basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
-        events.push({ d: dates[i], act: 'ADD', close, n: pyramidCount });
-      }else if (action === 'EXIT'){
+        // BOUNCE_ADD 實驗(可拆):同一天兩個門檻都到就連買兩層(原策略一天只會接一層,迴圈只跑一次)
+        do {
+          const unit = Math.min(cash, cashAtExit / p.pyramidLevels);
+          const qty = Math.floor(unit / (close * 1.001425) / LOT_SIZE) * LOT_SIZE;
+          if (qty > 0){
+            const fee = defaultFee('buy', qty * close);
+            cash -= qty * close + fee;
+            shares += qty;
+          }
+          basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER';
+          events.push({ d: dates[i], act: 'ADD', close, n: pyramidCount });
+        } while (bx && pyramidCount < p.pyramidLevels && close >= bxLow * (1 + bxUps[pyramidCount]));
+      }else if (action === 'EXIT' || action === 'BSTOP'){   // BSTOP:BOUNCE_ADD 實驗(可拆)的停損,賣法跟出場一樣
         const gross = shares * close;
         const fee = defaultFee('sell', gross);
         cash += gross - fee;
         shares = 0;
         cashAtExit = cash;
         basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER';
-        events.push({ d: dates[i], act: 'EXIT', close });
+        bxExit = close; bxLow = close;   // BOUNCE_ADD 實驗(可拆):停損也當成重新出場,要再跌破這天的收盤才開始找低點
+        events.push({ d: dates[i], act: action, close });
       }
     }
     curve.push({ d: dates[i], strat: cash + shares * close, bh: bhCashLeft + bhShares * close });
@@ -4170,6 +4186,7 @@ function backtestReportText(){
       if (lines.length){ out.push(`  ${label}(${from} ~ ${to})`); out.push(...lines); }
     });
   }
+  out.push(...bounceReportLines());   // BOUNCE_ADD 實驗(可拆)
   return out.join('\n');
 }
 async function copyBacktestReport(){
@@ -4359,6 +4376,96 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
+/* ===================== BOUNCE_ADD 實驗:反彈才接刀(2026-09-28,只在回測,可拆) =====================
+   使用者的想法:接刀不要「跌 15% 就買」,改成等止跌反彈才買。規則(使用者定的):
+   - 出場後收盤跌破出場價,就開始記最低收盤當基準,跟著創新低往下移;從基準反彈 up1 買接刀 1、反彈 up2 買接刀 2
+     (金額跟原策略一樣:出場現金 ÷ 層數;同一天兩個門檻都到就兩層一起買;0050 一層只看 up1)。
+   - 接了之後基準固定,收盤跌破「基準 × (1 − stop)」就全部賣掉,當成重新出場:要再跌破這天的收盤才重新找低點、可以再接。
+   - 轉回續抱、出場的條件完全不變;還沒進場過(WATCH)不接刀。回測不管曝險目標、兩檔各算各的,正2 上市前用加權指數模擬。
+   判斷照 CLAUDE.md 的規矩:門檻/停損稍微變會不會斷崖、2021 前後段都要成立、五段(2000/2008 用模擬)短空頭不能傷太多、長空頭不能更差。
+   拆掉:刪這個區塊、runBacktest() 裡標了 BOUNCE_ADD 的幾行(bx 參數、bxExit/bxLow、else if (bx) 那段、ADD 的 do/while 改回單次、
+   EXIT 那行的 BSTOP 跟 bxExit 重設、events 的 act)、renderBacktestCard() 的 renderBounceExperiment()、onClick 的 bounce-run、
+   backtestReportText() 的 bounceReportLines()。還原點分支 restore/pre-bounce-add-experiment-2026-09-28。 */
+const BOUNCE_ROWS = [
+  { name: '原策略(跌 15% 接)', bx: null },
+  { name: '反彈 10/20%、停損 5%', bx: { up1: 0.10, up2: 0.20, stop: 0.05 } },
+  { name: '反彈 15/30%、停損 5%', bx: { up1: 0.15, up2: 0.30, stop: 0.05 } },
+  { name: '反彈 20/40%、停損 5%', bx: { up1: 0.20, up2: 0.40, stop: 0.05 } },
+  { name: '反彈 15/30%、停損 3%', bx: { up1: 0.15, up2: 0.30, stop: 0.03 } },
+  { name: '反彈 15/30%、停損 8%', bx: { up1: 0.15, up2: 0.30, stop: 0.08 } },
+];
+const BOUNCE_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
+                        ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
+let bounceResults = null;
+function bounceSources(){
+  const sources = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+    .map(it => ({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(it.leverage) }));
+  if (indexSimHist.length > 1){   // 正2 上市前沒有資料:用加權指數模擬(可拆)
+    const { one, two } = indexSimSeries();
+    sources.push({ label: '模擬正2', hist: two, p: (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2) });
+    sources.push({ label: '加權指數', hist: one, p: (state.instruments.find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1) });
+  }
+  return sources;
+}
+function bounceRow(hist, p, row){
+  const res = runBacktest(hist, p, row.bx);
+  const st = (f, t) => periodStats(res.curve, f, t, 'strat');
+  const all = st('0000', '9999'), early = st('0000', BACKTEST_SPLIT_DATE), late = st(BACKTEST_SPLIT_DATE, '9999');
+  const cnt = act => res.events.filter(e => e.act === act).length;
+  return { name: row.name, from: res.from, to: res.to, ret: res.returnStrat, mdd: res.mddStrat,
+           calmar: all && all.calmar, early: early && early.calmar, late: late && late.calmar, adds: cnt('ADD'), stops: cnt('BSTOP'),
+           wins: BOUNCE_WINDOWS.map(([, f, t]) => windowStats(res, f, t, 'strat')) };
+}
+function runBounceExperiment(){
+  bounceResults = bounceSources().map(src => {
+    const need = Math.max(src.p.maFast, src.p.maSlow) + 1;
+    if (!src.hist || src.hist.length < need || findHistoryGap(src.hist)) return { label: src.label, error: '歷史不夠或中間有缺口,先抓完整歷史' };
+    const rows = BOUNCE_ROWS.map(row => bounceRow(src.hist, src.p, row));
+    return { label: src.label, from: rows[0].from, to: rows[0].to, rows };
+  });
+}
+const bouncePc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
+const bounceF2 = v => v == null ? '—' : v.toFixed(2);
+function bounceReportLines(){
+  if (!bounceResults) return [];
+  const out = ['', '■ 實驗:反彈才接刀(總報酬 / MDD / 年化÷MDD / 2021前 / 2021後 / 接刀次數 / 停損次數;五段是報酬 / 期間內 MDD)'];
+  bounceResults.forEach(r => {
+    if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
+    out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
+    r.rows.forEach(x => out.push(`    ${x.name}:${bouncePc(x.ret)} / ${x.mdd.toFixed(1)}% / ${bounceF2(x.calmar)} / ${bounceF2(x.early)} / ${bounceF2(x.late)} / ${x.adds} / ${x.stops}`
+      + ';' + BOUNCE_WINDOWS.map(([k], j) => { const w = x.wins[j]; return `${k} ${w ? bouncePc(w.ret) + '/' + (w.mdd == null ? '—' : w.mdd.toFixed(0) + '%') : '—'}`; }).join(' ')));
+  });
+  return out;
+}
+function renderBounceExperiment(){
+  if (!QUOTES_ENABLED) return '';
+  return `
+    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
+      <h3 style="margin-bottom:6px;">實驗:反彈才接刀</h3>
+      <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
+        只在回測裡試,實際訊號不動。原策略是「出場後再跌 15% 就接一層」;這裡改成等止跌:出場後跌破出場價,
+        記下最低收盤(創新低就往下移),從最低點反彈 15% 接第一層、30% 接第二層(另外跑 10/20、20/40 比較)。
+        接了之後,收盤跌破最低點再往下 5% 就全部賣掉、當成重新出場,之後再找新的低點。轉回續抱的條件不變,
+        每層金額也跟原策略一樣是出場現金的一半。正2 上市前(2000、2008)用加權指數模擬。
+        看的時候注意:門檻、停損稍微改一點會不會突然差很多、2021 前後兩段是不是都變好、2020/2022 短空頭有沒有被傷到。</div></details>
+      <button class="btn" data-act="bounce-run">▶ 跑反彈才接刀實驗(用上面已經抓好的歷史)</button>
+      ${(bounceResults || []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
+        <div style="margin-top:12px;">
+          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
+          <table class="bt-grid">
+            <tr><th></th><th>總報酬</th><th>MDD</th><th>年化÷MDD</th><th>2021前</th><th>2021後</th><th>接刀</th><th>停損</th></tr>
+            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th><td>${bouncePc(x.ret)}</td><td>${x.mdd.toFixed(1)}%</td><td>${bounceF2(x.calmar)}</td><td>${bounceF2(x.early)}</td><td>${bounceF2(x.late)}</td><td>${x.adds}</td><td>${x.stops}</td></tr>`).join('')}
+          </table>
+          <table class="bt-grid" style="margin-top:6px;">
+            <tr><th></th>${BOUNCE_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
+            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th>${x.wins.map(w => w ? `<td><span>${bouncePc(w.ret)}</span><span>${w.mdd == null ? '—' : w.mdd.toFixed(0) + '%'}</span></td>` : '<td>—</td>').join('')}</tr>`).join('')}
+          </table>
+        </div>`).join('')}
+      ${bounceResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">第一張:全期(2021 前/後也是年化÷MDD;接刀、停損是全期次數)。第二張:五段期間各自的報酬 / 期間內 MDD。「📋 複製結果」會一起帶到。</div>` : ''}
+    </div>`;
+}
+/* ===================== BOUNCE_ADD 實驗區塊結束 ===================== */
+
 
 /* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
    中間的接刀、轉回續抱、續抱都算在這一輪裡;頭尾都是全部現金,淨值的比值就是這一輪整體的賺賠(含手續費)。
@@ -4464,6 +4571,7 @@ function renderBacktestCard(){
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
       ${renderBacktestWindow()}
+      ${renderBounceExperiment()}
     </div>`;
 }
 
@@ -5298,6 +5406,7 @@ function onClick(el){
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); btCopyMsg = ''; btCopyText = ''; break;
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
+    case 'bounce-run': runBounceExperiment(); break;   // BOUNCE_ADD 實驗(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);
