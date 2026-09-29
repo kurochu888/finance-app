@@ -24,8 +24,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; },
-  bounceRow, bounceReportLines, renderBounceExperiment, BOUNCE_ROWS, set bounceResults(v){ bounceResults = v; } };`);
+  backtestReportText, set backtestResults(v){ backtestResults = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -318,84 +317,6 @@ await (async function testTwseThrottle(){
     global.setTimeout = realST;
     Date.now = realNow;
   }
-})();
-console.log('  ok');
-
-console.log('BOUNCE_ADD 實驗(反彈才接刀,只在回測):從最低點反彈才接、跌破最低點 5% 全部賣掉重新出場、不傳參數跟原策略一樣');
-(function testBounce(){
-  // 手刻路徑:急漲進場 → 急跌出場、跌到 60 → 反彈 15%(69)接 1、30%(78)接 2 → 跌破 57(60 × 0.95)停損
-  // → 跌破停損價、新低 50 → 反彈到 57.5 接 1 → 跌破 47.5 再停損 → 之後沒再跌破停損價,不接。轉回續抱設到不會觸發。
-  const px = [];
-  for (let i = 0; i < 40; i++) px.push(80 * Math.pow(1.03, i));
-  for (let i = 1; i <= 16; i++) px.push(px[39] - i * (px[39] - 60) / 16);
-  for (let i = 1; i <= 10; i++) px.push(60 + i * 2);
-  for (let i = 1; i <= 6; i++) px.push(80 - i * 4);
-  for (let i = 1; i <= 3; i++) px.push(56 - i * 2);
-  for (let i = 1; i <= 4; i++) px.push(50 + i * 2.5);
-  for (let i = 1; i <= 4; i++) px.push(60 - i * 3.2);
-  for (let i = 1; i <= 6; i++) px.push(47.2 + i * 3);
-  const hist = mkHist(px);
-  const p = { maFast:20, maSlow:20, exitBuffer:0.9, recoverSlopeThreshold:9, recoverStrongRebound:1.3, pyramidGap:0.7, pyramidLevels:2 };
-  const bx = { up1: 0.15, up2: 0.30, stop: 0.05 };
-  const r = A.runBacktest(hist, p, bx);
-  const seq = r.events.map(e => e.act + (e.n || '')).join(',');
-  must(seq === 'RECOVER,EXIT,ADD1,ADD2,BSTOP,ADD1,BSTOP', `事件順序不對:${seq}`);
-  const adds = r.events.filter(e => e.act === 'ADD'), stops = r.events.filter(e => e.act === 'BSTOP');
-  must(adds[0] && adds[0].close === 70 && adds[1].close === 78 && adds[2].close === 57.5, `接刀價不對:${adds.map(e => e.close)}`);
-  must(stops[0] && stops[0].close === 56 && Math.abs(stops[1].close - 47.2) < 1e-9, `停損價不對:${stops.map(e => e.close)}`);
-  // 每層是出場現金的一半(整張)
-  const at = d => r.curve.findIndex(pt => pt.d === d);
-  const exitCash = r.curve[at(r.events[1].d)].strat, k = at(adds[0].d);
-  const qty = Math.floor(exitCash / 2 / (70 * 1.001425) / 1000) * 1000;
-  const cA = px[px.length - r.curve.length + k], cB = px[px.length - r.curve.length + k + 1];
-  must(qty > 0 && Math.abs((r.curve[k + 1].strat - r.curve[k].strat) - qty * (cB - cA)) < 1e-6, '接刀 1 買的不是出場現金的一半');
-  // 停損之後全部是現金,到下一次接刀前淨值不動;第二次停損之後都沒再跌破停損價,不該再接
-  const s1 = at(stops[0].d);
-  must(r.curve.slice(s1, at(adds[2].d)).every(pt => Math.abs(pt.strat - r.curve[s1].strat) < 1e-6), '停損應該全部賣掉');
-  const tail = r.curve.slice(at(stops[1].d));
-  must(tail.every(pt => Math.abs(pt.strat - tail[0].strat) < 1e-6), '停損後沒有再跌破停損價,不該接刀');
-  // 同一天兩個門檻都到:兩層一起買
-  const px2 = px.slice(0, 56).concat([80, 80, 80]);
-  const r2 = A.runBacktest(mkHist(px2), p, bx);
-  const same = r2.events.filter(e => e.act === 'ADD');
-  must(same.length === 2 && same[0].d === same[1].d, `一天漲 33% 應該兩層同一天買:${JSON.stringify(same)}`);
-  must(JSON.stringify(A.runBacktest(hist, p).curve) === JSON.stringify(A.runBacktest(hist, p, null).curve), '不傳實驗參數要跟原策略一樣');
-
-  // 隨機路徑:不變量
-  let seed = 41, n = 0, nAdd = 0, nStop = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (const lev of [2, 1]){
-    const pp = { maFast: 60, maSlow: 240, exitBuffer: 0.9, recoverSlopeThreshold: 1.001, recoverStrongRebound: 1.1, pyramidGap: 0.15, pyramidLevels: lev };
-    for (let t = 0; t < 20; t++){
-      const h = []; let c = 50; const d = new Date(2012, 0, 4);
-      for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
-        c *= 1 + (rnd() - 0.5) * 0.07 + (Math.floor(i / 250) % 2 ? -0.002 : 0.0015);
-        h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 100) / 100 }); }
-      A.BOUNCE_ROWS.forEach(row => {
-        const res = A.runBacktest(h, pp, row.bx);
-        n++;
-        must(res.curve.every(pt => Number.isFinite(pt.strat) && pt.strat > 0), `${row.name} 淨值出現 NaN 或 ≤ 0`);
-        if (!row.bx) return;
-        let st = 'WATCH', layers = 0, low = Infinity, exitPx = 0;
-        const byDate = new Map(h.map(x => [x.d, x.c]));
-        res.events.forEach(e => {
-          if (e.act === 'EXIT' || e.act === 'BSTOP'){
-            if (e.act === 'BSTOP'){ nStop++; must(st === 'WAIT' && layers > 0 && e.close < low * (1 - row.bx.stop), `${e.d} 停損時機不對`); }
-            st = 'WAIT'; layers = 0; low = e.close; exitPx = e.close;
-          }else if (e.act === 'RECOVER'){ st = 'HOLD'; layers = 0; }
-          else if (e.act === 'ADD'){ nAdd++;
-            must(st === 'WAIT' && e.n === layers + 1 && e.n <= pp.pyramidLevels, `${e.d} 接刀層數不對(${st}, ${layers} → ${e.n})`);
-            layers = e.n; }
-        });
-      });
-    }
-  }
-  console.log('  ' + n + ' 次回測,接刀', nAdd, '次、停損', nStop, '次');
-  must(nAdd > 30 && nStop > 5, '隨機路徑幾乎沒有接刀/停損,這個測試沒測到東西');
-  A.bounceResults = [{ label: '00631L', from: '2020-01-01', to: '2020-03-01', rows: A.BOUNCE_ROWS.map(row => A.bounceRow(hist, p, row)) }, { label: '模擬正2', error: '歷史不夠' }];
-  const html = A.renderBounceExperiment(), txt = A.bounceReportLines().join('\n');
-  must(!/NaN|undefined|\[object/.test(html + txt), '實驗表格或複製文字出現 NaN/undefined');
-  must(txt.includes('反彈 15/30%、停損 5%') && txt.includes('模擬正2:歷史不夠'), '複製文字少了實驗的列');
-  A.bounceResults = null;
 })();
 console.log('  ok');
 
