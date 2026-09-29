@@ -24,8 +24,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; },
-  ema, sma, emaRow, emaReportLines, renderEmaExperiment, EMA_ROWS, set emaResults(v){ emaResults = v; } };`);
+  backtestReportText, set backtestResults(v){ backtestResults = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -318,41 +317,6 @@ await (async function testTwseThrottle(){
     global.setTimeout = realST;
     Date.now = realNow;
   }
-})();
-console.log('  ok');
-
-console.log('EMA 實驗(EMA 取代 MA,只在回測):ema() 算對、跟 sma() 同一天開始有值、不傳參數跟原策略一樣');
-(function testEma(){
-  const v = [10, 11, 12, 13, 14, 15, 16, 17];
-  const e = A.ema(v, 3), m = A.sma(v, 3);
-  must(e[0] === null && e[1] === null && m[1] === null, 'EMA 前 w−1 天應該是 null');
-  must(Math.abs(e[2] - 11) < 1e-12, `第 w 天用前 w 天簡單平均當起點:${e[2]}`);
-  let x = 11; for (let i = 3; i < v.length; i++){ x += (v[i] - x) * 0.5; must(Math.abs(e[i] - x) < 1e-12, `第 ${i} 天 EMA 算錯:${e[i]} vs ${x}`); }
-  must(A.ema([5, 5, 5, 5, 5], 3).slice(2).every(y => y === 5), '固定價格的 EMA 應該就是那個價格');
-  must(A.ema([1, 2], 3).every(y => y === null), '資料不夠 w 天全部是 null');
-  // 隨機路徑:EMA 回測跑得完、沒有 NaN,事件合理;不傳參數跟原策略一模一樣
-  let seed = 53, n = 0, diff = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const p = { maFast: 120, maSlow: 240, exitBuffer: 0.9, recoverSlopeThreshold: 1.002, recoverStrongRebound: 1.03, pyramidGap: 0.15, pyramidLevels: 2 };
-  for (let t = 0; t < 20; t++){
-    const h = []; let c = 50; const d = new Date(2012, 0, 4);
-    for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
-      c *= 1 + (rnd() - 0.5) * 0.07 + (Math.floor(i / 250) % 2 ? -0.002 : 0.0015);
-      h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 100) / 100 }); }
-    const a = A.runBacktest(h, p, { ema: true }), b = A.runBacktest(h, p);
-    n++;
-    must(a.curve.every(pt => Number.isFinite(pt.strat) && pt.strat > 0), 'EMA 回測淨值出現 NaN 或 ≤ 0');
-    must(a.from === b.from, 'EMA 跟 MA 回測起點應該同一天');
-    if (JSON.stringify(a.events) !== JSON.stringify(b.events)) diff++;
-    must(JSON.stringify(b.curve) === JSON.stringify(A.runBacktest(h, p, null).curve), '不傳實驗參數要跟原策略一樣');
-    A.EMA_ROWS.forEach(row => { const x = A.emaRow(h, p, row); must(x && Number.isFinite(x.ret) && x.wins.length === 5, `${row.name} 那列少了欄位`); });
-  }
-  must(diff > n / 2, `EMA 跟 MA 的進出幾乎一樣(${diff}/${n}),EMA 可能沒有真的用上`);
-  A.emaResults = [{ label: '00631L', from: '2020-01-01', to: '2020-03-01', rows: A.EMA_ROWS.map(row => A.emaRow(mkHist(prices.concat(prices, prices, prices, prices, prices, prices, prices)), { ...trend, maFast: 5, maSlow: 10 }, row)) }, { label: '模擬正2', error: '歷史不夠' }];
-  const html = A.renderEmaExperiment(), txt = A.emaReportLines().join('\n');
-  must(!/NaN|undefined|\[object/.test(html + txt), 'EMA 實驗表格或複製文字出現 NaN/undefined');
-  must(txt.includes('EMA 同天數') && txt.includes('EMA 快線 ×1.5(8)') && txt.includes('模擬正2:歷史不夠'), '複製文字少了實驗的列:\n' + txt);
-  A.emaResults = null;
-  console.log('  ' + n + ' 組隨機路徑,EMA 跟 MA 進出不同', diff, '組');
 })();
 console.log('  ok');
 
