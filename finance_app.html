@@ -639,8 +639,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-09-29 · a6f641e1e4';
-const BUILD_HASH = 'a6f641e1e4';
+const BUILD_VERSION = '2026-09-29 · 04ce87e1f8';
+const BUILD_HASH = '04ce87e1f8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3057,6 +3057,18 @@ function sma(vals, w){
   }
   return out;
 }
+/* EMA_EXIT 實驗(可拆)用的指數移動平均:第 w 天用前 w 天的簡單平均當起點,之後每天 EMA += (收盤 − EMA) × 2/(w+1)。
+   跟 sma() 一樣前 w−1 天是 null。 */
+function ema(vals, w){
+  const out = new Array(vals.length).fill(null);
+  if (vals.length < w) return out;
+  let e = 0;
+  for (let i = 0; i < w; i++) e += vals[i];
+  e /= w; out[w - 1] = e;
+  const k = 2 / (w + 1);
+  for (let i = w; i < vals.length; i++){ e += (vals[i] - e) * k; out[i] = e; }
+  return out;
+}
 function computeTrend(it){
   const p = it.trend || defaultTrendParams(it.leverage);
   const hist = it.priceHistory || [];
@@ -3121,7 +3133,7 @@ const computeAllTrends = () => state.instruments.map(computeTrend);
    資金使用效率比實際能做到的更高,長期複利下來會膨脹回測報酬。 */
 const BACKTEST_INITIAL_CASH = 1000000;
 const LOT_SIZE = 1000;
-function runBacktest(priceHistory, trendParams){
+function runBacktest(priceHistory, trendParams, ex = null){   // ex:EMA_EXIT 實驗(可拆),{ emaDays, exitBuffer } 出場線改用 EMA;不傳就是原策略
   const p = trendParams;
   const hist = priceHistory || [];
   const window_ = Math.max(p.maFast, p.maSlow);   // 跟 computeTrend 同一套:快線設得比慢線長也要算得出來
@@ -3132,6 +3144,7 @@ function runBacktest(priceHistory, trendParams){
   const dates = hist.map(h => h.d);
   const maF = sma(closes, p.maFast);
   const maS = sma(closes, p.maSlow);
+  const exitMa = ex ? ema(closes, ex.emaDays) : null;   // EMA_EXIT 實驗(可拆):出場線用的 EMA(天數 ≤ 快慢線較長的那條,起點前一定有值)
   const start = window_ - 1;
 
   let status = 'WATCH', basePrice = 0, pyramidCount = 0;
@@ -3147,7 +3160,7 @@ function runBacktest(priceHistory, trendParams){
     if (f != null && s != null && fy != null){
       let action;
       if (status === 'HOLD'){
-        action = close < f * p.exitBuffer ? 'EXIT' : 'HOLD';
+        action = close < (exitMa ? exitMa[i] * ex.exitBuffer : f * p.exitBuffer) ? 'EXIT' : 'HOLD';   // EMA_EXIT 實驗(可拆)
       }else{
         const priceStable = close > f && closes[i - 1] > maF[i - 1];
         const slopeOk = f >= fy * p.recoverSlopeThreshold;
@@ -4190,6 +4203,7 @@ function backtestReportText(){
       if (lines.length){ out.push(`  ${label}(${from} ~ ${to})`); out.push(...lines); }
     });
   }
+  out.push(...emaExitReportLines());   // EMA_EXIT 實驗(可拆)
   return out.join('\n');
 }
 async function copyBacktestReport(){
@@ -4379,6 +4393,98 @@ function renderIndexSimSection(){
 }
 /* ===================== INDEX_SIM 區塊結束 ===================== */
 
+/* ===================== EMA_EXIT 實驗:EMA 出場、MA 進場(2026-09-29,只在回測,可拆) =====================
+   使用者想要「出場快、進場慢」:續抱時出場線改成「EMA × 出場乘數」,接刀(慢線、基準價)跟轉回續抱(快線)照舊用簡單平均。
+   上漲時 EMA 比 MA 貼近價格,出場線比較高、從高點回落時早一點出場;CLAUDE.md 第 11 點記過出場乘數最敏感
+   (0.925 就掉),所以 EMA 天數跑 ×1、×1.25、×1.5、×2(00631L 120/150/180/240,0050 100/125/150/200),
+   同天數另外跑出場乘數 0.875、0.85(EMA 比較貼近價格,乘數可能要放寬才公平)。正2 上市前用加權指數模擬。
+   實際訊號(computeTrend)不動;runBacktest 不傳第三個參數就是原策略。
+   拆掉:刪這個區塊、sma() 下面的 ema()、runBacktest() 的 ex 參數、exitMa 那行、HOLD 出場那行改回 f * p.exitBuffer、
+   renderBacktestCard() 的 renderEmaExitExperiment()、onClick 的 emaexit-run、backtestReportText() 的 emaExitReportLines()。
+   還原點分支 restore/pre-ema-exit-experiment-2026-09-29。 */
+const EMA_EXIT_ROWS = [
+  { name: '原策略(MA 出場)', k: 0 },
+  { name: 'EMA 出場 同天數', k: 1, buf: null },
+  { name: 'EMA 出場 ×1.25', k: 1.25, buf: null },
+  { name: 'EMA 出場 ×1.5', k: 1.5, buf: null },
+  { name: 'EMA 出場 ×2', k: 2, buf: null },
+  { name: 'EMA 出場 同天數 乘數 0.875', k: 1, buf: 0.875 },
+  { name: 'EMA 出場 同天數 乘數 0.85', k: 1, buf: 0.85 },
+];
+const EMA_EXIT_WINDOWS = [['2000', '2000-01-01', '2001-12-31'], ['2008', '2007-10-01', '2009-03-31'], ['2020', '2020-01-01', '2020-06-30'],
+                          ['2022', '2022-01-01', '2022-12-31'], ['2024', '2024-07-01', '2024-09-30']];
+let emaExitResults = null;
+function emaExitSources(){
+  const sources = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+    .map(it => ({ label: it.id, hist: backtestFullHistory[it.id], p: it.trend || defaultTrendParams(it.leverage) }));
+  if (indexSimHist.length > 1){   // 正2 上市前沒有資料:用加權指數模擬(可拆)
+    const { one, two } = indexSimSeries();
+    sources.push({ label: '模擬正2', hist: two, p: (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2) });
+    sources.push({ label: '加權指數', hist: one, p: (state.instruments.find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1) });
+  }
+  return sources;
+}
+function emaExitRow(hist, p, row){
+  // EMA 天數夾在快慢線較長的那條以內:回測從那天開始,EMA 在那之前一定要有值
+  const days = row.k ? Math.min(Math.round(p.maFast * row.k), Math.max(p.maFast, p.maSlow)) : 0;
+  const buf = row.buf || p.exitBuffer;
+  const res = runBacktest(hist, p, row.k ? { emaDays: days, exitBuffer: buf } : null);
+  if (!res) return null;
+  const st = (f, t) => periodStats(res.curve, f, t, 'strat');
+  const all = st('0000', '9999'), early = st('0000', BACKTEST_SPLIT_DATE), late = st(BACKTEST_SPLIT_DATE, '9999');
+  const cnt = act => res.events.filter(e => e.act === act).length;
+  return { name: row.name + (row.k ? `(EMA ${days}${row.buf ? '' : ` × ${buf}`})` : ''), from: res.from, to: res.to, ret: res.returnStrat, mdd: res.mddStrat,
+           calmar: all && all.calmar, early: early && early.calmar, late: late && late.calmar, exits: cnt('EXIT'), adds: cnt('ADD'),
+           wins: EMA_EXIT_WINDOWS.map(([, f, t]) => windowStats(res, f, t, 'strat')) };
+}
+function runEmaExitExperiment(){
+  emaExitResults = emaExitSources().map(src => {
+    const need = Math.max(src.p.maFast, src.p.maSlow) + 1;
+    if (!src.hist || src.hist.length < need || findHistoryGap(src.hist)) return { label: src.label, error: '歷史不夠或中間有缺口,先抓完整歷史' };
+    const rows = EMA_EXIT_ROWS.map(row => emaExitRow(src.hist, src.p, row)).filter(Boolean);
+    return { label: src.label, from: rows[0].from, to: rows[0].to, rows };
+  });
+}
+const emaExitPc = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(0) + '%';
+const emaExitF2 = v => v == null ? '—' : v.toFixed(2);
+function emaExitReportLines(){
+  if (!emaExitResults) return [];
+  const out = ['', '■ 實驗:EMA 出場、MA 進場(總報酬 / MDD / 年化÷MDD / 2021前 / 2021後 / 出場次數 / 接刀次數;五段是報酬 / 期間內 MDD)'];
+  emaExitResults.forEach(r => {
+    if (r.error){ out.push(`  ${r.label}:${r.error}`); return; }
+    out.push(`  ${r.label}(${r.from} ~ ${r.to})`);
+    r.rows.forEach(x => out.push(`    ${x.name}:${emaExitPc(x.ret)} / ${x.mdd.toFixed(1)}% / ${emaExitF2(x.calmar)} / ${emaExitF2(x.early)} / ${emaExitF2(x.late)} / ${x.exits} / ${x.adds}`
+      + ';' + EMA_EXIT_WINDOWS.map(([k], j) => { const w = x.wins[j]; return `${k} ${w ? emaExitPc(w.ret) + '/' + (w.mdd == null ? '—' : w.mdd.toFixed(0) + '%') : '—'}`; }).join(' ')));
+  });
+  return out;
+}
+function renderEmaExitExperiment(){
+  if (!QUOTES_ENABLED) return '';
+  return `
+    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--line);">
+      <h3 style="margin-bottom:6px;">實驗:EMA 出場、MA 進場</h3>
+      <details class="tip" style="margin-bottom:8px;"><summary>這是什麼</summary><div class="body">
+        只在回測裡試,實際訊號不動。續抱時的出場線改成「EMA × 出場乘數」(上漲時 EMA 比 MA 貼近價格,出場線比較高、比較早出場),
+        接刀跟轉回續抱照舊用 MA,想要「出場快、進場慢」。EMA 天數跑幾組(括號是天數跟乘數),同天數另外把乘數放寬到 0.875、0.85。
+        正2 上市前(2000、2008)用加權指數模擬。看的時候注意:換天數/乘數會不會突然差很多、2021 前後兩段是不是都變好、2024 那種 V 型有沒有被洗更多。</div></details>
+      <button class="btn" data-act="emaexit-run">▶ 跑 EMA 出場實驗(用上面已經抓好的歷史)</button>
+      ${(emaExitResults || []).map(r => r.error ? `<div class="muted neg" style="margin-top:10px;">${esc(r.label)}:${esc(r.error)}</div>` : `
+        <div style="margin-top:12px;">
+          <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(r.label)}</span><span class="val muted">${esc(r.from)} ~ ${esc(r.to)}</span></div>
+          <table class="bt-grid">
+            <tr><th></th><th>總報酬</th><th>MDD</th><th>年化÷MDD</th><th>2021前</th><th>2021後</th><th>出場</th><th>接刀</th></tr>
+            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th><td>${emaExitPc(x.ret)}</td><td>${x.mdd.toFixed(1)}%</td><td>${emaExitF2(x.calmar)}</td><td>${emaExitF2(x.early)}</td><td>${emaExitF2(x.late)}</td><td>${x.exits}</td><td>${x.adds}</td></tr>`).join('')}
+          </table>
+          <table class="bt-grid" style="margin-top:6px;">
+            <tr><th></th>${EMA_EXIT_WINDOWS.map(([k]) => `<th>${k}</th>`).join('')}</tr>
+            ${r.rows.map(x => `<tr><th>${esc(x.name)}</th>${x.wins.map(w => w ? `<td><span>${emaExitPc(w.ret)}</span><span>${w.mdd == null ? '—' : w.mdd.toFixed(0) + '%'}</span></td>` : '<td>—</td>').join('')}</tr>`).join('')}
+          </table>
+        </div>`).join('')}
+      ${emaExitResults ? `<div class="muted" style="font-size:11px; margin-top:4px;">第一張:全期(2021 前/後也是年化÷MDD;出場、接刀是全期次數)。第二張:五段期間各自的報酬 / 期間內 MDD。「📋 複製結果」會一起帶到。</div>` : ''}
+    </div>`;
+}
+/* ===================== EMA_EXIT 實驗區塊結束 ===================== */
+
 
 /* 每一輪進出的勝率(2026-09 使用者問「策略勝率高嗎」)。一輪 = 從一次出場(全部現金)到下一次出場(又是全部現金),
    中間的接刀、轉回續抱、續抱都算在這一輪裡;頭尾都是全部現金,淨值的比值就是這一輪整體的賺賠(含手續費)。
@@ -4484,6 +4590,7 @@ function renderBacktestCard(){
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
       ${renderBacktestWindow()}
+      ${renderEmaExitExperiment()}
     </div>`;
 }
 
@@ -5318,6 +5425,7 @@ function onClick(el){
     case 'backfill-backtest-history': backfillFullHistory(); return;
     case 'run-backtest': runAllBacktests(); btCopyMsg = ''; btCopyText = ''; break;
     case 'sim-fetch': fetchIndexSim(); return;   // 加權指數模擬(可拆)
+    case 'emaexit-run': runEmaExitExperiment(); break;   // EMA_EXIT 實驗(可拆)
     case 'btw-preset': { const [f, t] = String(el.dataset.v).split('|'); btWindow = { from: f, to: t }; setBtWindow(f, t); break; }
     case 'reset-trend-params': {
       const it = findInstrumentByKey(id);

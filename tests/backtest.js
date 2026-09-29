@@ -24,7 +24,8 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,
   twseJson, twseCooldownLeft, TwseBlocked, TWSE_GAP_MS, TWSE_FAIL_LIMIT, periodStats, tradeRounds, backtestFromHistory, renderTradeRounds, get state(){ return state; },
-  backtestReportText, set backtestResults(v){ backtestResults = v; } };`);
+  backtestReportText, set backtestResults(v){ backtestResults = v; },
+  ema, sma, emaExitRow, emaExitReportLines, renderEmaExitExperiment, EMA_EXIT_ROWS, set emaExitResults(v){ emaExitResults = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -317,6 +318,55 @@ await (async function testTwseThrottle(){
     global.setTimeout = realST;
     Date.now = realNow;
   }
+})();
+console.log('  ok');
+
+console.log('EMA_EXIT 實驗(EMA 出場、MA 進場,只在回測):ema() 算對、只有續抱時的出場線換成 EMA、不傳參數跟原策略一樣');
+(function testEmaExit(){
+  const v = [10, 11, 12, 13, 14, 15, 16, 17];
+  const e = A.ema(v, 3);
+  must(e[0] === null && e[1] === null && Math.abs(e[2] - 11) < 1e-12, 'EMA 前 w−1 天是 null、第 w 天用前 w 天簡單平均當起點');
+  let x = 11; for (let i = 3; i < v.length; i++){ x += (v[i] - x) * 0.5; must(Math.abs(e[i] - x) < 1e-12, `第 ${i} 天 EMA 算錯`); }
+  must(A.ema([1, 2], 3).every(y => y === null), '資料不夠 w 天全部是 null');
+  // 隨機路徑:照事件逐天重放,續抱中每一天「收盤 < EMA × 乘數」⇔ 出場;接刀、轉回續抱跟原策略的規則一樣(用 MA)
+  let seed = 61, n = 0, exits = 0, diff = 0; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const p = { maFast: 120, maSlow: 240, exitBuffer: 0.9, recoverSlopeThreshold: 1.002, recoverStrongRebound: 1.03, pyramidGap: 0.15, pyramidLevels: 2 };
+  for (let t = 0; t < 20; t++){
+    const h = []; let c = 50; const d = new Date(2012, 0, 4);
+    for (let i = 0; i < 2000; i++){ d.setDate(d.getDate() + 1); if (d.getDay() % 6 === 0){ i--; continue; }
+      c *= 1 + (rnd() - 0.5) * 0.07 + (Math.floor(i / 250) % 2 ? -0.002 : 0.0015);
+      h.push({ d: d.toISOString().slice(0, 10), c: Math.round(c * 100) / 100 }); }
+    const ex = { emaDays: 150, exitBuffer: 0.875 };
+    const r = A.runBacktest(h, p, ex), b = A.runBacktest(h, p);
+    n++;
+    must(r.curve.every(pt => Number.isFinite(pt.strat) && pt.strat > 0), 'EMA 出場回測淨值出現 NaN 或 ≤ 0');
+    must(JSON.stringify(b.curve) === JSON.stringify(A.runBacktest(h, p, null).curve), '不傳實驗參數要跟原策略一樣');
+    if (JSON.stringify(r.events) !== JSON.stringify(b.events)) diff++;
+    const closes = h.map(q => q.c), em = A.ema(closes, ex.emaDays), idx = new Map(h.map((q, i) => [q.d, i]));
+    let holdFrom = null;
+    r.events.forEach(ev => {
+      const i = idx.get(ev.d);
+      if (ev.act === 'RECOVER') holdFrom = i;
+      else if (ev.act === 'EXIT'){
+        exits++;
+        must(holdFrom != null && closes[i] < em[i] * ex.exitBuffer, `${ev.d} 出場時收盤 ${closes[i]} 沒有低於 EMA 出場線 ${(em[i] * ex.exitBuffer).toFixed(2)}`);
+        for (let j = holdFrom + 1; j < i; j++) must(closes[j] >= em[j] * ex.exitBuffer, `${h[j].d} 收盤已經跌破 EMA 出場線,卻沒出場`);
+        holdFrom = null;
+      }
+    });
+    A.EMA_EXIT_ROWS.forEach(row => { const y = A.emaExitRow(h, p, row); must(y && Number.isFinite(y.ret) && y.wins.length === 5, `${row.name} 那列少了欄位`); });
+  }
+  console.log('  ' + n + ' 組隨機路徑,EMA 出場', exits, '次;進出跟原策略不同', diff, '組');
+  must(exits > 20 && diff > n / 2, 'EMA 出場幾乎沒觸發或跟原策略一樣,這個測試沒測到東西');
+  // 天數夾在快慢線較長那條以內(0050 快線 100、慢線 200:×2 = 200,不會超過)
+  const p1 = { ...p, maFast: 100, maSlow: 200 };
+  must(A.emaExitRow(mkHist(Array.from({ length: 600 }, (_, i) => 50 + Math.sin(i / 20) * 5 + i * 0.02)), p1, A.EMA_EXIT_ROWS[4]).name.includes('EMA 200'), '×2 那列天數應該是 200');
+  const hh = mkHist(Array.from({ length: 700 }, (_, i) => 50 + Math.sin(i / 25) * 8 + i * 0.03));
+  A.emaExitResults = [{ label: '00631L', from: hh[0].d, to: hh[hh.length - 1].d, rows: A.EMA_EXIT_ROWS.map(row => A.emaExitRow(hh, p, row)) }, { label: '模擬正2', error: '歷史不夠' }];
+  const html = A.renderEmaExitExperiment(), txt = A.emaExitReportLines().join('\n');
+  must(!/NaN|undefined|\[object/.test(html + txt), 'EMA 出場實驗表格或複製文字出現 NaN/undefined');
+  must(txt.includes('EMA 出場 ×1.5(EMA 180 × 0.9)') && txt.includes('乘數 0.85(EMA 120)') && txt.includes('模擬正2:歷史不夠'), '複製文字少了實驗的列:\n' + txt);
+  A.emaExitResults = null;
 })();
 console.log('  ok');
 
