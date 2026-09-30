@@ -85,6 +85,9 @@ id 沿用舊值以確保重複呼叫不會飄動。
 才有的當月資產/負債細項 `[{id, name, amount, t:'a'|'l'}]`(更早的月份是空陣列,補不回來):`maybeSnapshot()` 在開 app
 跟改資產/負債細項時更新當月那筆,過了月份就固定;`auto:false`(使用者手動改過)整筆不再被覆蓋。資產頁的「比上月」
 跟「每月紀錄」用 `prevItemAmount()`/`itemHistory()` 讀這個,用細項 id 對應,所以改名也接得起來。
+過去月份的細項可以在資產頁「每月紀錄」直接改(2026-09-30 使用者要的,當時填錯要能修):`setPastItemAmount()` 改那一項、
+用那個月的 items 重算 `v`(資產 − 負債,跟 `netWorth()` 同算法)、標 `auto:false`;本月的不給改(跟著目前金額自動更新)。
+欄位 key 是 `ih-<快照 id>.<細項 id>`(id 只有英數、`_`、`-`,所以用 `.` 分隔);清空欄位那一下不算。
 
 **`backtestFullHistory`(2026-09 新增,均線策略回測)**——刻意放在 `state` 之外的模組級變數,
 存在自己的 `localStorage` key(`financeBacktestHistory_v2`,內容是 `{hist, splits, listedFrom}`),

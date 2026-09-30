@@ -24,7 +24,8 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, maybeSnapshot,
-  onField, onClick, maybePostInterest, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets, applyRemote, sampleData };`);
+  onField, onClick, maybePostInterest, prevItemAmount, itemHistory, itemDeltaText, itemDeltaClass, renderAssets, applyRemote, sampleData,
+  set itemHistOpen(v){ itemHistOpen = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -168,6 +169,54 @@ A.state = old;
 simNow = new RealDate('2026-09-10T09:00:00').getTime();
 must(A.prevItemAmount('a1') === null, '上個月(8 月)沒有細項紀錄,不該算得出比上月');
 must(typeof A.renderAssets() === 'string', '資產頁要畫得出來');
+console.log('  ok');
+
+console.log('資產頁「每月紀錄」可以改過去月份的細項,那個月的淨資產跟著重算;本月的不能在這裡改');
+(function testEditPastItem(){
+  const s = A.emptyState();
+  s.assets = [{ id:'a1', name:'活存', amount:100000 }, { id:'a2', name:'股票', amount:500000 }];
+  s.liabilities = [{ id:'l1', name:'房貸', amount:300000 }];
+  A.state = s;
+  simNow = new RealDate('2026-08-10T09:00:00').getTime(); A.maybeSnapshot();
+  simNow = new RealDate('2026-09-10T09:00:00').getTime(); A.maybeSnapshot();
+  const aug = () => A.state.netWorthHistory.find(h => h.m === '2026-08'), sep = () => A.state.netWorthHistory.find(h => h.m === '2026-09');
+  must(aug().v === 300000 && aug().auto === true, `8 月快照一開始應該是 300000(自動),得到 ${aug().v}`);
+  // 8 月活存當時其實是 150000(填錯了),改過去月份
+  field(`ih-${aug().id}.a1`, 150000);
+  must(aug().items.find(x => x.id === 'a1').amount === 150000, '8 月活存應該改成 150000');
+  must(aug().v === 350000, `8 月淨資產要跟著重算成 150000 + 500000 − 300000 = 350000,得到 ${aug().v}`);
+  must(aug().auto === false, '改過的月份要標成手動');
+  // 負債也能改,淨資產往反方向動
+  field(`ih-${aug().id}.l1`, 400000);
+  must(aug().v === 250000, `8 月房貸改成 400000 後淨資產應該是 250000,得到 ${aug().v}`);
+  // 本月快照、目前的資產都不受影響
+  must(sep().v === 300000 && A.state.assets.find(a => a.id === 'a1').amount === 100000, '改 8 月不能動到 9 月快照或目前的金額');
+  // 清空欄位準備重打的那一下不算;負數夾成 0
+  field(`ih-${aug().id}.a1`, '');
+  must(aug().items.find(x => x.id === 'a1').amount === 150000, '清空欄位的那一下不該把金額變成 0');
+  field(`ih-${aug().id}.a1`, -5);
+  must(aug().items.find(x => x.id === 'a1').amount === 0 && aug().v === 100000, `負數要夾成 0,淨資產 0 + 500000 − 400000 = 100000,得到 ${aug().v}`);
+  // 本月的細項不能從這裡改(它跟著目前的金額自動更新)
+  field(`ih-${sep().id}.a1`, 999);
+  must(sep().items.find(x => x.id === 'a1').amount === 100000 && sep().v === 300000, '本月的細項不該從每月紀錄改');
+  // 不存在的 id、壞掉的 key 不會出錯
+  field('ih-nope.a1', 1); field(`ih-${aug().id}.nope`, 1); field('ih-noDot', 1);
+  // 比上月跟著過去月份的新數字算
+  must(A.itemDeltaText('a1', 100000) === '比上月 +100,000', `9 月活存 100000 比 8 月(改成 0)應該是 +100,000,得到 ${A.itemDeltaText('a1', 100000)}`);
+  // 畫面:過去月份是輸入框、本月是文字
+  A.itemHistOpen = 'a1';
+  const html = A.renderAssets();
+  must(html.includes(`data-k="ih-${aug().id}.a1"`) && !html.includes(`data-k="ih-${sep().id}.a1"`), '過去月份要有輸入框、本月不該有');
+  must(html.includes('本月,自動'), '本月那一行要標「自動」');
+  A.itemHistOpen = '';
+  // 過了月份之後,自動快照不會蓋掉改過的 8 月
+  simNow = new RealDate('2026-10-02T09:00:00').getTime(); A.maybeSnapshot();
+  must(aug().items.find(x => x.id === 'a1').amount === 0 && aug().v === 100000, '跨月之後改過的 8 月不能被自動快照覆蓋');
+  // normalize 來回一次(存檔、重開)還是一樣
+  const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  const aug2 = back.netWorthHistory.find(h => h.m === '2026-08');
+  must(aug2.v === 100000 && aug2.items.find(x => x.id === 'l1').amount === 400000, '存檔重開之後改過的數字要還在');
+})();
 console.log('  ok');
 
 console.log();
