@@ -621,8 +621,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-30 · 894081a46a';
-const BUILD_HASH = '894081a46a';
+const BUILD_VERSION = '2026-09-30 · 48f98f87df';
+const BUILD_HASH = '48f98f87df';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2142,7 +2142,19 @@ function itemHistory(id){
   return state.netWorthHistory
     .filter(h => h.items && h.items.some(x => x.id === id))
     .sort((a, b) => a.m < b.m ? -1 : 1)
-    .map(h => ({ m: h.m, amount: h.items.find(x => x.id === id).amount }));
+    .map(h => ({ m: h.m, hid: h.id, amount: h.items.find(x => x.id === id).amount }));
+}
+/* 改某個過去月份的某一項金額(資產頁「每月紀錄」,使用者發現當時填錯):那個月的淨資產總數用細項重算
+   (淨資產 = 資產 − 負債,跟 netWorth() 同一個算法),標成手動改過。這個月的不在這裡改——它跟著目前的金額自動更新。 */
+function setPastItemAmount(hid, itemId, value){
+  const h = state.netWorthHistory.find(x => x.id === hid);
+  if (!h || h.m >= thisMonth() || !h.items) return false;
+  const it = h.items.find(x => x.id === itemId);
+  if (!it) return false;
+  it.amount = Math.round(Math.max(0, num(value)));
+  h.v = finNum(sum(h.items, x => x.t === 'l' ? -x.amount : x.amount));
+  h.auto = false;
+  return true;
 }
 function maybeSnapshot(){
   const p = computePosition();
@@ -2530,8 +2542,14 @@ function itemRowExtras(x, isLiab, color){
       <div style="margin-top:4px;">${hist.slice().reverse().map((h, i, arr) => {
         const older = arr[i + 1];
         const d = older ? h.amount - older.amount : null;
-        return `<div class="row sub"><span class="label">${esc(monthLabel(h.m))}</span><span class="val">NT$ ${fmt(h.amount)}${d === null ? '' : `(${d >= 0 ? '+' : '−'}${fmt(Math.abs(d))})`}</span></div>`;
-      }).join('')}</div>` : `<div class="muted" style="font-size:12px;">還沒有每月紀錄——從這個月開始,每個月會自動記下這一項的金額。</div>`) : ''}`;
+        const diff = d === null ? '' : `(${d >= 0 ? '+' : '−'}${fmt(Math.abs(d))})`;
+        // 過去的月份可以改(當時填錯);這個月的跟著上面的金額自動更新,不給改
+        return h.m < thisMonth()
+          ? `<div class="erow"><div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}<span style="font-size:11px;"> ${diff}</span></div>
+              <input class="f-amt" type="number" inputmode="decimal" data-k="ih-${h.hid}.${x.id}" value="${h.amount}"></div>`
+          : `<div class="row sub"><span class="label">${esc(monthLabel(h.m))}(本月,自動)</span><span class="val">NT$ ${fmt(h.amount)}${diff}</span></div>`;
+      }).join('')}
+      <div class="muted" style="font-size:11px; margin-top:2px;">過去月份填錯可以直接改,那個月的淨資產總數會跟著重算。</div></div>` : `<div class="muted" style="font-size:12px;">還沒有每月紀錄——從這個月開始,每個月會自動記下這一項的金額。</div>`) : ''}`;
 }
 
 function renderAssets(){
@@ -4710,6 +4728,11 @@ function onField(key, el){
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = Math.max(0, num(el.value)); }
+  else if (kind === 'ih'){                        // 資產頁「每月紀錄」改過去月份的某一項:ih-<快照 id>.<細項 id>(id 裡不會有點)
+    const dot = rest.indexOf('.');
+    if (String(el.value).trim() === '') return;    // 清空準備打新數字的那一下不算,不然那個月的總數會先被算成少了這一項
+    setPastItemAmount(rest.slice(0, dot), rest.slice(dot + 1), el.value);
+  }
   else if (kind === 'nh'){
     const h = findById(state.netWorthHistory, rest);
     if (h){ h.v = num(el.value); h.auto = false; }   // 自己改過就不再被自動快照覆寫
@@ -5442,6 +5465,11 @@ function init(){
     if (e.target.id === 'importFile' && e.target.files && e.target.files[0]){
       importJSON(e.target.files[0]);
       e.target.value = '';
+      return;
+    }
+    // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
+    if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){
+      renderAll();
       return;
     }
     if (e.target.dataset && e.target.dataset.k && currentTab === 'leverage'){
