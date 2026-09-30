@@ -465,6 +465,21 @@ console.log('computeExposurePlan():正2 曝險目標的代數解');
   A.state.instruments.find(x => x.id === '00675L').trend.lastSeenStatus = 'WAIT_RECOVER';   // 只有一檔確認過也還算「剛轉成」
   must(A.computeExposurePlan().holdAdjustPending === true, '兩檔要都確認過 HOLD 才算調整完');
 
+  // 接刀的每一層也只調整一次(2026-09-30):剛接到給金額,確認後這一層漲跌都不再叫你加碼/減碼
+  A.state = setupState(49, 49, 0);   // 兩檔都在第 1 層、還沒確認 → 目標 65%,要加碼
+  p = A.computeExposurePlan();
+  must(p.layerAdjustPending === true, '剛接到第 1 層、還沒確認過,應該要提示調整');
+  card = A.renderExposurePlanCard();
+  must(card.includes('方案A') && card.includes('已調整完成') && card.includes('剛接到第 1 / 2 層'), '剛接到這一層時卡片要給金額跟「已調整完成」按鈕');
+  A.onClick({ dataset: { act: 'ack-hold' } });
+  p = A.computeExposurePlan();
+  must(p.layerAdjustPending === false, '按了「已調整完成」之後這一層就不該再提示');
+  card = A.renderExposurePlanCard();
+  must(!card.includes('方案A') && !card.includes('已超過目標') && card.includes('這一層已經調整過'),
+       '確認過的這一層,曝險低於目標也不該再叫你加碼:' + card.replace(/\s+/g, ' ').slice(0, 200));
+  A.state.instruments.find(x => x.id === '00675L').trend.lastSeenLayers = 0;   // 其中一檔的層數跟看過的不一樣(剛接到新的一層)
+  must(A.computeExposurePlan().layerAdjustPending === true, '有一檔接到新的一層還沒確認,應該再給一次金額');
+
   // 兩檔進度不同:00631L 在 n=78(HOLD),00675L 在 n=49(第1層)→ 取較小的 progress=1
   A.state = setupState(78, 49, 0);
   p = A.computeExposurePlan();

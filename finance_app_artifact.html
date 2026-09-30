@@ -621,8 +621,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-09-29 · a6f641e1e4';
-const BUILD_HASH = 'a6f641e1e4';
+const BUILD_VERSION = '2026-09-30 · 894081a46a';
+const BUILD_HASH = '894081a46a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2875,7 +2875,9 @@ function renderHelp(){
       照哪個方案賣,就要照那個方案的金額,不然曝險降不到目標。目標是 0%(出場)時兩者一樣。</p>
       <p><strong>HOLD 的目標只在剛轉成 HOLD 時調整一次。</strong>兩檔都轉成 HOLD 時,卡片會顯示調整到目標要投入(或減碼)多少,
       調整完按「已調整完成」(或狀態提醒上的「知道了」)。之後整段續抱期間<strong>不做再平衡</strong>——漲上去曝險會跟著變高、
-      跌下來會變低,都不提示加碼或減碼,只顯示目前的曝險比例,等出場訊號(EXIT)再動作。</p>
+      跌下來會變低,都不提示加碼或減碼,只顯示目前的曝險比例,等出場訊號(EXIT)再動作。
+      <strong>接刀的每一層也一樣</strong>:剛接到第 1、第 2 層時給一次金額,調整完按「已調整完成」,之後這一層漲跌都不再提示,
+      等下一層、轉回續抱或出場。出場(目標 0%)的減碼金額則是賣完之前一直顯示。</p>
       <p><strong>什麼時候會跳 🔔 提醒:</strong>跌破出場線(續抱 → 接刀中)、接刀中加碼到下一層、轉回續抱,這三種都會跳,
       總覽頁跟訊號分頁都看得到;照著做完按「知道了」。價格歷史中間缺了一段(例如一個多月沒打開 app)時,均線會算錯,
       這時不給訊號也不跳提醒,更新收盤價會自動補齊。</p>
@@ -3304,8 +3306,13 @@ function computeExposurePlan(){
   // 等出場訊號。「剛轉成」= 使用者還沒確認過這次 HOLD(沿用狀態改變提醒的 lastSeenStatus,
   // 按提醒的「知道了」或曝險卡片的「已調整完成」都算確認)。
   const holdAdjustPending = progress > N && lev2.some(it => it.trend.lastSeenStatus !== 'HOLD');
+  // 接刀的每一層也一樣(2026-09-30 使用者要的):只在剛接到這一層、還沒確認時給金額,確認後這一層漲跌都不再加碼/減碼,
+  // 等下一層、轉回續抱或出場。以前接刀期間每天拿目前曝險跟該層目標比,跌一點叫你再買、漲一點叫你賣,
+  // 跟續抱的規則、跟回測(每層買一次就不動)都不一致。「沒確認」= 任一檔的狀態或層數跟上次看過的不一樣。
+  const layerAdjustPending = progress >= 1 && progress <= N && lev2.some((it, i) => it.trend.lastSeenStatus !== trends[i].status
+    || (trends[i].status === 'WAIT_RECOVER' && it.trend.lastSeenLayers !== trends[i].pyramidCount));
   return {
-    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio, holdAdjustPending,
+    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio, holdAdjustPending, layerAdjustPending,
     deltaCash: denomCash > 0.0001 ? raw / denomCash : null,   // null = 這個目標純用現金到不了
     deltaLoan: raw / L,
     instruments: lev2.map(it => it.key)
@@ -3854,10 +3861,19 @@ function renderExposurePlanCard(){
       <div class="muted" style="margin-top:6px;">續抱期間不做再平衡:${p.targetRatio}% 只在剛轉成 HOLD 時調整一次,之後漲跌造成的曝險變化都不加碼也不減碼,等出場訊號。</div>
     </div>`;
   }
+  if (p.progress >= 1 && p.progress <= p.layerCount && !p.layerAdjustPending){
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="row"><span class="label">目前階段</span><span class="val">${esc(stageLabel)}</span></div>
+      <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
+      <div class="muted" style="margin-top:6px;">這一層已經調整過:${p.targetRatio}% 只在剛接到這一層時調整一次,之後漲跌造成的曝險變化都不加碼也不減碼,等下一層、轉回續抱或出場。</div>
+    </div>`;
+  }
   return `
     <div class="card">
       <h3>正2 曝險目標</h3>
-      <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : esc(stageLabel)}</span></div>
+      <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : p.layerAdjustPending ? `剛接到第 ${p.progress} / ${p.layerCount} 層` : esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
       ${overTarget && lev2Value() < 1 ? `
@@ -3890,8 +3906,9 @@ function renderExposurePlanCard(){
         <div class="row sub"><span class="label">方案B:額度只剩 NT$ ${fmt(room)},借完還要自己拿現金</span>
           <span class="val">${mixCash == null ? '—(到不了)' : `借 NT$ ${fmt(room)} + 現金 NT$ ${fmt(mixCash)}(共 NT$ ${fmt(room + mixCash)})${split(room + mixCash)}`}</span></div>`}
       ` : `<div class="muted" style="margin-top:6px;">已經在目標曝險附近,不用加碼也不用減碼。</div>`)}
-      ${p.holdAdjustPending ? `
-        <div class="muted" style="margin-top:6px;">這是轉成 HOLD 時唯一一次調整;調整完按下面這顆,之後續抱期間不再提示加碼/減碼。</div>
+      ${p.holdAdjustPending || p.layerAdjustPending ? `
+        <div class="muted" style="margin-top:6px;">${p.holdAdjustPending ? '這是轉成 HOLD 時唯一一次調整;調整完按下面這顆,之後續抱期間不再提示加碼/減碼。'
+          : '這是接到這一層時唯一一次調整;調整完按下面這顆,之後這一層漲跌都不再提示加碼/減碼,等下一層、轉回續抱或出場。'}</div>
         <button class="btn" data-act="ack-hold" style="margin-top:8px;">✓ 已調整完成</button>
       ` : ''}
       <details class="tip" style="margin-bottom:0;"><summary>這些數字是什麼意思</summary><div class="body">
@@ -3930,7 +3947,7 @@ function trendAlertText(t, it){
     return { title: `${name} 轉回續抱(HOLD)`,
              body: `原本是「${esc(was)}」。${lev2 ? `照${card}把曝險調到目標(兩檔都轉成 HOLD 才會是續抱目標),調整完按「已調整完成」——之後續抱期間不再提示加碼/減碼。` : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
   return { title: `${name} 狀態變成${t.status === 'WAIT_RECOVER' ? '接刀中(WAIT_RECOVER)' : t.status}`,
-           body: `原本是「${esc(was)}」。${lev2 ? `照${card}的金額調整。` : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
+           body: `原本是「${esc(was)}」。${lev2 ? `照${card}的金額調整,調整完按「已調整完成」——這一層之後漲跌不再提示加碼/減碼。` : '這只是訊號,買賣要自己到「紀錄」分頁記一筆。'}` };
 }
 function renderTrendChangeAlerts(){
   return trendChanges().map(t => {
