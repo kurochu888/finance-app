@@ -81,6 +81,15 @@ id 沿用舊值以確保重複呼叫不會飄動。
 抓報價還在偷偷把大盤點位寫進 `marketCurrent`,寫了但完全沒人讀——已經刪掉那行寫入。
 以後如果要確認某個欄位是不是真的死了,`grep` 整個欄位名稱時**讀跟寫都要查**,不要只查其中一種。
 
+**房貸還款(2026-10 使用者要的)**——理財型每月最低還本:`leverage.autoRepay/repayPermille/repayPosted`,`maybeAutoRepay()`
+每月 1 日在每筆動用的 `repayments` 記「當時餘額 × ‰」,id 是 `autorepayYYYYMM`(固定 id,兩台同時補記合併是同一筆;不能有「-」,
+`rp-` 欄位 key 用「-」切)。額度是循環的,只減餘額不動 `creditLimit`。一般型房貸放在負債細項的 `liabilities[].loan`
+(`{principal, start, years, annualRate, rateHistory, autoInterest, interestPosted}`,沒設是 `null`——新版一定寫出這個 key,
+`keepFieldsOldVersionsDrop()` 靠「沒有 key = 舊版寫的」補回),`amortize()` 每期用當時餘額、剩餘期數、當時利率重算月付,
+`syncLoanLiabilities()` 把負債金額設成剩餘本金,`postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`。
+這幾個都從 `maybePostInterest()` 跑(還本 → 理財型利息 → 一般型)。一般型利率只在 change(離開欄位)才套用 `applyLoanRate()`,
+打字途中的「2 → 2.3」不能被當成升息記一段;`setCurrentRate()` 原本是 0 也不記。測試 `tests/loans.js`。
+
 **`state.netWorthHistory[]`(每月快照)**——每月一筆 `{m, v, pv, pnl, loan, items, auto}`。`items` 是 2026-09 起
 才有的當月資產/負債細項 `[{id, name, amount, t:'a'|'l'}]`(更早的月份是空陣列,補不回來):`maybeSnapshot()` 在開 app
 跟改資產/負債細項時更新當月那筆,過了月份就固定;`auto:false`(使用者手動改過)整筆不再被覆蓋。資產頁的「比上月」

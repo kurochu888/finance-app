@@ -126,7 +126,7 @@ console.log('  ok');
 console.log('房貸利息自動記入:整個月沒開 app 的月份,下次打開要補記;刪掉的月份不補回來');
 (function(){
   const s4 = A.emptyState();
-  s4.leverage.autoInterest = true; s4.leverage.annualRate = 2.4;
+  s4.leverage.autoInterest = true; s4.leverage.annualRate = 2.4; s4.leverage.autoRepay = false;   // 這段只看利息補記;每月還本在 loans.js
   s4.leverage.draws = [{ id:'d1', label:'x', amount:1000000, useDate:'2026-08-15', note:'', repayments:[{ id:'r1', date:'2026-10-20', amount:500000 }] }];
   A.state = s4;
   simNow = new RealDate('2026-09-02T09:00:00').getTime(); A.maybePostInterest();
