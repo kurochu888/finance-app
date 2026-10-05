@@ -656,8 +656,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-05 · 0fe88a20af';
-const BUILD_HASH = '0fe88a20af';
+const BUILD_VERSION = '2026-10-05 · 1fbc7abe59';
+const BUILD_HASH = '1fbc7abe59';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2318,7 +2318,7 @@ let editingTx = null;
 let editingTrade = null;
 let tradeError = '';
 let tradeNote = '';   // 記完一筆後的提醒(例如用房貸買的要去記動用),不是錯誤
-let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'' };
+let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'' };
 let pendingConfirm = null;   // iframe 內 confirm() 可能被擋,改用頁面內二次確認
 let dataMsg = '';
 let draftError = '';
@@ -2678,13 +2678,37 @@ function refreshAssets(){
    以前灰字只是提示,空白按新增會跳「請填股數與成交價」,看起來像有填卻不算。 */
 const draftPrice = d => Math.abs(num(d.price)) || (String(d.price).trim() === '' ? symbolPrice(d.symbol) : 0);
 
+/* 一筆買進同時用了自有資金跟房貸(source 'mix',只存在草稿裡):拆成兩筆紀錄,每筆只有一個資金來源。
+   房貸那筆的股數 = 房貸金額 ÷ 每股含手續費成本,四捨五入成整股;手續費照股數比例分,加起來等於原本的手續費。
+   回傳 null = 不用拆(房貸金額 ≤ 0 全部自有、≥ 總額全部房貸、或拆完有一邊是 0 股)。 */
+function splitMixedBuy(shares, price, fee, loanAmt){
+  const total = shares * price + fee;
+  if (!(shares > 0) || !(total > 0) || !(loanAmt > 0) || loanAmt >= total) return null;
+  const raw = loanAmt / (total / shares);
+  const loanShares = Number.isInteger(shares) ? Math.round(raw) : Math.round(raw * 1000) / 1000;
+  if (loanShares <= 0 || loanShares >= shares) return null;
+  const loanFee = Math.round(fee * loanShares / shares);
+  return { loanShares, loanFee, cashShares: Math.round((shares - loanShares) * 1000) / 1000, cashFee: fee - loanFee };
+}
+const draftFee = (d, gross) => d.fee === '' ? defaultFee(d.action, gross) : Math.abs(num(d.fee));
+function draftGrossText(d){
+  const gross = num(d.shares) * draftPrice(d);
+  let t = '成交金額 NT$ ' + fmt(gross) + (d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : '');
+  if (d.action === 'buy' && d.source === 'mix' && gross){
+    const loanAmt = Math.abs(num(d.loanAmt)), fee = draftFee(d, gross);
+    const sp = splitMixedBuy(Math.abs(num(d.shares)), draftPrice(d), fee, loanAmt);
+    t += sp ? `\n會拆成兩筆:房貸 ${fmt(sp.loanShares)} 股(NT$ ${fmt(sp.loanShares * draftPrice(d) + sp.loanFee)})、自有 ${fmt(sp.cashShares)} 股(NT$ ${fmt(sp.cashShares * draftPrice(d) + sp.cashFee)})`
+      : loanAmt >= gross + fee ? '\n房貸金額超過總額,會整筆記成房貸' : loanAmt ? '\n房貸金額不到一股,會整筆記成自有資金' : '';
+  }
+  return t;
+}
 function refreshTradeDraft(){
   const d = tradeDraft;
   const gross = num(d.shares) * draftPrice(d);
   const box = document.getElementById('pd-gross');
   if (box){
     box.style.display = (gross && d.action !== 'dividend') ? '' : 'none';
-    box.textContent = '成交金額 NT$ ' + fmt(gross) + (d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : '');
+    box.textContent = draftGrossText(d);
   }
   const feeInput = document.getElementById('pd-fee-input');
   if (feeInput) feeInput.placeholder = gross ? fmt(defaultFee(d.action, gross)) : '自動';
@@ -2869,7 +2893,8 @@ function renderHelp(){
       真正的錢要不要動,永遠是你自己決定,程式只負責把訊號算給你看。</p>
       <h4>看到買進訊號(RECOVER / ADD,或曝險目標卡片顯示該加碼)</h4>
       <p>先在現實裡真的買進,再回來<strong>「紀錄」分頁</strong>記一筆買進。如果這筆錢是房貸借來的,
-      買賣紀錄的來源要選「房貸借款」,同時在<strong>同一個分頁的「房貸動用記錄」</strong>把對應那筆
+      買賣紀錄的來源要選「房貸借款」(一部分自己的錢、一部分房貸的話選「兩者都有」,填房貸出的金額,
+      會照比例拆成自有、房貸兩筆紀錄,手續費也照股數分),同時在<strong>同一個分頁的「房貸動用記錄」</strong>把對應那筆
       的動用日期與金額更新——借款餘額跟利息都是從動用記錄算出來的,不是從買賣紀錄自動推算,
       這兩邊要自己保持一致。「借款與利息」卡片會在兩邊金額對不起來時跳提醒,可以拿來對帳。</p>
       <h4>看到出場訊號(EXIT,或曝險目標卡片顯示已超過目標)</h4>
@@ -3648,7 +3673,10 @@ function renderTrades(){
       <div class="seg" style="margin-top:8px;">
         <button class="seg-btn ${d.source === 'cash' ? 'on' : ''}" data-act="draft-source" data-v="cash">自有資金</button>
         <button class="seg-btn ${d.source === 'loan' ? 'on' : ''}" data-act="draft-source" data-v="loan">房貸借款</button>
-      </div>` : ''}
+        <button class="seg-btn ${d.source === 'mix' ? 'on' : ''}" data-act="draft-source" data-v="mix">兩者都有</button>
+      </div>
+      ${d.source === 'mix' ? `<div class="field" style="margin-top:9px;"><label>其中房貸出的金額</label>
+        <input type="number" inputmode="decimal" data-k="pd-loanAmt" value="${esc(d.loanAmt)}" placeholder="0"></div>` : ''}` : ''}
       ${d.action === 'dividend' ? `
       <div class="grid2" style="margin-top:9px;">
         <div class="field"><label>配息日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
@@ -3663,7 +3691,7 @@ function renderTrades(){
         <div class="field"><label>手續費(可空)</label><input type="number" inputmode="decimal" id="pd-fee-input" data-k="pd-fee" value="${esc(d.fee)}" placeholder="${gross ? fmt(defaultFee(d.action, gross)) : '自動'}"></div>
       </div>`}
       <div class="field"><label>備註(可空)</label><input data-k="pd-note" value="${esc(d.note)}" placeholder="例如:年終獎金加碼"></div>
-      <div class="muted" id="pd-gross" style="margin-bottom:8px; ${(gross && d.action !== 'dividend') ? '' : 'display:none;'}">成交金額 NT$ ${fmt(gross)}${d.fee === '' ? ' · 手續費預估 NT$ ' + fmt(defaultFee(d.action, gross)) : ''}</div>
+      <div class="muted" id="pd-gross" style="margin-bottom:8px; white-space:pre-line; ${(gross && d.action !== 'dividend') ? '' : 'display:none;'}">${esc(draftGrossText(d))}</div>
       <button class="btn solid" data-act="add-trade">新增紀錄</button>
       ${tradeError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(tradeError)}</div>` : ''}
       ${tradeNote ? `<div class="muted" style="text-align:center; margin-top:8px;">${esc(tradeNote)}</div>` : ''}
@@ -4926,7 +4954,7 @@ function onField(key, el){
   }
   else if (kind === 'pd'){                                          // 買賣草稿
     tradeDraft[rest] = rest === 'date' ? isoDate(el.value, '') : el.value;
-    if (rest === 'shares' || rest === 'price') refreshTradeDraft();  // 更新成交金額預估,不整頁重畫
+    if (['shares', 'price', 'fee', 'loanAmt'].includes(rest)) refreshTradeDraft();  // 更新成交金額預估,不整頁重畫
     return;
   }
   else if (kind === 'pt'){                                          // 修改既有買賣紀錄
@@ -5319,8 +5347,9 @@ function onClick(el){
         symbol: d0.symbol,
         action: d0.action,
         note: d0.note.trim(),
-        source: d0.action === 'buy' ? d0.source : 'cash'
+        source: d0.action === 'buy' && d0.source === 'loan' ? 'loan' : 'cash'
       };
+      let mixNote = '';
       if (d0.action === 'dividend'){
         const amount = Math.abs(num(d0.amount));
         if (!amount){ tradeError = '請填領到的金額'; renderAll(); return; }
@@ -5330,18 +5359,33 @@ function onClick(el){
         const price = draftPrice(d0);
         if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
         const gross = shares * price;
-        state.trades.push(Object.assign(base, {
-          shares, price, amount: 0,
-          fee: d0.fee === '' ? defaultFee(d0.action, gross) : Math.abs(num(d0.fee))
-        }));
+        const fee = d0.fee === '' ? defaultFee(d0.action, gross) : Math.abs(num(d0.fee));
+        if (d0.action === 'buy' && d0.source === 'mix'){
+          const loanAmt = Math.abs(num(d0.loanAmt));
+          if (!loanAmt){ tradeError = '請填其中房貸出的金額(全部自有資金就選「自有資金」)'; renderAll(); return; }
+          const sp = splitMixedBuy(shares, price, fee, loanAmt);
+          if (sp){
+            // 自有那筆先記、房貸那筆最後記:下面的提醒跟 tradeNote 都看最後一筆
+            state.trades.push(Object.assign({}, base, { shares: sp.cashShares, price, amount: 0, fee: sp.cashFee }));
+            Object.assign(base, { id: uid(), source: 'loan', shares: sp.loanShares, price, amount: 0, fee: sp.loanFee });
+            mixNote = `拆成兩筆:自有 ${fmt(sp.cashShares)} 股、房貸 ${fmt(sp.loanShares)} 股。`;
+          }else if (loanAmt >= gross + fee){
+            Object.assign(base, { source: 'loan', shares, price, amount: 0, fee });
+          }else{
+            Object.assign(base, { shares, price, amount: 0, fee });
+          }
+          state.trades.push(base);
+        }else{
+          state.trades.push(Object.assign(base, { shares, price, amount: 0, fee }));
+        }
       }
       tradeError = '';
       // 「房貸借款」只是標記資金來源,不會自動記動用:借款餘額、利息、曝險比例都靠「紀錄」分頁的動用紀錄,
       // 忘了記的話曝險比例被低估,曝險卡片會叫你再多借多買
       const last = state.trades[state.trades.length - 1];
-      tradeNote = base.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(last.shares * last.price + last.fee)}),借款餘額跟曝險比例才會算對。` : '';
+      tradeNote = mixNote + (last.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(last.shares * last.price + last.fee)}),借款餘額跟曝險比例才會算對。` : '');
       tradeDraft = { date: d0.date, symbol: d0.symbol, action: d0.action, source: d0.source,
-                     shares:'', price:'', amount:'', fee:'', note:'' };
+                     shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'' };
       break;
     }
     case 'edit-trade': editingTrade = id; break;

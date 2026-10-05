@@ -34,13 +34,15 @@ const bridge = `
 globalThis.A = {
   get state(){return state}, set state(v){state=v},
   get draft(){return draft}, set draft(v){draft=v},
+  get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v},
+  get tradeNote(){return tradeNote}, get tradeError(){return tradeError},
   set currentTab(v){currentTab=v},
   set viewMonth(v){viewMonth=v},
   set editingTx(v){editingTx=v},
   get pendingConfirm(){return pendingConfirm},
   xDel,
   get currentTabName(){return currentTab},
-  renderOverview, nwDeltaText, monthLabel,
+  renderOverview, nwDeltaText, monthLabel, splitMixedBuy,
   get draftError(){return draftError},
   get backupList(){return backupList},
   maybePostInterest, maybeBackup, loadBackups, restoreBackup, localBackupApi,
@@ -693,6 +695,40 @@ console.log('淨資產比上月');
   if (!html.includes('比上月 +200,000(+20.0%)')) throw new Error('總覽大數字下沒有比上月');
   if (!html.includes('比' + A.monthLabel(m3) + ' +100,000')) throw new Error('列表沒有寫出跟哪個月比');
   console.log('  ' + t1 + ' | ' + t2 + ' ✓');
+}
+
+console.log('買進同時用自有資金跟房貸 → 拆兩筆');
+{
+  // 10,000 股 × 25 = 250,000,手續費 356,總成本 250,356;房貸出 150,000
+  // 每股含費成本 25.0356 → 150000 / 25.0356 = 5991.47 → 房貸 5991 股、手續費 round(356 × 5991/10000) = 213
+  const sp = A.splitMixedBuy(10000, 25, 356, 150000);
+  if (!sp || sp.loanShares !== 5991 || sp.cashShares !== 4009 || sp.loanFee !== 213 || sp.cashFee !== 143)
+    throw new Error('拆股數/手續費不對:' + JSON.stringify(sp));
+  if (Math.abs(sp.loanShares * 25 + sp.loanFee - 150000) > 25) throw new Error('房貸那筆金額跟填的差太多');
+  if (A.splitMixedBuy(10000, 25, 356, 0) !== null || A.splitMixedBuy(10000, 25, 356, 300000) !== null
+      || A.splitMixedBuy(10000, 25, 356, 10) !== null) throw new Error('不用拆的情況應該回傳 null');
+  // 透過按鈕新增
+  A.state = A.sampleData();
+  const n0 = A.state.trades.length, sym = A.state.instruments[0].id;
+  A.tradeDraft = { date:'2026-10-01', symbol:sym, action:'buy', source:'mix', shares:'10000', price:'25', amount:'', fee:'356', note:'加碼', loanAmt:'150000' };
+  A.onClick({ dataset:{ act:'add-trade' } });
+  const added = A.state.trades.slice(n0);
+  if (added.length !== 2) throw new Error('應該新增兩筆,實際 ' + added.length + ' ' + A.tradeError);
+  const L = added.find(t => t.source === 'loan'), C = added.find(t => t.source === 'cash');
+  if (!L || !C || L.shares + C.shares !== 10000 || L.fee + C.fee !== 356 || L.id === C.id) throw new Error('兩筆內容不對:' + JSON.stringify(added));
+  if (L.date !== '2026-10-01' || C.note !== '加碼' || L.price !== 25) throw new Error('日期/備註/價格沒有帶到兩筆');
+  if (!A.tradeNote.includes('拆成兩筆') || !A.tradeNote.includes('房貸動用')) throw new Error('提醒文字不對:' + A.tradeNote);
+  if (A.tradeDraft.source !== 'mix' || A.tradeDraft.loanAmt !== '') throw new Error('新增後草稿沒有重設房貸金額');
+  // 沒填房貸金額要擋
+  A.tradeDraft = Object.assign({}, A.tradeDraft, { shares:'100', price:'25' });
+  A.onClick({ dataset:{ act:'add-trade' } });
+  if (A.state.trades.length !== n0 + 2 || !A.tradeError) throw new Error('沒填房貸金額應該擋下來');
+  // 房貸金額超過總額 → 整筆房貸
+  A.tradeDraft = Object.assign({}, A.tradeDraft, { loanAmt:'999999' });
+  A.onClick({ dataset:{ act:'add-trade' } });
+  const big = A.state.trades[A.state.trades.length - 1];
+  if (A.state.trades.length !== n0 + 3 || big.source !== 'loan' || big.shares !== 100) throw new Error('超過總額應該整筆記成房貸');
+  console.log('  房貸 ' + L.shares + ' 股 + 自有 ' + C.shares + ' 股,手續費 ' + L.fee + ' + ' + C.fee + ' ✓');
 }
 
 console.log('✕ 刪除可以取消');
