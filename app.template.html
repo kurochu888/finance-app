@@ -2413,10 +2413,11 @@ function renderOverview(){
       <div class="big-num">${money(nw)}</div>
       <div class="big-sub">資產 ${fmt(totalAssets())} − 負債 ${fmt(totalLiab())}</div>
       ${chart}
-      <button class="btn" data-act="snap-networth">📌 記錄 ${monthLabel(thisMonth())} 的淨資產</button>
+      <div class="muted" style="margin-top:6px;">每月淨資產會自動記錄:打開 app、改資產/負債時更新本月,過了月份就固定。下面的數字可以手動改。</div>
       ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map(h => `
         <div class="erow">
-          <div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}</div>
+          <div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}${h.m === thisMonth() && !h.auto
+            ? ` <button class="linkish" data-act="hist-auto" data-id="${h.id}" style="padding:0; color:var(--accent);">改回自動</button>` : ''}</div>
           <input class="f-amt" type="number" inputmode="decimal" data-k="nh-${h.id}" value="${h.v || ''}">
           ${xDel('del-hist', h.id)}
         </div>`).join('')}</div>` : ''}
@@ -2948,7 +2949,8 @@ function renderHelp(){
         並畫出垂直游標線。累積不到兩天時會顯示「還在等資料」而不是空白的圖。
         保留最近 1000 個交易日,約四年。</li>
         <li><strong>每月快照</strong>:每月第一次開啟自動記一筆(淨資產、部位市值、借款餘額、
-        整體損益)。總覽的淨資產走勢用這個畫;每日紀錄還不夠兩筆時,槓桿頁的圖也會退回用它。
+        整體損益),當月之內每次開啟或改資產/負債都會更新,過了月份就固定。總覽的淨資產可以手動改,
+        本月改過就不再自動更新,旁邊會出現「改回自動」。總覽的淨資產走勢用這個畫;每日紀錄還不夠兩筆時,槓桿頁的圖也會退回用它。
         沒開過 app 的月份會留空,間隔才不會失真。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照,可在總覽的「資料」卡還原。
         雲端留 30 份;本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
@@ -5182,11 +5184,9 @@ function onClick(el){
       state.leverage.rateHistory = (state.leverage.rateHistory || []).filter(e => e.id !== id);
       break;
     case 'del-hist': if (needsConfirm('del-hist:' + id)) return; state.netWorthHistory = state.netWorthHistory.filter(h => h.id !== id); break;
-    case 'snap-networth': {
-      const m = thisMonth();
-      const found = state.netWorthHistory.find(h => h.m === m);
-      if (found) found.auto = true;      // 允許這次覆寫成目前數字
-      maybeSnapshot();
+    case 'hist-auto': {                  // 本月那筆手動改過(auto:false)之後,改回跟著目前數字自動更新
+      const found = findById(state.netWorthHistory, id);
+      if (found && found.m === thisMonth()){ found.auto = true; maybeSnapshot(); }
       break;
     }
     case 'export': exportJSON(); return;
