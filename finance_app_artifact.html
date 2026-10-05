@@ -380,6 +380,9 @@ const DEFAULT_LEVERAGE = {
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, rateHistory:[], autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
+  // 理財型房貸每月最低還本:剩餘餘額 × repayPermille ‰,每月 1 日自動記一筆還款(見 maybeAutoRepay)。
+  // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
+  autoRepay:true, repayPermille:5, repayPosted:[],
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
@@ -428,6 +431,29 @@ function emptyState(){
    不合格的換成新的 uid()。顯示給人看的文字(名稱、備註…)本來就都有 esc(),不受影響。 */
 const safeId = v => { const str = String(v == null ? '' : v); return /^[A-Za-z0-9_-]{1,64}$/.test(str) ? str : uid(); };
 
+/* 過去各段利率(見 rateAt):日期壞掉的不收,照日期排好,同一天只留最後一筆。理財型跟一般型房貸共用 */
+function normalizeRateHistory(v){
+  return (Array.isArray(v) ? v : []).filter(e => e && typeof e === 'object')
+    .map(e => ({ id: safeId(e.id), until: isoDate(typeof e.until === 'string' ? e.until : '', ''), rate: Math.max(0, num(e.rate)) }))
+    .filter(e => e.until)
+    .sort((a, b) => a.until < b.until ? -1 : (a.until > b.until ? 1 : 0))
+    .filter((e, i, arr) => i === arr.length - 1 || e.until !== arr[i + 1].until);
+}
+/* 負債細項設成「一般型房貸(本利攤還)」時的參數,null = 一般的負債(金額自己填)。
+   有這個欄位時負債金額由 amortize() 算出來的剩餘本金自動更新。新版一定寫出 loan 這個 key(沒設就是 null),
+   舊版分頁寫回來的沒有這個 key,keepFieldsOldVersionsDrop() 靠這個分辨。 */
+function normalizeLoan(v){
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  return {
+    principal: Math.max(0, num(v.principal)),
+    start: isoDate(v.start, ''),                                      // 撥款日;之後每個月同一天繳款
+    years: Math.min(50, Math.max(0, num(v.years))),
+    annualRate: Math.max(0, num(v.annualRate)),
+    rateHistory: normalizeRateHistory(v.rateHistory),
+    autoInterest: v.autoInterest !== false,
+    interestPosted: (Array.isArray(v.interestPosted) ? v.interestPosted : []).filter(m => typeof m === 'string' && isoDate(m + '-01', ''))
+  };
+}
 function normalize(raw){
   const s = emptyState();
   if (!raw || typeof raw !== 'object') return s;
@@ -437,7 +463,7 @@ function normalize(raw){
   const objs = v => arr(v).filter(x => x && typeof x === 'object' && !Array.isArray(x));
   const str = v => typeof v === 'string' ? v : (typeof v === 'number' && Number.isFinite(v)) ? String(v) : '';
   s.assets = objs(raw.assets).map(a => ({ id:safeId(a.id), name:str(a.name), amount:num(a.amount) }));
-  s.liabilities = objs(raw.liabilities).map(a => ({ id:safeId(a.id), name:str(a.name), amount:num(a.amount) }));
+  s.liabilities = objs(raw.liabilities).map(a => ({ id:safeId(a.id), name:str(a.name), amount:num(a.amount), loan: normalizeLoan(a.loan) }));
   // budgets 現在只當作記帳的類別清單(預算頁已移除,欄位保留以免舊資料的類別消失)
   if (Array.isArray(raw.budgets)) s.budgets = objs(raw.budgets).map(b => ({ id:safeId(b.id), name:str(b.name), budget:num(b.budget) }));
   // 有這個欄位就照收(包括使用者自己刪光的空清單);只有舊資料完全沒有這個欄位才補預設的兩檔。
@@ -534,12 +560,7 @@ function normalize(raw){
    'historicalHighValue','stressDeclinePct','creditLimit','annualRate'].forEach(k => {
     if (L[k] !== undefined) base[k] = Math.max(0, num(L[k]));   // 這些欄位沒有負值的意義
   });
-  // 過去各段利率(見 rateAt):日期壞掉的不收,照日期排好,同一天只留最後一筆
-  base.rateHistory = objs(L.rateHistory)
-    .map(e => ({ id: safeId(e.id), until: isoDate(str(e.until), ''), rate: Math.max(0, num(e.rate)) }))
-    .filter(e => e.until)
-    .sort((a, b) => a.until < b.until ? -1 : (a.until > b.until ? 1 : 0))
-    .filter((e, i, arr) => i === arr.length - 1 || e.until !== arr[i + 1].until);
+  base.rateHistory = normalizeRateHistory(L.rateHistory);
   {
     const mapDraw = d => ({
       id: safeId(d.id),          // 新格式跟舊格式(tranches/core)兩條路都會經過這裡,id 檢查放這才不會漏
@@ -566,6 +587,9 @@ function normalize(raw){
   base.autoHigh = L.autoHigh !== false;       // 舊資料沒有這些欄位時給預設值
   base.autoInterest = L.autoInterest !== false;
   base.interestPosted = arr(L.interestPosted).map(str).filter(m => isoDate(m + '-01', ''));
+  base.autoRepay = L.autoRepay !== false;
+  base.repayPermille = L.repayPermille === undefined ? DEFAULT_LEVERAGE.repayPermille : Math.min(1000, Math.max(0, num(L.repayPermille)));
+  base.repayPosted = arr(L.repayPosted).map(str).filter(m => isoDate(m + '-01', ''));
   base.quoteDate = str(L.quoteDate);
   {
     // num() 把缺值/NaN 都收斂成 0,單獨用 finiteNum 沒辦法分辨「欄位不存在」跟「真的填了 0」——
@@ -588,6 +612,7 @@ function normalize(raw){
   dedupe(s.assets, 'id', itemIds); dedupe(s.liabilities, 'id', itemIds);
   dedupe(s.transactions); dedupe(s.trades); dedupe(s.netWorthHistory); dedupe(s.budgets);
   dedupe(s.instruments, 'key'); dedupe(base.draws);
+  s.liabilities.forEach(l => { if (l.loan) dedupe(l.loan.rateHistory); });
   base.draws.forEach(d => dedupe(d.repayments));
   // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
   [['00631L', 'shares631L', 'price631L'], ['00675L', 'shares675L', 'price675L']].forEach(([id, sk, pk]) => {
@@ -622,8 +647,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-05 · 1fbc7abe59';
-const BUILD_HASH = '1fbc7abe59';
+const BUILD_VERSION = '2026-10-05 · f80910cb98';
+const BUILD_HASH = 'f80910cb98';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1034,6 +1059,19 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
     next.leverage.rateHistory = JSON.parse(JSON.stringify(prev.leverage.rateHistory));
     restored = true;
   }
+  // 每月還本的設定(千分之幾、開關、已處理月份)同理:舊版寫回來沒有 repayPosted 這個 key
+  if (rawL && !('repayPosted' in rawL) && prev.leverage){
+    ['autoRepay', 'repayPermille', 'repayPosted'].forEach(k => {
+      if (prev.leverage[k] !== undefined) next.leverage[k] = JSON.parse(JSON.stringify(prev.leverage[k]));
+    });
+    restored = true;
+  }
+  // 一般型房貸的參數放在負債細項的 loan 裡,舊版只留 id/name/amount
+  const rawLiab = new Map((Array.isArray(raw.liabilities) ? raw.liabilities : []).filter(x => x && typeof x === 'object').map(x => [String(x.id), x]));
+  next.liabilities.forEach(l => {
+    const r = rawLiab.get(l.id), p = (prev.liabilities || []).find(x => x.id === l.id);
+    if (r && !('loan' in r) && p && p.loan){ l.loan = JSON.parse(JSON.stringify(p.loan)); restored = true; }
+  });
   const rawInst = new Map((Array.isArray(raw.instruments) ? raw.instruments : []).filter(x => x).map(x => [String(x.key || ''), x]));
   next.instruments.forEach(it => {
     const r = rawInst.get(it.key), p = (prev.instruments || []).find(x => x.key === it.key);
@@ -1858,10 +1896,12 @@ function interestBetween(L, balance, a, b){
    同一天再改(一個字一個字打)只換目前利率。還沒有借款在跑(剛設定)就直接改 */
 function setCurrentRate(L, v){
   const today = todayISO();
-  const running = L.draws.some(d => d.useDate && d.useDate < today);
+  // L 可以是槓桿設定(看有沒有動用在跑)或一般型房貸的 loan(看撥款日)
+  const running = Array.isArray(L.draws) ? L.draws.some(d => d.useDate && d.useDate < today) : !!(L.start && L.start < today);
   const hist = L.rateHistory || (L.rateHistory = []);
   const last = hist[hist.length - 1];
-  if (running && v !== L.annualRate && !(last && last.until >= today)){
+  // 原本是 0(還沒填過利率)不算升降息,不記過去一段
+  if (running && L.annualRate > 0 && v !== L.annualRate && !(last && last.until >= today)){
     hist.push({ id: uid(), until: today, rate: L.annualRate });
   }
   L.annualRate = v;
@@ -2374,6 +2414,23 @@ function nwDeltaText(v, prevM, prevV, m, pct){
   const p = pct && prevV > 0 ? `(${d > 0 ? '+' : '−'}${(Math.abs(d) / prevV * 100).toFixed(1)}%)` : '';
   return `${vs} ${d > 0 ? '+' : '−'}${fmt(Math.abs(d))}${p}`;
 }
+/* 本月各筆房貸要繳多少:理財型(本月還本 + 預估利息)跟每筆一般型房貸本月那一期。沒有任何房貸回傳空陣列 */
+function monthLoanDues(){
+  const out = [], m = thisMonth();
+  const r = computeLeverage();
+  if (r.usedAmount > 0){
+    const mp = leverageMonthPrincipal();
+    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: r.monthlyInterest, note: mp.estimate ? '還本為預估' : '' });
+  }
+  state.liabilities.forEach(l => {
+    if (!loanReady(l)) return;
+    const row = amortize(l.loan).rows.find(x => x.date.slice(0, 7) === m);
+    const nx = row ? null : nextLoanPayment(l.loan);
+    const p = row || (nx && nx.date.slice(0, 7) === m ? nx : null);
+    if (p) out.push({ name: l.name || '房貸', principal: p.principal, interest: p.interest, note: (row ? '已於 ' : '') + p.date.slice(5).replace('-', '/') + ' 扣款' });
+  });
+  return out;
+}
 function renderOverview(){
   const hist = monthlyHistory(12);
   const nw = netWorth();
@@ -2443,6 +2500,21 @@ function renderOverview(){
           ${xDel('del-hist', h.id)}
         </div>`; }).join('')}</div>` : ''}
     </div>
+
+    ${(() => {
+      const dues = monthLoanDues();
+      if (!dues.length) return '';
+      const total = sum(dues, d => d.principal + d.interest);
+      return `
+    <div class="card">
+      <h3>${monthLabel(thisMonth())}房貸要繳</h3>
+      ${dues.map(d => `
+      <div class="row"><span class="label">${esc(d.name)}</span><span class="val">NT$ ${fmt(d.principal + d.interest)}</span></div>
+      <div class="row sub"><span class="label">本金 ${fmt(d.principal)} + 利息 ${fmt(d.interest)}${d.note ? ' · ' + esc(d.note) : ''}</span><span class="val"></span></div>`).join('')}
+      ${dues.length > 1 ? `<div class="row total"><span class="label">合計</span><span class="val">NT$ ${fmt(total)}</span></div>` : ''}
+      <div class="muted" style="font-size:12px;">利息會自動記進記帳(房貸利息);還本只減少負債,不算支出。</div>
+    </div>`;
+    })()}
 
     ${(() => {
       const p = computePosition();
@@ -2575,6 +2647,44 @@ function itemRowExtras(x, isLiab, color){
       <div class="muted" style="font-size:11px; margin-top:2px;">過去月份填錯可以直接改,那個月的淨資產總數會跟著重算。</div></div>` : `<div class="muted" style="font-size:12px;">還沒有每月紀錄——從這個月開始,每個月會自動記下這一項的金額。</div>`) : ''}`;
 }
 
+/* 負債細項的「一般型房貸(本利攤還)」設定:設好之後這一項的金額 = 剩餘本金,自動跟著每期繳款減少 */
+let loanOpen = '';   // 目前展開「房貸設定」的負債 id
+function loanSummaryText(l){
+  if (!loanReady(l)) return '填好原始貸款金額、撥款日、年限,剩餘本金就會自動算';
+  const nx = nextLoanPayment(l.loan);
+  if (!nx) return '已經繳完';
+  return `下一期 ${nx.date}(第 ${nx.k}/${nx.N} 期)繳 NT$ ${fmt(nx.payment)}:本金 ${fmt(nx.principal)} + 利息 ${fmt(nx.interest)} · 年利率 ${rateAt(l.loan, todayISO())}%`;
+}
+function renderLoanBox(l){
+  if (!l.loan) return `<div class="row"><button class="linkish muted" data-act="loan-on" data-id="${l.id}" style="padding:0;">是本利攤還的房貸?設定後餘額自動算 ▸</button><span></span></div>`;
+  const lo = l.loan, open = loanOpen === l.id, offArmed = pendingConfirm === 'loan-off:' + l.id;
+  return `
+    <div class="row" style="align-items:flex-start;"><span class="muted" style="font-size:12px;" id="lo-sum-${l.id}">本利攤還 · ${esc(loanSummaryText(l))}</span>
+      <button class="linkish muted" data-act="loan-open" data-id="${l.id}" style="padding:0; flex:0 0 auto; margin-left:8px;">${open ? '收起 ▾' : '房貸設定 ▸'}</button></div>
+    ${open ? `
+    <div class="grid2" style="margin-top:6px;">
+      <div class="field"><label>原始貸款金額</label><input type="number" inputmode="decimal" data-k="lo-principal-${l.id}" value="${lo.principal || ''}"></div>
+      <div class="field"><label>撥款日(每月同一天繳)</label><input type="date" data-k="lo-start-${l.id}" value="${esc(lo.start)}"></div>
+      <div class="field"><label>年限(年)</label><input type="number" inputmode="decimal" data-k="lo-years-${l.id}" value="${lo.years || ''}"></div>
+      <div class="field"><label>目前年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lo-rate-${l.id}" value="${lo.annualRate || ''}"></div>
+    </div>
+    ${lo.rateHistory.length ? `
+    <div class="muted" style="margin-top:2px;">過去的利率(那段期間的每期月付照當時的利率算):</div>
+    ${lo.rateHistory.map((e, i) => `
+    <div class="muted" style="margin-top:6px; font-size:12px;">${i ? esc(lo.rateHistory[i - 1].until) + ' 起' : '最早'},到下面這天之前:</div>
+    <div class="erow" style="margin-top:4px; flex-wrap:nowrap;">
+      <input type="date" data-k="lr-until-${l.id}.${e.id}" value="${esc(e.until)}" style="flex:1 1 0; min-width:0;">
+      <input type="number" inputmode="decimal" step="0.01" data-k="lr-val-${l.id}.${e.id}" value="${e.rate}" style="flex:0 0 72px; width:72px; min-width:0;">
+      <span class="muted">%</span>
+      ${xDel('del-loan-rate', l.id + '.' + e.id)}
+    </div>`).join('')}` : ''}
+    <div class="muted" style="margin-top:6px;">銀行調利率時改「目前年利率」(改完離開欄位才生效):今天以前照舊利率,之後每期月付用剩餘本金、剩餘期數、新利率重算。
+      生效日不是今天的話,改上面那段的日期。</div>
+    <button class="btn quiet" data-act="toggle-loan-interest" data-id="${l.id}">${lo.autoInterest ? '✓ 每期利息自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
+    <button class="btn quiet${offArmed ? ' danger' : ''}" data-act="loan-off" data-id="${l.id}">${offArmed ? '⚠️ 再按一次:改回自己填金額' : '不用本利攤還,改回自己填金額'}</button>
+    ` : ''}`;
+}
+
 function renderAssets(){
   const tA = totalAssets(), tL = totalLiab();
   return `
@@ -2611,9 +2721,10 @@ function renderAssets(){
         <div style="margin-bottom:10px;">
         <div class="erow">
           <input class="f-name" data-k="ln-${l.id}" value="${esc(l.name)}" placeholder="項目名稱">
-          <input class="f-amt" type="number" inputmode="decimal" data-k="la-${l.id}" value="${l.amount || ''}" placeholder="金額">
+          <input class="f-amt" type="number" inputmode="decimal" data-k="la-${l.id}" value="${l.amount || ''}" placeholder="金額"${loanReady(l) ? ' readonly style="opacity:.7;" title="本利攤還自動計算"' : ''}>
           ${xDel('del-liab', l.id)}
         </div>
+        ${renderLoanBox(l)}
         ${itemRowExtras(l, true, 'var(--red)')}
         </div>`).join('') : `<div class="empty">還沒有負債項目。<br>例如:房貸、信用貸款。</div>`}
       <button class="btn" data-act="add-liab">＋ 新增負債</button>
@@ -2630,6 +2741,12 @@ function refreshAssets(){
     set('a-pct-' + a.id, pct.toFixed(1) + '%');
     const bar = document.getElementById('a-bar-' + a.id);
     if (bar) bar.style.width = pct.toFixed(1) + '%';
+  });
+  state.liabilities.forEach(l => {
+    if (!l.loan) return;
+    set('lo-sum-' + l.id, '本利攤還 · ' + loanSummaryText(l));
+    const amt = document.querySelector('[data-k="la-' + l.id + '"]');
+    if (amt && loanReady(l) && document.activeElement !== amt) amt.value = l.amount || '';
   });
   // 「比上月」跟著打字即時更新,不整頁重畫(整頁重畫會讓正在打的欄位失焦)
   [[state.assets, 'a', false], [state.liabilities, 'l', true]].forEach(([list, pre, isLiab]) => list.forEach(x => {
@@ -2965,6 +3082,16 @@ function renderHelp(){
       <p>年利率是你填的假設值,實際以銀行核定為準。打開「每月自動記入支出」的話,
       每月會在記帳自動產生一筆「房貸利息」;整個月沒打開 app 的話,下次打開時會把漏掉的月份補上
       (用那個月月初的借款餘額算)。你把某個月那筆刪掉,那個月不會被補記。</p>
+      <p><strong>每月最低還本</strong>:理財型房貸每月要還一部分本金。「設定」分頁「借款與利息」填千分之幾(預設 5),
+      每月 1 日會在每筆動用底下自動記一筆還款 = 那天的剩餘餘額 × 千分之幾(所以金額逐月遞減),標「自動」。
+      動用當月不還、下個月起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
+      還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動額度上限。還本不算支出、不進記帳,
+      但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月還本 + 預估利息。</p>
+      <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「是本利攤還的房貸?」,填原始貸款金額、
+      撥款日、年限、目前年利率,這一項的金額就自動等於剩餘本金(之後每月同一天繳一期,沒有那天就是月底)。
+      每期月付 = 餘額 × r ÷ (1 − (1 + r)<sup>−剩餘期數</sup>),r = 年利率 ÷ 12;升降息時改「目前年利率」(離開欄位才生效),
+      今天以前照舊利率,之後用剩餘本金、剩餘期數、新利率重算月付。每期利息在扣款日自動記一筆「房貸利息」
+      (可以關掉;第一次只從本月開始,不回頭補撥款以來的),還本只減負債。總覽會列「本月房貸要繳」。</p>
     </div>
 
     <div class="sect">報價</div>
@@ -3805,7 +3932,7 @@ function renderRepayments(){
       `).join('')}
       ${rows.length ? `<div style="margin-top:10px;">${rows.map(({ it, r }) => `
         <div class="erow">
-          <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">
+          <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">${String(r.id).startsWith(AUTO_REPAY_PREFIX) ? '<span class="badge gray" style="flex:0 0 auto;">自動</span>' : ''}
           <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
           <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
         </div>
@@ -4678,8 +4805,14 @@ function renderLeverage(){
       <div class="muted" style="margin-top:6px;">銀行調利率時直接改「目前年利率」就好:已經借出去的錢,今天以前的利息照舊利率算,今天起照新利率。
         生效日不是今天的話,改上面那段的日期。</div>
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">預估每月利息</span><span class="val" id="out-monthlyInterest" style="font-weight:800;">NT$ ${fmt(r.monthlyInterest)}</span></div>
-      <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 每月自動記入支出' : '不自動記帳(點此開啟)'}</button>
+      <div class="row"><span class="label">預估每月利息</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(r.monthlyInterest)}</span></div>
+      ${(() => { const mp = leverageMonthPrincipal(); return `
+      <div class="row"><span class="label">本月還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
+      <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + r.monthlyInterest)}</span></div>`; })()}
+      <div class="field" style="margin-top:8px;"><label>每月最低還本(剩餘餘額的千分之幾)</label>
+        <input type="number" inputmode="decimal" step="0.1" data-k="lev-repayPermille" value="${L.repayPermille}"></div>
+      <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 利息每月自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
+      <button class="btn quiet" data-act="toggle-autorepay">${L.autoRepay ? '✓ 每月 1 日自動記還本' : '不自動記還本(點此開啟)'}</button>
       ${(() => {
         const p = computePosition();
         if (!p.hasData || !r.drawnAmount) return '';
@@ -4703,6 +4836,8 @@ function renderLeverage(){
       })()}
       <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
         ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
+        : ''}${L.autoRepay && L.repayPermille > 0
+        ? `每月 1 日會在每筆動用底下自動記一筆還款(當時餘額的千分之 ${L.repayPermille}),借款餘額跟著減少、可動用額度跟著恢復;還本不算支出,不會進記帳。那個月已經自己記過還款就不另外記,刪掉自動那筆也不會再補。`
         : ''}</div>
     </div>
     `}
@@ -4727,13 +4862,145 @@ function refreshLeverage(){
   if (bar) bar.style.width = (L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0).toFixed(1) + '%';
   set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount)));
   set('out-monthlyInterest', 'NT$ ' + fmt(r.monthlyInterest));
+  { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + r.monthlyInterest)); }
   const stress = document.getElementById('stress-body');
   if (stress) stress.innerHTML = stressBody();
 }
 
 /* 每月把槓桿利息記成一筆支出。已記過的月份會留在 interestPosted,
    所以你把那筆刪掉之後不會又被加回來。 */
+/* 開 app、回到前景、改動用日期時跑的每月工作:理財型每月還本 → 理財型利息 → 一般型房貸的剩餘本金與利息。
+   還本要在利息前面:本月利息照「還完本月本金之後」的餘額算。 */
 function maybePostInterest(){
+  const a = maybeAutoRepay();
+  const b = postLeverageInterest();
+  const c = syncLoanLiabilities();
+  const d = postLoanInterest();
+  return a || b || c || d;
+}
+
+/* 理財型房貸每月最低還本:每月 1 日對每筆動用記一筆「當時剩餘餘額 × repayPermille ‰」的還款。
+   - 動用當月不還(動用日要在那個月 1 日之前),下個月起
+   - 那個月已經有還款(自己記的)就不另外記
+   - 處理過的月份記在 repayPosted(包括使用者刪掉自動那筆的月份),不會重複、也不會補回被刪的
+   - 跟利息一樣,第一次只從本月開始,不回頭補更早的;中間沒開 app 的月份會補
+   - 還款 id 照月份固定(autorepayYYYYMM):兩台裝置同時補記,合併時是同一筆,不會還兩次。
+     id 不能有「-」:還款欄位的 data-k 是 rp-<what>-<動用id>-<還款id>,最後一段當還款 id */
+const AUTO_REPAY_PREFIX = 'autorepay';
+function maybeAutoRepay(){
+  const L = state.leverage;
+  if (!L.autoRepay || !(L.repayPermille > 0)) return false;
+  const cur = thisMonth(), posted = L.repayPosted;
+  const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
+  const first = last && last < cur ? shiftMonth(last, 1) : cur;
+  let changed = false;
+  for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
+    if (posted.includes(m)) continue;
+    const day = m + '-01', rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+    L.draws.forEach(d => {
+      if (!d.useDate || d.useDate >= day) return;
+      if ((d.repayments || []).some(r => r.id === rid || (r.date && r.date.slice(0, 7) === m))) return;
+      const bal = balanceAt(d, day);
+      const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
+      if (!(amt > 0)) return;
+      d.repayments.push({ id: rid, date: day, amount: amt });
+    });
+    posted.push(m);
+    changed = true;
+  }
+  if (changed) scheduleSave();
+  return changed;
+}
+/* 本月理財型要繳多少本金:本月已經記的還款合計;還沒記(自動還本關掉、或剛動用)就用目前餘額 × ‰ 估 */
+function leverageMonthPrincipal(){
+  const L = state.leverage, m = thisMonth();
+  const paid = sum(L.draws, d => sum((d.repayments || []).filter(r => r.date && r.date.slice(0, 7) === m), r => r.amount));
+  return paid > 0 ? { amount: paid, estimate: false } : { amount: Math.round(computeLeverage().usedAmount * L.repayPermille / 1000), estimate: true };
+}
+
+/* ---------- 一般型房貸(本利攤還) ---------- */
+/* 撥款日往後 k 個月的同一天(那個月沒有這天就用月底) */
+function addMonthsISO(iso, k){
+  const y = Number(iso.slice(0, 4)), mo = Number(iso.slice(5, 7)) - 1, d = Number(iso.slice(8, 10));
+  const t = new Date(y, mo + k, 1);
+  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  return t.getFullYear() + '-' + pad2(t.getMonth() + 1) + '-' + pad2(Math.min(d, last));
+}
+/* 本利攤還(等額本息):每期月付 = 餘額 × r ÷ (1 − (1+r)^−剩餘期數),r = 那一期開始時的年利率 ÷ 12。
+   每期都用「當時餘額、剩餘期數、當時利率」重算,所以升降息之後月付會跟著變(銀行的做法),利率沒變時每期一樣。
+   回傳到 until(含)為止繳過的每一期跟繳完的餘額;還沒撥款(start 在 until 之後)餘額是 0。 */
+function amortize(loan, until = todayISO()){
+  const N = Math.round((loan && loan.years || 0) * 12);
+  const out = { rows: [], balance: 0, N };
+  if (!loan || !loan.start || !(loan.principal > 0) || !(N > 0) || loan.start > until) return out;
+  let B = loan.principal;
+  for (let k = 1; k <= N; k++){
+    const date = addMonthsISO(loan.start, k);
+    if (date > until) break;
+    const r = rateAt(loan, addMonthsISO(loan.start, k - 1)) / 1200, n = N - k + 1;
+    const pay = r > 0 ? B * r / (1 - Math.pow(1 + r, -n)) : B / n;
+    const interest = B * r, principal = Math.min(B, pay - interest);
+    B = Math.max(0, B - principal);
+    out.rows.push({ k, date, payment: interest + principal, interest, principal, balance: B });
+  }
+  out.balance = B;
+  return out;
+}
+/* 下一期(今天之後第一期)要繳多少:用目前餘額、剩餘期數、目前利率算 */
+function nextLoanPayment(loan){
+  const a = amortize(loan);
+  const k = a.rows.length + 1;
+  if (!loan || !loan.start || !(a.N > 0) || k > a.N || !(loan.principal > 0)) return null;
+  const B = loan.start > todayISO() ? loan.principal : a.balance;
+  if (!(B > 0)) return null;
+  const r = rateAt(loan, todayISO()) / 1200, n = a.N - k + 1;
+  const pay = r > 0 ? B * r / (1 - Math.pow(1 + r, -n)) : B / n;
+  return { k, N: a.N, date: addMonthsISO(loan.start, k), payment: pay, interest: B * r, principal: pay - B * r, balance: B };
+}
+const loanReady = l => !!(l && l.loan && l.loan.start && l.loan.principal > 0 && l.loan.years > 0);
+/* 設成本利攤還的負債,金額 = 今天的剩餘本金(還沒撥款就是貸款金額) */
+function syncLoanLiabilities(){
+  let changed = false;
+  state.liabilities.forEach(l => {
+    if (!loanReady(l)) return;
+    const v = Math.round(l.loan.start > todayISO() ? l.loan.principal : amortize(l.loan).balance);
+    if (l.amount !== v){ l.amount = v; changed = true; }
+  });
+  if (changed){ maybeSnapshot(); scheduleSave(); }
+  return changed;
+}
+/* 一般型房貸每期的利息記成一筆「房貸利息」支出(只記利息,還本只減負債,不算支出),記在繳款日。
+   跟理財型的利息一樣:第一次只從本月開始、中間沒開 app 的月份補記、刪掉的不補回;
+   本月的繳款日還沒到就先不記也不標已處理。交易 id 照負債跟月份固定,兩台同時記合併後是同一筆。 */
+function postLoanInterest(){
+  let changed = false;
+  const cur = thisMonth(), today = todayISO();
+  state.liabilities.forEach(l => {
+    if (!loanReady(l) || !l.loan.autoInterest) return;
+    const lo = l.loan, posted = lo.interestPosted;
+    const rows = amortize(lo).rows;
+    const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
+    const first = last && last < cur ? shiftMonth(last, 1) : cur;
+    for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
+      if (posted.includes(m)) continue;
+      const row = rows.find(x => x.date.slice(0, 7) === m);
+      if (!row || row.date > today){                // 這個月沒有要繳的(還沒撥款/已繳完),或本月繳款日還沒到
+        if (m < cur){ posted.push(m); changed = true; }
+        continue;
+      }
+      const id = ('li-' + l.id).slice(0, 50) + '-' + m.replace('-', '');
+      if (row.interest >= 0.5 && !state.transactions.some(t => t.id === id)){
+        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: -Math.round(row.interest) });
+      }
+      posted.push(m);
+      changed = true;
+    }
+  });
+  if (changed) scheduleSave();
+  return changed;
+}
+
+function postLeverageInterest(){
   const L = state.leverage;
   if (!L.autoInterest) return false;
   const cur = thisMonth();
@@ -4770,6 +5037,13 @@ function maybePostInterest(){
 const findById = (list, id) => list.find(x => x.id === id);
 const idEditStash = new Map();   // 改標的代號途中收起來的原本歷史(見 onField 的 in-id),改回原代號就還回去
 
+function applyLoanRate(lid, value){
+  const l = findById(state.liabilities, lid);
+  if (!l || !l.loan || String(value).trim() === '') return;
+  setCurrentRate(l.loan, Math.max(0, num(value)));
+  syncLoanLiabilities();
+  scheduleSave();
+}
 function onField(key, el){
   const dash = key.indexOf('-');
   const kind = key.slice(0, dash);
@@ -4779,7 +5053,25 @@ function onField(key, el){
   if (kind === 'an'){ const a = findById(state.assets, rest); if (a) a.name = el.value; }
   else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
-  else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l) l.amount = Math.max(0, num(el.value)); }
+  else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l && !loanReady(l)) l.amount = Math.max(0, num(el.value)); }
+  else if (kind === 'lo'){                        // 一般型房貸設定:lo-<欄位>-<負債 id>
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), l = findById(state.liabilities, rest.slice(cut + 1));
+    if (!l || !l.loan || what === 'rate') return;  // 利率在 change(離開欄位)才處理,見 applyLoanRate
+    if (what === 'start'){ const d = isoDate(el.value, ''); if (d) l.loan.start = d; }
+    else if (String(el.value).trim() === '') return;
+    else if (what === 'years') l.loan.years = Math.min(50, Math.max(0, num(el.value)));
+    else if (what === 'principal') l.loan.principal = Math.max(0, num(el.value));
+    syncLoanLiabilities();
+  }
+  else if (kind === 'lr'){                        // 一般型房貸過去各段利率:lr-until|val-<負債 id>.<段 id>
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), ids = rest.slice(cut + 1), dot = ids.indexOf('.');
+    const l = findById(state.liabilities, ids.slice(0, dot)), e = l && l.loan && findById(l.loan.rateHistory, ids.slice(dot + 1));
+    if (e){
+      if (what === 'until'){ const d = isoDate(el.value, ''); if (d) e.until = d; l.loan.rateHistory.sort((a, b) => a.until < b.until ? -1 : 1); }
+      else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
+      syncLoanLiabilities();
+    }
+  }
   else if (kind === 'ih'){                        // 資產頁「每月紀錄」改過去月份的某一項:ih-<快照 id>.<細項 id>(id 裡不會有點)
     const dot = rest.indexOf('.');
     if (String(el.value).trim() === '') return;    // 清空準備打新數字的那一下不算,不然那個月的總數會先被算成少了這一項
@@ -4801,6 +5093,7 @@ function onField(key, el){
       else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
     }
   }
+  else if (kind === 'lev' && rest === 'repayPermille'){ state.leverage.repayPermille = Math.min(1000, Math.max(0, num(el.value))); }
   else if (kind === 'lev'){ state.leverage[rest] = Math.max(0, num(el.value)); }
   else if (kind === 'in'){                       // 標的清單,用內部 key 定位
     const cut = rest.indexOf('-');
@@ -4947,7 +5240,7 @@ function onField(key, el){
   }
 
   // 資產/負債細項一改就更新本月快照——不然月底最後一天改的數字,要等下個月打開才會存,那時已經算到下個月了
-  if (['an', 'aa', 'ln', 'la'].includes(kind)) maybeSnapshot();
+  if (['an', 'aa', 'ln', 'la', 'lo', 'lr'].includes(kind)) maybeSnapshot();
   scheduleSave();
   if (kind === 'tr' && rest.startsWith('date-')){
     maybePostInterest();
@@ -4991,8 +5284,8 @@ function sampleData(){
     { id:uid(), name:'基金 / 儲蓄險', amount:724730 }
   ];
   s.liabilities = [
-    { id:uid(), name:'房貸', amount:4000000 },
-    { id:uid(), name:'信用貸款', amount:500000 }
+    { id:uid(), name:'房貸', amount:4000000, loan:null },
+    { id:uid(), name:'信用貸款', amount:500000, loan:null }
   ];
   s.budgets = DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 }));
   const day = n => m + '-' + pad2(n);
@@ -5206,7 +5499,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate'];
+const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
@@ -5224,7 +5517,7 @@ function onClick(el){
     // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
     case 'del-asset': { const a = findById(state.assets, id); if (a && (a.name || a.amount) && needsConfirm('del-asset:' + id)) return;
       state.assets = state.assets.filter(a => a.id !== id); break; }
-    case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0 }); break;
+    case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0, loan:null }); break;
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
@@ -5431,6 +5724,54 @@ function onClick(el){
       if (needsConfirm('restore:' + id)) return;
       restoreBackup(id);
       return;
+    case 'loan-on': {
+      const l = findById(state.liabilities, id);
+      if (l && !l.loan){ l.loan = normalizeLoan({ principal: l.amount, years: 20 }); loanOpen = id; }
+      break;
+    }
+    case 'loan-open': loanOpen = loanOpen === id ? '' : id; break;
+    case 'loan-off': {
+      const l = findById(state.liabilities, id);
+      if (!l || !l.loan) break;
+      if (needsConfirm('loan-off:' + id)) return;
+      l.loan = null;                                     // 金額留在最後算出來的剩餘本金,之後自己填
+      loanOpen = '';
+      break;
+    }
+    case 'del-loan-rate': {
+      if (needsConfirm('del-loan-rate:' + id)) return;
+      const [lid, rid] = String(id).split('.');
+      const l = findById(state.liabilities, lid);
+      if (l && l.loan){ l.loan.rateHistory = l.loan.rateHistory.filter(e => e.id !== rid); syncLoanLiabilities(); }
+      break;
+    }
+    case 'toggle-loan-interest': {
+      const l = findById(state.liabilities, id);
+      if (!l || !l.loan) break;
+      const lo = l.loan;
+      lo.autoInterest = !lo.autoInterest;
+      if (lo.autoInterest){
+        // 同理財型:關掉那段期間不補記
+        const cur = thisMonth(), last = lo.interestPosted.length ? lo.interestPosted.slice().sort()[lo.interestPosted.length - 1] : '';
+        for (let m = last ? shiftMonth(last, 1) : cur, guard = 0; m < cur && guard < 240; m = shiftMonth(m, 1), guard++){
+          if (!lo.interestPosted.includes(m)) lo.interestPosted.push(m);
+        }
+        maybePostInterest();
+      }
+      break;
+    }
+    case 'toggle-autorepay':
+      state.leverage.autoRepay = !state.leverage.autoRepay;
+      if (state.leverage.autoRepay){
+        // 關掉期間是使用者自己決定不自動記的(可能自己記了),重新打開時那段標成已處理,不補記
+        const L = state.leverage, cur = thisMonth();
+        const last = L.repayPosted.length ? L.repayPosted.slice().sort()[L.repayPosted.length - 1] : '';
+        for (let m = last ? shiftMonth(last, 1) : cur, guard = 0; m < cur && guard < 240; m = shiftMonth(m, 1), guard++){
+          if (!L.repayPosted.includes(m)) L.repayPosted.push(m);
+        }
+        maybePostInterest();
+      }
+      break;
     case 'toggle-autointerest':
       state.leverage.autoInterest = !state.leverage.autoInterest;
       if (state.leverage.autoInterest){
@@ -5536,6 +5877,10 @@ function init(){
       e.target.value = '';
       return;
     }
+    // 一般型房貸的利率:一個字一個字打的時候(2 → 2.3)不能每一下都當成「升降息」記一段過去利率,離開欄位才算數
+    const dk = e.target.dataset && String(e.target.dataset.k || '');
+    if (dk.startsWith('lo-rate-')){ applyLoanRate(dk.slice(8), e.target.value); renderAll(); return; }
+    if ((dk.startsWith('lo-') || dk.startsWith('lr-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
     if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){
       renderAll();
