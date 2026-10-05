@@ -622,8 +622,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-05 · 8bd1c8645d';
-const BUILD_HASH = '8bd1c8645d';
+const BUILD_VERSION = '2026-10-05 · 0fe88a20af';
+const BUILD_HASH = '0fe88a20af';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2364,6 +2364,16 @@ function switchTab(tab){
 }
 
 /* ===================== 總覽 ===================== */
+/* 淨資產跟前一筆每月紀錄差多少。前一筆不一定是上個月(中間可能有沒開 app 的月份),不是的話寫出是跟哪個月比。
+   沒有前一筆回傳 ''。pct 是百分比,前一筆是 0 或負的時候不寫(比例沒意義)。 */
+function nwDeltaText(v, prevM, prevV, m, pct){
+  if (prevM === undefined || prevM === null) return '';
+  const d = Math.round(v) - Math.round(prevV);
+  const vs = prevM === shiftMonth(m, -1) ? '比上月' : `比${monthLabel(prevM)}`;
+  if (d === 0) return `${vs} 持平`;
+  const p = pct && prevV > 0 ? `(${d > 0 ? '+' : '−'}${(Math.abs(d) / prevV * 100).toFixed(1)}%)` : '';
+  return `${vs} ${d > 0 ? '+' : '−'}${fmt(Math.abs(d))}${p}`;
+}
 function renderOverview(){
   const hist = monthlyHistory(12);
   const nw = netWorth();
@@ -2391,7 +2401,7 @@ function renderOverview(){
   const chart = lineChart('nw', hist.map(h => shortMonth(h.m)), [
     { name:'淨資產', color:'var(--accent)', values: hist.map(h => h.v) }
   ], { label:'淨資產走勢', height:110, area:true })
-    || `<div class="empty">記錄兩個月以上就會畫出走勢線。<br>先按下面的「記錄本月淨資產」。</div>`;
+    || `<div class="empty">有兩個月以上的紀錄就會畫出走勢線。<br>每月會自動記錄,下個月就看得到。</div>`;
 
   return `
     ${monthNav()}
@@ -2411,16 +2421,27 @@ function renderOverview(){
     <div class="card">
       <h3>淨資產</h3>
       <div class="big-num">${money(nw)}</div>
+      ${(() => {   // 目前的淨資產跟本月以前最近一筆紀錄比
+        const prev = state.netWorthHistory.filter(h => h.m < thisMonth()).sort((a, b) => a.m < b.m ? 1 : -1)[0];
+        const t = prev ? nwDeltaText(nw, prev.m, prev.v, thisMonth(), true) : '';
+        const d = prev ? Math.round(nw) - Math.round(prev.v) : 0;
+        return t ? `<div class="big-sub ${d > 0 ? 'pos' : d < 0 ? 'neg' : ''}" style="margin-bottom:0;">${t}</div>` : '';
+      })()}
       <div class="big-sub">資產 ${fmt(totalAssets())} − 負債 ${fmt(totalLiab())}</div>
       ${chart}
       <div class="muted" style="margin-top:6px;">每月淨資產會自動記錄:打開 app、改資產/負債時更新本月,過了月份就固定。下面的數字可以手動改。</div>
-      ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map(h => `
+      ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map((h, i, arr) => {
+        const older = arr[i + 1];
+        const d = older ? Math.round(h.v) - Math.round(older.v) : 0;
+        const t = older ? nwDeltaText(h.v, older.m, older.v, h.m, false) : '';
+        return `
         <div class="erow">
           <div class="f-name muted" style="padding-left:2px;">${esc(monthLabel(h.m))}${h.m === thisMonth() && !h.auto
-            ? ` <button class="linkish" data-act="hist-auto" data-id="${h.id}" style="padding:0; color:var(--accent);">改回自動</button>` : ''}</div>
+            ? ` <button class="linkish" data-act="hist-auto" data-id="${h.id}" style="padding:0; color:var(--accent);">改回自動</button>` : ''}${t
+            ? `<div class="${d > 0 ? 'pos' : d < 0 ? 'neg' : ''}" style="font-size:11px;">${t}</div>` : ''}</div>
           <input class="f-amt" type="number" inputmode="decimal" data-k="nh-${h.id}" value="${h.v || ''}">
           ${xDel('del-hist', h.id)}
-        </div>`).join('')}</div>` : ''}
+        </div>`; }).join('')}</div>` : ''}
     </div>
 
     ${(() => {

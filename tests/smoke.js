@@ -40,7 +40,7 @@ globalThis.A = {
   get pendingConfirm(){return pendingConfirm},
   xDel,
   get currentTabName(){return currentTab},
-  renderOverview,
+  renderOverview, nwDeltaText, monthLabel,
   get draftError(){return draftError},
   get backupList(){return backupList},
   maybePostInterest, maybeBackup, loadBackups, restoreBackup, localBackupApi,
@@ -670,6 +670,29 @@ console.log('本月淨資產手動改過 → 改回自動');
   A.onClick({ dataset:{ act:'hist-auto', id:h.id } });
   if (!h.auto || h.v !== real) throw new Error('改回自動後沒有回到目前數字(' + h.v + ' vs ' + real + ')');
   console.log('  手動改過不被覆寫、按「改回自動」回到目前數字 ✓');
+}
+
+console.log('淨資產比上月');
+{
+  const m0 = A.thisMonth(), m1 = A.shiftMonth(m0, -1), m3 = A.shiftMonth(m0, -3);
+  const t1 = A.nwDeltaText(1100000, m1, 1000000, m0, true);
+  if (t1 !== '比上月 +100,000(+10.0%)') throw new Error('比上月文字不對:' + t1);
+  const t2 = A.nwDeltaText(900000, m3, 1000000, m0, false);
+  if (!t2.startsWith('比') || t2.startsWith('比上月') || !t2.endsWith('−100,000')) throw new Error('跨月份比較文字不對:' + t2);
+  if (A.nwDeltaText(5, m1, 5, m0, true) !== '比上月 持平') throw new Error('持平文字不對');
+  if (A.nwDeltaText(100, m1, -50, m0, true) !== '比上月 +150') throw new Error('前一筆是負的不該寫百分比');
+  if (A.nwDeltaText(100, undefined, 0, m0, true) !== '') throw new Error('沒有前一筆應該是空字串');
+  // 總覽:大數字下面跟本月以前最近一筆比,列表每列跟前一筆比
+  A.state = A.emptyState();
+  A.state.assets = [{ id:'x1', name:'現金', amount:1200000 }];
+  A.state.netWorthHistory = [
+    { id:'h1', m:m3, v:900000, pv:0, loan:0, pnl:null, items:[], auto:true },
+    { id:'h2', m:m1, v:1000000, pv:0, loan:0, pnl:null, items:[], auto:true }
+  ];
+  const html = A.renderOverview();
+  if (!html.includes('比上月 +200,000(+20.0%)')) throw new Error('總覽大數字下沒有比上月');
+  if (!html.includes('比' + A.monthLabel(m3) + ' +100,000')) throw new Error('列表沒有寫出跟哪個月比');
+  console.log('  ' + t1 + ' | ' + t2 + ' ✓');
 }
 
 console.log('✕ 刪除可以取消');
