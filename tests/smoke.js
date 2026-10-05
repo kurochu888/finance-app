@@ -94,7 +94,6 @@ console.log('  淨資產', A.netWorth(), '| 本月收支', JSON.stringify(A.mont
 console.log('互動');
 A.onClick({ dataset:{ act:'add-asset' } });
 A.onClick({ dataset:{ act:'add-budget' } });
-A.onClick({ dataset:{ act:'snap-networth' } });
 A.draft = { date: A.todayISO(), type:'income', cat:'獎金', desc:'年終', amount:'50000' };
 A.onClick({ dataset:{ act:'add-tx' } });
 const tx = A.state.transactions[A.state.transactions.length-1];
@@ -658,6 +657,20 @@ A.state.leverage.interestPosted = [];
 A.maybePostInterest();
 if (A.state.transactions.some(t => t.cat === '房貸利息')) throw new Error('關閉後仍入帳');
 console.log('  關閉開關後不入帳 ✓');
+
+console.log('本月淨資產手動改過 → 改回自動');
+{
+  A.maybeSnapshot();
+  const h = A.state.netWorthHistory.find(x => x.m === A.thisMonth());
+  if (!h || !h.auto) throw new Error('打開 app 沒有自動記本月');
+  const real = h.v;
+  h.v = real + 12345; h.auto = false;
+  A.maybeSnapshot();
+  if (h.v !== real + 12345) throw new Error('手動改過的本月被自動覆寫');
+  A.onClick({ dataset:{ act:'hist-auto', id:h.id } });
+  if (!h.auto || h.v !== real) throw new Error('改回自動後沒有回到目前數字(' + h.v + ' vs ' + real + ')');
+  console.log('  手動改過不被覆寫、按「改回自動」回到目前數字 ✓');
+}
 
 console.log('✕ 刪除可以取消');
 {
