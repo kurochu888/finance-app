@@ -380,9 +380,10 @@ const DEFAULT_LEVERAGE = {
   marketHigh:0, marketCurrent:0, historicalHighValue:0,
   stressDeclinePct:20, creditLimit:5000000, annualRate:2.6, rateHistory:[], autoHigh:true,
   autoInterest:true, interestPosted:[], quoteDate:'',
-  // 理財型房貸每月最低還本:剩餘餘額 × repayPermille ‰,每月 1 日自動記一筆還款(見 maybeAutoRepay)。
+  // 理財型房貸每月最低還本:剩餘餘額 × repayPermille ‰,每月繳款日(payDay 號)自動記一筆還款(見 maybeAutoRepay),
+  // 利息也在同一天記。
   // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
-  autoRepay:true, repayPermille:5, repayPosted:[],
+  autoRepay:true, repayPermille:5, repayPosted:[], payDay:1,
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
@@ -589,6 +590,7 @@ function normalize(raw){
   base.interestPosted = arr(L.interestPosted).map(str).filter(m => isoDate(m + '-01', ''));
   base.autoRepay = L.autoRepay !== false;
   base.repayPermille = L.repayPermille === undefined ? DEFAULT_LEVERAGE.repayPermille : Math.min(1000, Math.max(0, num(L.repayPermille)));
+  base.payDay = L.payDay === undefined ? DEFAULT_LEVERAGE.payDay : Math.min(31, Math.max(1, Math.round(num(L.payDay)) || 1));
   base.repayPosted = arr(L.repayPosted).map(str).filter(m => isoDate(m + '-01', ''));
   base.quoteDate = str(L.quoteDate);
   {
@@ -647,8 +649,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-05 · f80910cb98';
-const BUILD_HASH = 'f80910cb98';
+const BUILD_VERSION = '2026-10-06 · 0f4bafb662';
+const BUILD_HASH = '0f4bafb662';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1061,9 +1063,14 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   }
   // 每月還本的設定(千分之幾、開關、已處理月份)同理:舊版寫回來沒有 repayPosted 這個 key
   if (rawL && !('repayPosted' in rawL) && prev.leverage){
-    ['autoRepay', 'repayPermille', 'repayPosted'].forEach(k => {
+    ['autoRepay', 'repayPermille', 'repayPosted', 'payDay'].forEach(k => {
       if (prev.leverage[k] !== undefined) next.leverage[k] = JSON.parse(JSON.stringify(prev.leverage[k]));
     });
+    restored = true;
+  }
+  // 繳款日比還本晚加:認得 repayPosted、不認得 payDay 的版本寫回來也要補
+  if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
+    next.leverage.payDay = prev.leverage.payDay;
     restored = true;
   }
   // 一般型房貸的參數放在負債細項的 loan 裡,舊版只留 id/name/amount
@@ -2420,7 +2427,7 @@ function monthLoanDues(){
   const r = computeLeverage();
   if (r.usedAmount > 0){
     const mp = leverageMonthPrincipal();
-    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: r.monthlyInterest, note: mp.estimate ? '還本為預估' : '' });
+    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: r.monthlyInterest, note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
@@ -3081,9 +3088,11 @@ function renderHelp(){
       <p>全部還清後不再計息,但動用紀錄與還款歷史都保留。</p>
       <p>年利率是你填的假設值,實際以銀行核定為準。打開「每月自動記入支出」的話,
       每月會在記帳自動產生一筆「房貸利息」;整個月沒打開 app 的話,下次打開時會把漏掉的月份補上
-      (用那個月月初的借款餘額算)。你把某個月那筆刪掉,那個月不會被補記。</p>
+      (用那個月繳款日的借款餘額算)。利息記在每月繳款日(「設定」分頁填幾號,預設 1 號),繳款日還沒到不記。
+      你把某個月那筆刪掉,那個月不會被補記。</p>
       <p><strong>每月最低還本</strong>:理財型房貸每月要還一部分本金。「設定」分頁「借款與利息」填千分之幾(預設 5),
-      每月 1 日會在每筆動用底下自動記一筆還款 = 那天的剩餘餘額 × 千分之幾(所以金額逐月遞減),標「自動」。
+      每月繳款日(跟利息同一天)會在每筆動用底下自動記一筆還款 = 那天的剩餘餘額 × 千分之幾(所以金額逐月遞減),標「自動」。
+      繳款日填 31 號、那個月沒有 31 號就記在月底;改繳款日時本月已經記的那幾筆會一起搬到新日期。
       動用當月不還、下個月起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
       還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動額度上限。還本不算支出、不進記帳,
       但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月還本 + 預估利息。</p>
@@ -4811,8 +4820,10 @@ function renderLeverage(){
       <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + r.monthlyInterest)}</span></div>`; })()}
       <div class="field" style="margin-top:8px;"><label>每月最低還本(剩餘餘額的千分之幾)</label>
         <input type="number" inputmode="decimal" step="0.1" data-k="lev-repayPermille" value="${L.repayPermille}"></div>
+      <div class="field"><label>每月繳款日(幾號,還本跟利息都記在這天)</label>
+        <input type="number" inputmode="numeric" min="1" max="31" step="1" data-k="lev-payDay" value="${L.payDay}"></div>
       <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 利息每月自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
-      <button class="btn quiet" data-act="toggle-autorepay">${L.autoRepay ? '✓ 每月 1 日自動記還本' : '不自動記還本(點此開啟)'}</button>
+      <button class="btn quiet" data-act="toggle-autorepay">${L.autoRepay ? `✓ 每月 ${L.payDay} 號自動記還本` : '不自動記還本(點此開啟)'}</button>
       ${(() => {
         const p = computePosition();
         if (!p.hasData || !r.drawnAmount) return '';
@@ -4837,7 +4848,7 @@ function renderLeverage(){
       <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
         ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
         : ''}${L.autoRepay && L.repayPermille > 0
-        ? `每月 1 日會在每筆動用底下自動記一筆還款(當時餘額的千分之 ${L.repayPermille}),借款餘額跟著減少、可動用額度跟著恢復;還本不算支出,不會進記帳。那個月已經自己記過還款就不另外記,刪掉自動那筆也不會再補。`
+        ? `每月 ${L.payDay} 號會在每筆動用底下自動記一筆還款(當時餘額的千分之 ${L.repayPermille}),借款餘額跟著減少、可動用額度跟著恢復;還本不算支出,不會進記帳。那個月已經自己記過還款就不另外記,刪掉自動那筆也不會再補。`
         : ''}</div>
     </div>
     `}
@@ -4879,7 +4890,8 @@ function maybePostInterest(){
   return a || b || c || d;
 }
 
-/* 理財型房貸每月最低還本:每月 1 日對每筆動用記一筆「當時剩餘餘額 × repayPermille ‰」的還款。
+/* 理財型房貸每月最低還本:每月繳款日(payDay 號)對每筆動用記一筆「當時剩餘餘額 × repayPermille ‰」的還款。
+   - 繳款日還沒到不記(那個月不標成已處理,過了繳款日再打開才記)
    - 動用當月不還(動用日要在那個月 1 日之前),下個月起
    - 那個月已經有還款(自己記的)就不另外記
    - 處理過的月份記在 repayPosted(包括使用者刪掉自動那筆的月份),不會重複、也不會補回被刪的
@@ -4887,6 +4899,24 @@ function maybePostInterest(){
    - 還款 id 照月份固定(autorepayYYYYMM):兩台裝置同時補記,合併時是同一筆,不會還兩次。
      id 不能有「-」:還款欄位的 data-k 是 rp-<what>-<動用id>-<還款id>,最後一段當還款 id */
 const AUTO_REPAY_PREFIX = 'autorepay';
+/* 理財型房貸 m 月的繳款日;那個月沒有那一天(31 號、2 月 30 號)就用月底 */
+function levDueDate(m, day = state.leverage.payDay){
+  const last = Number(monthEndISO(m).slice(8, 10));
+  return m + '-' + pad2(Math.min(Math.max(1, Math.round(day) || 1), last));
+}
+/* 改繳款日:本月已經自動記的還本跟利息(記在舊繳款日的)搬到新的繳款日;過去月份不動 */
+function applyPayDay(value){
+  const L = state.leverage;
+  if (String(value).trim() === '') return;
+  const nd = Math.min(31, Math.max(1, Math.round(num(value)) || 1));
+  if (nd === L.payDay) return;
+  const m = thisMonth(), oldDue = levDueDate(m), newDue = levDueDate(m, nd), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+  L.payDay = nd;
+  L.draws.forEach(d => (d.repayments || []).forEach(r => { if (r.id === rid) r.date = newDue; }));
+  state.transactions.forEach(t => { if (t.desc === AUTO_INTEREST_DESC && t.date === oldDue) t.date = newDue; });
+  maybePostInterest();
+  scheduleSave();
+}
 function maybeAutoRepay(){
   const L = state.leverage;
   if (!L.autoRepay || !(L.repayPermille > 0)) return false;
@@ -4894,11 +4924,13 @@ function maybeAutoRepay(){
   const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
   const first = last && last < cur ? shiftMonth(last, 1) : cur;
   let changed = false;
+  const today = todayISO();
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
-    const day = m + '-01', rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+    const day = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+    if (day > today) break;
     L.draws.forEach(d => {
-      if (!d.useDate || d.useDate >= day) return;
+      if (!d.useDate || d.useDate >= m + '-01') return;
       if ((d.repayments || []).some(r => r.id === rid || (r.date && r.date.slice(0, 7) === m))) return;
       const bal = balanceAt(d, day);
       const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
@@ -5010,18 +5042,21 @@ function postLeverageInterest(){
   // 只補最近一次之後的空檔,不回頭補更早的歷史空檔:那可能是使用者刻意關掉自動記入的期間(自己手動記),
   // 補了會重複。重新打開開關時,關掉期間的月份會被標成已處理(見 toggle-autointerest)。
   // 已經記過(包括使用者自己刪掉那筆)的月份都在 interestPosted 裡,不會重複記、也不會補回被刪的。
-  // 補記的月份用那個月月初的借款餘額;本月照舊用現在的餘額。
+  // 記在每月繳款日(跟還本同一天),繳款日還沒到不記;補記的月份用那個月繳款日的借款餘額,本月照舊用現在的餘額。
   const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
   const first = last && last < cur ? shiftMonth(last, 1) : cur;
+  const today = todayISO();
   let changed = false;
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
-    const balance = m === cur ? computeLeverage().usedAmount : sum(L.draws, d => balanceAt(d, m + '-01'));
-    const amt = balance * (rateAt(L, m + '-01') / 100) / 12;   // 補記過去的月份用那個月的利率
+    const due = levDueDate(m);
+    if (due > today) break;
+    const balance = m === cur ? computeLeverage().usedAmount : sum(L.draws, d => balanceAt(d, due));
+    const amt = balance * (rateAt(L, due) / 100) / 12;   // 補記過去的月份用那個月的利率
     if (!(amt > 0)) continue;
     state.transactions.push({
       id: uid(),
-      date: m + '-01',
+      date: due,
       cat: '房貸利息',
       desc: AUTO_INTEREST_DESC,
       amount: -Math.round(amt)
@@ -5093,6 +5128,7 @@ function onField(key, el){
       else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
     }
   }
+  else if (kind === 'lev' && rest === 'payDay'){ /* 離開欄位才套用,見 change 的 applyPayDay */ }
   else if (kind === 'lev' && rest === 'repayPermille'){ state.leverage.repayPermille = Math.min(1000, Math.max(0, num(el.value))); }
   else if (kind === 'lev'){ state.leverage[rest] = Math.max(0, num(el.value)); }
   else if (kind === 'in'){                       // 標的清單,用內部 key 定位
@@ -5880,6 +5916,8 @@ function init(){
     // 一般型房貸的利率:一個字一個字打的時候(2 → 2.3)不能每一下都當成「升降息」記一段過去利率,離開欄位才算數
     const dk = e.target.dataset && String(e.target.dataset.k || '');
     if (dk.startsWith('lo-rate-')){ applyLoanRate(dk.slice(8), e.target.value); renderAll(); return; }
+    // 繳款日:打「1 → 15」途中的「1」不能先把本月的自動還本搬到 1 號,離開欄位才算數
+    if (dk === 'lev-payDay'){ applyPayDay(e.target.value); renderAll(); return; }
     if ((dk.startsWith('lo-') || dk.startsWith('lr-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
     if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){

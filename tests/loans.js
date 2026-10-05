@@ -26,7 +26,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
-  applyLoanRate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
+  applyLoanRate, applyPayDay, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
@@ -140,7 +140,7 @@ console.log('一般型房貸:負債金額自動 = 剩餘本金,每期利息記�
   must(A.state.liabilities[0].amount === 5000000, '改回之後可以自己填金額');
 }
 
-console.log('理財型:每月 1 日自動還本(剩餘餘額 × ‰)');
+console.log('理財型:每月繳款日自動還本(預設 1 號,剩餘餘額 × ‰)');
 {
   setNow('2026-10-05');
   const s = A.emptyState();
@@ -193,6 +193,48 @@ console.log('理財型:每月 1 日自動還本(剩餘餘額 × ‰)');
   must(A.cashFlows(false).some(f => f.date === '2026-11-01' && f.amount < 0), '還本要算成自有資金流出');
   A.levTab = 'setup';
   must(A.renderLeverage().includes('本月要繳'), '槓桿頁「設定」要顯示本月要繳');
+}
+
+console.log('理財型:繳款日不是 1 號');
+{
+  setNow('2026-10-06');
+  const s = A.emptyState();
+  s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-06-15', note: '', repayments: [] }];
+  A.state = A.normalize(s);
+  A.maybePostInterest();   // 預設 1 號:10/01 已經過了,記了
+  const L = A.state.leverage, rp = () => L.draws[0].repayments;
+  const intr = () => A.state.transactions.filter(t => t.cat === '房貸利息').map(t => t.date + ':' + (-t.amount)).join(' ');
+  must(rp().length === 1 && rp()[0].date === '2026-10-01' && intr().startsWith('2026-10-01:'), '預設 1 號:' + JSON.stringify(rp()) + ' ' + intr());
+  // 改成 15 號:本月已記的搬到 10/15
+  A.applyPayDay('15');
+  must(L.payDay === 15, '繳款日應該是 15');
+  must(rp().length === 1 && rp()[0].date === '2026-10-15', '本月自動還本應該搬到 10/15:' + JSON.stringify(rp()));
+  must(intr() === '2026-10-15:' + intr().split(':')[1] && !intr().includes(' '), '本月利息應該搬到 10/15,而且不能多一筆:' + intr());
+  A.applyPayDay('');   // 清空那一下不算
+  must(L.payDay === 15, '清空欄位不應該改繳款日');
+  // 11 月 10 號:繳款日還沒到,不記、也不標成已處理
+  setNow('2026-11-10');
+  A.maybePostInterest();
+  must(rp().length === 1 && !L.repayPosted.includes('2026-11') && !L.interestPosted.includes('2026-11'), '繳款日還沒到不應該記:' + JSON.stringify(rp()));
+  must(A.monthLoanDues()[0].note.startsWith('11/15 扣款'), '總覽要寫幾號扣款:' + A.monthLoanDues()[0].note);
+  setNow('2026-11-15');
+  A.maybePostInterest();
+  must(rp().map(r => r.date + ':' + r.amount).join(' ') === '2026-10-15:5000 2026-11-15:4975', '11/15 應該記:' + JSON.stringify(rp()));
+  must(intr().split(' ').length === 2 && intr().split(' ')[1].startsWith('2026-11-15:'), '利息也記在 11/15:' + intr());
+  must(A.monthLoanDues()[0].note.startsWith('已於 11/15'), '過了繳款日要寫已於:' + A.monthLoanDues()[0].note);
+  // 31 號:沒有 31 號的月份用月底;中間沒開 app 照樣補
+  A.applyPayDay('31');
+  must(rp()[1].date === '2026-11-30', '11 月沒有 31 號,搬到 11/30:' + rp()[1].date);
+  setNow('2027-03-05');
+  A.maybePostInterest();
+  must(rp().map(r => r.date).join() === '2026-10-15,2026-11-30,2026-12-31,2027-01-31,2027-02-28', '補記照每月月底:' + rp().map(r => r.date).join());
+  must(A.levDueDate('2028-02') === '2028-02-29', '閏年 2 月底');
+  // 舊版分頁(認得還本、不認得繳款日)寫回來,繳款日要保留
+  const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  const old = JSON.parse(JSON.stringify(prev)); delete old.leverage.payDay;
+  const next = A.normalize(old);
+  A.keepFieldsOldVersionsDrop(prev, old, next);
+  must(next.leverage.payDay === 31, '舊版寫回來要保留繳款日:' + next.leverage.payDay);
 }
 
 console.log('兩台裝置同時補記、舊版分頁寫回來');
