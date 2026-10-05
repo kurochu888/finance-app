@@ -165,6 +165,7 @@
   }
   .xbtn:hover{color:var(--red); border-color:var(--red);}
   .xbtn.armed{flex:0 0 auto; padding:0 8px; font-size:12px; color:var(--red); border-color:var(--red); white-space:nowrap;}
+  .xbtn.armed.cancel{color:var(--sub); border-color:var(--line);}
   .xbtn.step:hover{color:var(--accent); border-color:var(--accent);}
   .xbtn:disabled{opacity:.4; cursor:default;}
   .xbtn:disabled:hover{color:var(--sub); border-color:var(--line);}
@@ -4987,9 +4988,11 @@ function sampleData(){
   return s;
 }
 
-/* 列表上的 ✕ 刪除鈕:第一次按變成紅色「確定刪除」,再按一次才刪(needsConfirm 的 token = act:id) */
+/* 列表上的 ✕ 刪除鈕:第一次按變成紅色「確定刪除」+「取消」,再按一次才刪(needsConfirm 的 token = act:id)。
+   以前只有「確定刪除」,反悔只能去按別的按鈕,使用者看不出怎麼取消;現在點空白處也會取消。 */
 const xDel = (act, id) => { const armed = pendingConfirm === act + ':' + id;
-  return `<button class="xbtn${armed ? ' armed' : ''}" data-act="${act}" data-id="${id}" aria-label="${armed ? '再按一次確定刪除' : '刪除'}">${armed ? '確定刪除' : '✕'}</button>`; };
+  return `<button class="xbtn${armed ? ' armed' : ''}" data-act="${act}" data-id="${id}" aria-label="${armed ? '再按一次確定刪除' : '刪除'}">${armed ? '確定刪除' : '✕'}</button>`
+    + (armed ? `<button class="xbtn armed cancel" data-act="cancel-confirm">取消</button>` : ''); };
 function needsConfirm(token){
   if (pendingConfirm === token){ pendingConfirm = null; return false; }
   pendingConfirm = token;
@@ -5163,6 +5166,7 @@ function onClick(el){
   if (!['export', 'export-csv', 'import', 'copy-json'].includes(act)) dataMsg = '';
 
   switch (act){
+    case 'cancel-confirm': break;   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
@@ -5481,6 +5485,8 @@ function init(){
   content.addEventListener('click', e => {
     const el = e.target.closest('[data-act]');
     if (el) onClick(el);
+    // 等著「再按一次確認」時點空白處 = 取消;點輸入框不算(重畫會把游標弄掉)
+    else if (pendingConfirm && !e.target.closest('input, select, textarea, label, summary')){ pendingConfirm = null; renderAll(); }
   });
   content.addEventListener('focusout', () => {
     setTimeout(() => {

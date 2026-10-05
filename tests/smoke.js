@@ -38,6 +38,7 @@ globalThis.A = {
   set viewMonth(v){viewMonth=v},
   set editingTx(v){editingTx=v},
   get pendingConfirm(){return pendingConfirm},
+  xDel,
   get currentTabName(){return currentTab},
   renderOverview,
   get draftError(){return draftError},
@@ -360,17 +361,19 @@ console.log('  房貸動用、還款、每月利息都進現金流 ✓');
 
 console.log('缺月份的走勢圖');
 A.state = A.emptyState();
+// 月份相對於本月算:monthlyHistory 會一路補到本月,寫死 2026-09 的話過了 9 月測試就壞(2026-10 真的壞過)
+const mA = A.shiftMonth(A.thisMonth(), -8), mB = A.shiftMonth(A.thisMonth(), -3), mC = A.thisMonth();
 A.state.netWorthHistory = [
-  { id:'a', m:'2026-01', v:1000, pv:100, loan:0, pnl:10, auto:true },
-  { id:'b', m:'2026-06', v:2000, pv:200, loan:0, pnl:20, auto:true },
-  { id:'c', m:'2026-09', v:3000, pv:300, loan:0, pnl:30, auto:true }
+  { id:'a', m:mA, v:1000, pv:100, loan:0, pnl:10, auto:true },
+  { id:'b', m:mB, v:2000, pv:200, loan:0, pnl:20, auto:true },
+  { id:'c', m:mC, v:3000, pv:300, loan:0, pnl:30, auto:true }
 ];
 const mh = A.monthlyHistory(12);
-console.log('  三筆快照(1月、6月、9月)→ 補成', mh.length, '個月:', mh.map(h => h.m.slice(5)).join(' '));
+console.log('  三筆快照(8 個月前、3 個月前、本月)→ 補成', mh.length, '個月:', mh.map(h => h.m.slice(5)).join(' '));
 if (mh.length !== 9) throw new Error('沒有補成連續月份(得到 ' + mh.length + ')');
 const filled = mh.filter(h => h.v !== null).length;
 if (filled !== 3) throw new Error('補出來的月份應該是空值,實得 ' + filled);
-if (mh[0].m !== '2026-01' || mh[mh.length-1].m !== '2026-09') throw new Error('頭尾月份不對');
+if (mh[0].m !== mA || mh[mh.length-1].m !== mC) throw new Error('頭尾月份不對');
 console.log('  中間沒資料的月份留空,間隔才是真的 ✓');
 
 console.log('本機空間不足時的處理');
@@ -655,6 +658,22 @@ A.state.leverage.interestPosted = [];
 A.maybePostInterest();
 if (A.state.transactions.some(t => t.cat === '房貸利息')) throw new Error('關閉後仍入帳');
 console.log('  關閉開關後不入帳 ✓');
+
+console.log('✕ 刪除可以取消');
+{
+  const a0 = A.state.assets[0], n0 = A.state.assets.length;
+  A.state.assets[0].name = a0.name || '測試';
+  A.onClick({ dataset:{ act:'del-asset', id:a0.id } });
+  if (A.pendingConfirm !== 'del-asset:' + a0.id) throw new Error('第一次按 ✕ 沒有進入待確認');
+  if (!A.xDel('del-asset', a0.id).includes('cancel-confirm')) throw new Error('待確認時沒有「取消」鈕');
+  A.onClick({ dataset:{ act:'cancel-confirm' } });
+  if (A.pendingConfirm !== null || A.state.assets.length !== n0) throw new Error('取消後沒有恢復');
+  if (A.xDel('del-asset', a0.id).includes('cancel-confirm')) throw new Error('取消後「取消」鈕還在');
+  A.onClick({ dataset:{ act:'del-asset', id:a0.id } });
+  if (A.state.assets.length !== n0) throw new Error('取消後再按一次 ✕ 不該直接刪掉');
+  A.onClick({ dataset:{ act:'cancel-confirm' } });
+  console.log('  取消後不刪、再按 ✕ 要重新確認 ✓');
+}
 
 console.log('清空');
 A.onClick({ dataset:{ act:'clear-all' } });
