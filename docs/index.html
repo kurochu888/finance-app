@@ -683,8 +683,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-06 · 030764c884';
-const BUILD_HASH = '030764c884';
+const BUILD_VERSION = '2026-10-06 · aa616e328c';
+const BUILD_HASH = 'aa616e328c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2163,16 +2163,22 @@ function computePositionUncached(){
   const interest = accruedInterest();
   const total = unrealized + realized - interest;
   const invested = buyCash + buyLoan;
+  // 還房貸本金是自己口袋出的錢:用房貸買的那部分持股慢慢變成自有的(跟 cashFlows() 的 XIRR 同一套看法)。
+  // 只算今天以前的還款(未來日期的還沒發生);用賣股的錢還款時,賣出那邊已經扣過,這裡加回來剛好抵銷
+  const today = todayISO();
+  const repaid = sum(state.leverage.draws, d => sum((d.repayments || []).filter(r => d.useDate && r.date && r.date >= d.useDate && r.date <= today), r => r.amount));
+  const ownIn = buyCash + repaid;
   // 賣出所得與配息是拿回來的錢,要從「還放在裡面的自有資金」扣掉
-  const netCash = buyCash - sellNet - dividends;
+  const netCash = ownIn - sellNet - dividends;
   const years = sorted.length ? Math.max(daysSince(sorted[0].date) / 365.25, 0) : 0;
   const rate = xirr(cashFlows());
   return {
-    lots, buyCash, buyLoan, invested, netCash, sellNet, realized, dividends, unrealized, interest, total, oversold,
+    lots, buyCash, buyLoan, repaid, ownIn, invested, netCash, sellNet, realized, dividends, unrealized, interest, total, oversold,
     xirr: rate === null ? null : rate * 100,
     marketValue, remainCost, fees, years,
     hasData: sorted.length > 0,
-    returnOnCash: buyCash > 0 ? total / buyCash * 100 : 0,
+    ownShare: invested > 0 ? Math.min(100, ownIn / invested * 100) : 0,   // 自有資金佔累計投入(含已還的房貸本金)
+    returnOnCash: ownIn > 0 ? total / ownIn * 100 : 0,
     returnOnAll: invested > 0 ? total / invested * 100 : 0
   };
 }
@@ -2571,7 +2577,8 @@ function renderOverview(){
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">${money(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
-        <div class="row"><span class="label">累計報酬(對累計自有投入)</span><span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
+        ${p.repaid ? `<div class="row"><span class="label">已還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
+        <div class="row"><span class="label">累計報酬(對累計自有投入)</span><span class="val">${p.ownIn > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
         <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
       </div>`;
     })()}
@@ -2969,6 +2976,10 @@ function renderHelp(){
       <div class="formula">淨投入 = 累計自有投入 − 賣出回收 − 配息</div>
       <p>買賣來回幾次,「累計投入」會越滾越大,但你實際還放在裡面的錢沒變那麼多。
       淨投入才是「現在有多少自己的錢在裡面」。</p>
+      <div class="formula">累計自有投入 = 自有資金買進 + 已還的房貸本金</div>
+      <p>還房貸本金是自己口袋出的錢,用房貸買的持股就慢慢變成自有的,所以算進自有投入,「自有資金佔累計投入」也跟著變高
+      (跟報酬率 XIRR 把還款算成自有資金流出是同一個看法)。利息是成本,已經從整體損益扣掉,不算投入。
+      賣股的錢拿去還房貸的話,賣出回收扣一次、還款加一次,剛好抵銷。</p>
     </div>
 
     <div class="sect">曝險</div>
@@ -3776,13 +3787,17 @@ function renderPnL(){
       <div class="mid-num">${money(p.netCash)}</div>
       <div class="big-sub">淨投入 —— 還放在裡面的自有資金</div>
       <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:${p.invested ? (p.buyCash / p.invested * 100).toFixed(1) : 0}%"></div></div>
-      <div class="row sub"><span class="label">自有資金佔累計投入 ${p.invested ? (p.buyCash / p.invested * 100).toFixed(0) : 0}%</span><span class="val"></span></div>
-      <div class="row sub"><span class="label">累計自有投入</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
+      ${p.repaid ? `<div class="row"><span class="label">已還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
+      ${p.interest >= 0.5 ? `<div class="row"><span class="label">累計房貸利息</span><span class="val">NT$ ${fmt(p.interest)}</span></div>` : ''}
+      <div class="bar-track"><div class="bar-fill" style="width:${p.ownShare.toFixed(1)}%"></div></div>
+      <div class="row sub"><span class="label">自有資金佔累計投入 ${p.ownShare.toFixed(0)}%${p.repaid ? '(已還的本金算自有)' : ''}</span><span class="val"></span></div>
+      <div class="row sub"><span class="label">累計自有投入</span><span class="val">NT$ ${fmt(p.ownIn)}</span></div>
+      ${p.repaid ? `<div class="row sub"><span class="label">其中 自有資金買進</span><span class="val">NT$ ${fmt(p.buyCash)}</span></div>
+      <div class="row sub"><span class="label">其中 還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
       ${p.sellNet ? `<div class="row sub"><span class="label">減 賣出回收</span><span class="val">−NT$ ${fmt(p.sellNet)}</span></div>` : ''}
       ${p.dividends ? `<div class="row sub"><span class="label">減 配息</span><span class="val">−NT$ ${fmt(p.dividends)}</span></div>` : ''}
       <div class="row sub"><span class="label">累計報酬(對累計自有投入)</span>
-        <span class="val">${p.buyCash > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
+        <span class="val">${p.ownIn > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
     </div>`;
 }
 
@@ -5503,6 +5518,7 @@ function stateCSV(){
     ['累積借款利息', Math.round(p.interest)],
     ['整體損益', Math.round(p.total)],
     ['自有資金投入', Math.round(p.buyCash)],
+    ['已還房貸本金', Math.round(p.repaid)],
     ['房貸投入', Math.round(p.buyLoan)]
   ]);
 
