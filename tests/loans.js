@@ -26,7 +26,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
-  applyLoanRate, applyPayDay, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
+  applyLoanRate, applyPayDay, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
@@ -279,6 +279,28 @@ console.log('理財型利息:上次繳款日到這次繳款日逐日計息(年�
   // 下一期還沒到:預估照目前餘額、目前利率 31 天
   setNow('2026-12-01');
   must(A.monthLoanDues()[0].interest === Math.round(800000 * 0.03 * 30 / 365), '下一期預估 11/15~12/15 30 天:' + A.monthLoanDues()[0].interest);
+}
+
+console.log('還房貸本金算成自有投入');
+{
+  setNow('2026-10-20');
+  const s = A.emptyState();
+  s.leverage.autoRepay = false;
+  s.trades = [
+    { id: 't1', date: '2026-06-01', symbol: '00631L', action: 'buy', shares: 1000, price: 100, fee: 0, amount: 0, source: 'cash', note: '' },
+    { id: 't2', date: '2026-06-15', symbol: '00631L', action: 'buy', shares: 2000, price: 100, fee: 0, amount: 0, source: 'loan', note: '' }
+  ];
+  s.leverage.draws = [{ id: 'd1', label: 'x', amount: 200000, useDate: '2026-06-15', note: '', repayments: [
+    { id: 'r1', date: '2026-09-15', amount: 50000 }, { id: 'r2', date: '2026-11-15', amount: 9999 } ] }];   // r2 還沒發生
+  A.state = A.normalize(s);
+  const p = A.computePosition();
+  must(p.repaid === 50000, '已還本金只算今天以前的:' + p.repaid);
+  must(p.ownIn === 150000 && p.netCash === 150000, '累計自有投入 = 10 萬買進 + 5 萬還本:' + p.ownIn + ' / ' + p.netCash);
+  must(Math.abs(p.ownShare - 50) < 1e-9, '自有佔比 = 15 萬 ÷ 30 萬 = 50%:' + p.ownShare);
+  must(Math.abs(p.returnOnCash - p.total / 150000 * 100) < 1e-9, '累計報酬對累計自有投入');
+  A.levTab = 'overview';
+  const html = A.renderLeverage();
+  must(html.includes('已還房貸本金') && html.includes('累計房貸利息'), '「投入的錢」要列已還本金跟利息');
 }
 
 console.log('兩台裝置同時補記、舊版分頁寫回來');
