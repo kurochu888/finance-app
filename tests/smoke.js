@@ -705,6 +705,12 @@ console.log('買進同時用自有資金跟房貸 → 拆兩筆');
   if (!sp || sp.loanShares !== 5991 || sp.cashShares !== 4009 || sp.loanFee !== 213 || sp.cashFee !== 143)
     throw new Error('拆股數/手續費不對:' + JSON.stringify(sp));
   if (Math.abs(sp.loanShares * 25 + sp.loanFee - 150000) > 25) throw new Error('房貸那筆金額跟填的差太多');
+  // 房貸那筆不能超過填的金額(以前四捨五入,借 20 萬記成 200,009)
+  for (const [sh, pr, fe, amt] of [[10000, 25, 356, 150000], [8000, 25.05, 285, 200000], [3333, 101.7, 483, 123456], [12.5, 100, 2, 600]]){
+    const q = A.splitMixedBuy(sh, pr, fe, amt);
+    const loanTotal = q.loanShares * pr + q.loanFee;
+    if (loanTotal > amt + 1e-6 || amt - loanTotal > pr * 1.01 + 1) throw new Error('房貸那筆應該 ≤ 填的金額、差不到一股:' + JSON.stringify([sh, pr, fe, amt, q, loanTotal]));
+  }
   if (A.splitMixedBuy(10000, 25, 356, 0) !== null || A.splitMixedBuy(10000, 25, 356, 300000) !== null
       || A.splitMixedBuy(10000, 25, 356, 10) !== null) throw new Error('不用拆的情況應該回傳 null');
   // 透過按鈕新增

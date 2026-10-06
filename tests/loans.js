@@ -303,6 +303,31 @@ console.log('還房貸本金算成自有投入');
   must(html.includes('已還房貸本金') && html.includes('累計房貸利息'), '「投入的錢」要列已還本金跟利息');
 }
 
+console.log('繳款日的邊界:第一次用在繳款日前、拿掉未來利息不補空檔、期中還清');
+{
+  const base = (extra) => { const s = A.emptyState(); s.leverage.payDay = 15; s.leverage.annualRate = 2.6;
+    s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-06-15', note: '', repayments: [] }]; Object.assign(s.leverage, extra || {}); return s; };
+  // 第一次打開在 10/06(繳款日 15 號還沒到),下一次 11/20 才打開:10 月不能漏
+  setNow('2026-10-06'); A.state = A.normalize(base()); A.maybePostInterest();
+  setNow('2026-11-20'); A.maybePostInterest();
+  const dates = x => x.map(t => t.date).sort().join();
+  must(dates(A.state.transactions) === '2026-10-15,2026-11-15', '第一次用在繳款日前,10 月利息不能漏:' + dates(A.state.transactions));
+  must(dates(A.state.leverage.draws[0].repayments) === '2026-10-15,2026-11-15', '10 月還本不能漏:' + dates(A.state.leverage.draws[0].repayments));
+  // 8、9 月使用者刪掉了,10 月那筆在未來日期:拿掉之後到 10/15 只記 10 月,8、9 月不補
+  setNow('2026-10-06');
+  const s = base({ autoRepay: false, interestPosted: ['2026-07', '2026-10'] });
+  s.transactions = [{ id: 'tx1', date: '2026-10-15', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -2000 }];
+  A.state = A.normalize(s); A.maybePostInterest();
+  setNow('2026-10-16'); A.maybePostInterest();
+  must(dates(A.state.transactions) === '2026-10-15', '拿掉未來利息後,刪掉的 8、9 月不能被補記:' + dates(A.state.transactions));
+  // 10/05 全部還清,10/15 還是要付 9/15~10/05 的利息,總覽要列出來
+  setNow('2026-10-10');
+  const s2 = base(); s2.leverage.draws[0].repayments = [{ id: 'r1', date: '2026-10-05', amount: 1000000 }];
+  A.state = A.normalize(s2);
+  const due = A.monthLoanDues()[0];
+  must(due && due.interest === Math.round(1000000 * 0.026 * 20 / 365), '期中還清,總覽要列本期利息:' + JSON.stringify(due));
+}
+
 console.log('兩台裝置同時補記、舊版分頁寫回來');
 {
   setNow('2026-10-05');
