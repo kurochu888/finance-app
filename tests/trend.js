@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
-  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, defaultFee, renderOverview, set levTab(v){ levTab = v; } };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, trendHistoryGap, defaultFee, renderOverview, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -572,6 +572,13 @@ console.log('跌到出場線才賣的未實現');
   // 股價已經在出場線下面:用目前股價,不能比現在還高
   it.price = t.exitLine * 0.95;
   must(A.exitScenario().rows[0].px === it.price, '股價低於出場線時用目前股價');
+  // 歷史中間缺一段:出場線不算數
+  { const keep = it.priceHistory, price0 = it.price; it.price = prices[19];
+    it.priceHistory = keep.filter((r, i) => i < 8 || i > 14).map((r, i) => i >= 8 ? { d: (() => { const d = new Date(r.d); d.setDate(d.getDate() + 40); return d.toISOString().slice(0, 10); })(), c: r.c } : r);
+    // 中間塞 40 天空白,要被 trendHistoryGap 抓到
+    must(!!A.trendHistoryGap(it) && A.computeTrend(it).status === 'HOLD', '測試前提:要有缺口、狀態還是續抱');
+    must(!A.exitScenario().anyLine, '歷史缺一段時不能用出場線');
+    it.priceHistory = keep; it.price = price0; }
   // 接刀中:沒有出場線,不顯示這一行
   setHist(50);
   must(A.computeTrend(it).status === 'WAIT_RECOVER' && !A.exitScenario().anyLine && !A.renderLeverage().includes('跌到出場線才賣的未實現'), '接刀中沒有出場線,不顯示');

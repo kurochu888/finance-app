@@ -3741,12 +3741,14 @@ function exitScenario(p = computePosition()){
     const lot = p.lots[sym];
     if (!(lot.shares > 0)) return;
     const it = findInstrument(sym), t = it ? computeTrend(it) : null;
-    const hasLine = !!(t && t.status === 'HOLD' && t.exitLine > 0);
+    // 歷史不夠或中間缺一段,訊號分頁會叫你先別照它,出場線也不算數(跟 ackTrend 等同一條規則)
+    const valid = !!(t && t.barsAvailable >= t.barsNeeded && !trendHistoryGap(it));
+    const hasLine = valid && t.status === 'HOLD' && t.exitLine > 0;
     // 股價已經在出場線下面(盤中、或還沒更新訊號):收盤就會賣,用目前股價
     const px = hasLine ? Math.min(t.exitLine, symbolPrice(sym) || t.exitLine) : symbolPrice(sym);
     const g = lot.shares * px, f = defaultFee('sell', g);
     gross += g; fees += f; cost += lot.cost;
-    rows.push({ sym, px, hasLine, status: t ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
+    rows.push({ sym, px, hasLine, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
   });
   const unrealized = gross - fees - cost;
   return { rows, gross, fees, unrealized, total: unrealized + p.realized - p.interest,

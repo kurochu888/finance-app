@@ -670,8 +670,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · a9b24d62db';
-const BUILD_HASH = 'a9b24d62db';
+const BUILD_VERSION = '2026-10-07 · cfe5cada86';
+const BUILD_HASH = 'cfe5cada86';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3759,12 +3759,14 @@ function exitScenario(p = computePosition()){
     const lot = p.lots[sym];
     if (!(lot.shares > 0)) return;
     const it = findInstrument(sym), t = it ? computeTrend(it) : null;
-    const hasLine = !!(t && t.status === 'HOLD' && t.exitLine > 0);
+    // 歷史不夠或中間缺一段,訊號分頁會叫你先別照它,出場線也不算數(跟 ackTrend 等同一條規則)
+    const valid = !!(t && t.barsAvailable >= t.barsNeeded && !trendHistoryGap(it));
+    const hasLine = valid && t.status === 'HOLD' && t.exitLine > 0;
     // 股價已經在出場線下面(盤中、或還沒更新訊號):收盤就會賣,用目前股價
     const px = hasLine ? Math.min(t.exitLine, symbolPrice(sym) || t.exitLine) : symbolPrice(sym);
     const g = lot.shares * px, f = defaultFee('sell', g);
     gross += g; fees += f; cost += lot.cost;
-    rows.push({ sym, px, hasLine, status: t ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
+    rows.push({ sym, px, hasLine, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
   });
   const unrealized = gross - fees - cost;
   return { rows, gross, fees, unrealized, total: unrealized + p.realized - p.interest,
