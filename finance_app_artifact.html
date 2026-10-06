@@ -383,7 +383,7 @@ const DEFAULT_LEVERAGE = {
   // 理財型房貸每月最低還本:剩餘餘額 × repayPermille ‰,每月繳款日(payDay 號)自動記一筆還款(見 maybeAutoRepay),
   // 利息也在同一天記。
   // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
-  autoRepay:true, repayPermille:5, repayPosted:[], payDay:1,
+  autoRepay:true, repayPermille:5, repayPosted:[], payDay:1, payDayFrom:null,
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
@@ -591,6 +591,9 @@ function normalize(raw){
   base.autoRepay = L.autoRepay !== false;
   base.repayPermille = L.repayPermille === undefined ? DEFAULT_LEVERAGE.repayPermille : Math.min(1000, Math.max(0, num(L.repayPermille)));
   base.payDay = L.payDay === undefined ? DEFAULT_LEVERAGE.payDay : Math.min(31, Math.max(1, Math.round(num(L.payDay)) || 1));
+  // 改繳款日那個月的利息從哪天算起(見 applyPayDay);{m:'YYYY-MM', d:'YYYY-MM-DD'} 或 null
+  base.payDayFrom = L.payDayFrom && typeof L.payDayFrom === 'object' && isoDate(str(L.payDayFrom.m) + '-01', '') && isoDate(L.payDayFrom.d, '')
+    ? { m: str(L.payDayFrom.m), d: isoDate(L.payDayFrom.d, '') } : null;
   base.repayPosted = arr(L.repayPosted).map(str).filter(m => isoDate(m + '-01', ''));
   base.quoteDate = str(L.quoteDate);
   {
@@ -649,8 +652,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-06 · 191ffbb6f8';
-const BUILD_HASH = '191ffbb6f8';
+const BUILD_VERSION = '2026-10-07 · 7886bfed0c';
+const BUILD_HASH = '7886bfed0c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1063,7 +1066,7 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   }
   // 每月還本的設定(千分之幾、開關、已處理月份)同理:舊版寫回來沒有 repayPosted 這個 key
   if (rawL && !('repayPosted' in rawL) && prev.leverage){
-    ['autoRepay', 'repayPermille', 'repayPosted', 'payDay'].forEach(k => {
+    ['autoRepay', 'repayPermille', 'repayPosted', 'payDay', 'payDayFrom'].forEach(k => {
       if (prev.leverage[k] !== undefined) next.leverage[k] = JSON.parse(JSON.stringify(prev.leverage[k]));
     });
     restored = true;
@@ -1071,6 +1074,7 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   // 繳款日比還本晚加:認得 repayPosted、不認得 payDay 的版本寫回來也要補
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
+    next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
     restored = true;
   }
   // 一般型房貸的參數放在負債細項的 loan 裡,舊版只留 id/name/amount
@@ -4932,11 +4936,18 @@ function applyPayDay(value){
   const nd = Math.min(31, Math.max(1, Math.round(num(value)) || 1));
   if (nd === L.payDay) return;
   const m = thisMonth(), oldDue = levDueDate(m), newDue = levDueDate(m, nd), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+  // 上一期算到舊的上月繳款日為止(本月已經記的那筆也是從那天算起),本月改成從那天算到新繳款日。
+  // 同一個月改兩次,照第一次改之前的
+  if (!(L.payDayFrom && L.payDayFrom.m === m)) L.payDayFrom = { m, d: levDueDate(shiftMonth(m, -1)) };
   L.payDay = nd;
   L.draws.forEach(d => (d.repayments || []).forEach(r => { if (r.id === rid) r.date = newDue; }));
   // 搬到還沒到的日子的利息,postLeverageInterest() 會拿掉、到了繳款日再記(記帳裡不留還沒發生的支出)。
   // 自動還本只搬日期:id 照月份固定,刪掉會留刪除紀錄、到時候補不回來;未來日期的還款本來就不算進餘額
-  state.transactions.forEach(t => { if (t.desc === AUTO_INTEREST_DESC && t.date === oldDue) t.date = newDue; });
+  state.transactions.forEach(t => {
+    if (t.desc !== AUTO_INTEREST_DESC || t.date !== oldDue) return;
+    t.date = newDue;
+    if (newDue <= todayISO()) t.amount = -Math.round(levPeriodInterest(m));   // 期間變了,金額跟著重算
+  });
   maybePostInterest();
   scheduleSave();
 }
@@ -4971,7 +4982,9 @@ function maybeAutoRepay(){
 /* 理財型 m 月繳款日要繳的利息:每筆動用從上次繳款日到這次繳款日逐日計息(銀行以日計息)。
    中途還款、中途動用、升降息都照日期分段;剛動用的從動用日算起。繳款日那天的還款算下一期 */
 function levPeriodInterest(m){
-  const L = state.leverage, due = levDueDate(m), from = levDueDate(shiftMonth(m, -1));
+  const L = state.leverage, due = levDueDate(m);
+  // 改過繳款日的那個月:從舊繳款日接著算,不然新舊兩個日子中間那段會重複算或漏掉
+  const from = L.payDayFrom && L.payDayFrom.m === m && L.payDayFrom.d < due ? L.payDayFrom.d : levDueDate(shiftMonth(m, -1));
   return sum(L.draws, d => Math.max(0, accrue(d, L, due) - accrue(d, L, from)));
 }
 /* 本月理財型要繳多少本金:本月已經記的還款合計;還沒記(自動還本關掉、或剛動用)就用目前餘額 × ‰ 估 */
@@ -5716,6 +5729,7 @@ function onClick(el){
             Object.assign(base, { source: 'loan', shares, price, amount: 0, fee });
           }else{
             Object.assign(base, { shares, price, amount: 0, fee });
+            mixNote = `房貸金額不到一股,整筆記成自有資金。`;
           }
           state.trades.push(base);
         }else{
