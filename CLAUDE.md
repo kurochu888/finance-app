@@ -82,7 +82,7 @@ id 沿用舊值以確保重複呼叫不會飄動。
 以後如果要確認某個欄位是不是真的死了,`grep` 整個欄位名稱時**讀跟寫都要查**,不要只查其中一種。
 
 **房貸還款(2026-10 使用者要的)**——理財型每月最低還本:`leverage.autoRepay/repayPermille/repayPosted`,`maybeAutoRepay()`
-每月繳款日(`leverage.payDay` 號,預設 1,沒有那天用月底,`levDueDate()`;理財型利息也記在這天、還沒到不記)在每筆動用的 `repayments` 記「當時餘額 × ‰」,id 是 `autorepayYYYYMM`(固定 id,兩台同時補記合併是同一筆;不能有「-」,
+每月繳款日(`leverage.payDay` 號,預設 1,沒有那天用月底,`levDueDate()`;理財型利息也記在這天、還沒到不記,金額 `levPeriodInterest()` = 上次繳款日到這次繳款日逐日計息,日息 = 年利率 ÷ 365)在每筆動用的 `repayments` 記「當時餘額 × ‰」,id 是 `autorepayYYYYMM`(固定 id,兩台同時補記合併是同一筆;不能有「-」,
 `rp-` 欄位 key 用「-」切)。額度是循環的,只減餘額不動 `creditLimit`。改繳款日走 `applyPayDay()`(change 才套用),本月已記的自動還本/利息搬到新日期。一般型房貸放在負債細項的 `liabilities[].loan`
 (`{principal, start, years, annualRate, rateHistory, autoInterest, interestPosted}`,沒設是 `null`——新版一定寫出這個 key,
 `keepFieldsOldVersionsDrop()` 靠「沒有 key = 舊版寫的」補回),`amortize()` 每期用當時餘額、剩餘期數、當時利率重算月付,

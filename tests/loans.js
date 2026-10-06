@@ -209,7 +209,23 @@ console.log('理財型:繳款日不是 1 號');
   A.applyPayDay('15');
   must(L.payDay === 15, '繳款日應該是 15');
   must(rp().length === 1 && rp()[0].date === '2026-10-15', '本月自動還本應該搬到 10/15:' + JSON.stringify(rp()));
-  must(intr() === '2026-10-15:' + intr().split(':')[1] && !intr().includes(' '), '本月利息應該搬到 10/15,而且不能多一筆:' + intr());
+  must(intr() === '', '新繳款日 10/15 還沒到,本月利息不能先記在記帳裡:' + intr());
+  setNow('2026-10-15');
+  A.maybePostInterest();
+  must(/^2026-10-15:\d+$/.test(intr()), '到了 10/15 才記本月利息,而且只有一筆:' + intr());
+  must(rp().length === 1, '本月還本不能重複記:' + JSON.stringify(rp()));
+  // 上一版留下的未來日期利息:拿掉,到繳款日再記
+  setNow('2026-10-06');
+  const tx = A.state.transactions.find(t => t.cat === '房貸利息');
+  tx.date = '2026-10-15';
+  A.maybePostInterest();
+  must(intr() === '' && !L.interestPosted.includes('2026-10'), '未來日期的自動利息要拿掉:' + intr());
+  setNow('2026-10-15');
+  A.maybePostInterest();
+  must(/^2026-10-15:\d+$/.test(intr()), '到了繳款日重新記:' + intr());
+  A.applyPayDay('10');   // 改到已經過了的日子:本月那兩筆直接搬過去
+  must(rp()[0].date === '2026-10-10' && /^2026-10-10:\d+$/.test(intr()), '改到已過的日子要直接搬:' + JSON.stringify(rp()) + ' ' + intr());
+  A.applyPayDay('15');
   A.applyPayDay('');   // 清空那一下不算
   must(L.payDay === 15, '清空欄位不應該改繳款日');
   // 11 月 10 號:繳款日還沒到,不記、也不標成已處理
@@ -235,6 +251,34 @@ console.log('理財型:繳款日不是 1 號');
   const next = A.normalize(old);
   A.keepFieldsOldVersionsDrop(prev, old, next);
   must(next.leverage.payDay === 31, '舊版寫回來要保留繳款日:' + next.leverage.payDay);
+}
+
+console.log('理財型利息:上次繳款日到這次繳款日逐日計息(年利率 ÷ 365)');
+{
+  setNow('2026-10-20');
+  const s = A.emptyState();
+  s.leverage.annualRate = 2.6; s.leverage.payDay = 15; s.leverage.autoRepay = false;
+  s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-10-03', note: '', repayments: [] }];
+  A.state = A.normalize(s);
+  A.maybePostInterest();
+  const intr = () => A.state.transactions.filter(t => t.cat === '房貸利息').map(t => t.date + ':' + (-t.amount));
+  const day = 1000000 * 0.026 / 365;
+  // 10/03 動用 → 10/15 繳款:12 天
+  must(intr().join() === '2026-10-15:' + Math.round(day * 12), '第一期從動用日算到繳款日 12 天:' + intr().join() + ' 應該 ' + Math.round(day * 12));
+  // 11/05 先還 20 萬、11/08 升息到 3%:10/15~11/05 21 天 100 萬 2.6%、11/05~11/08 3 天 80 萬 2.6%、11/08~11/15 7 天 80 萬 3%
+  A.state.leverage.draws[0].repayments.push({ id: 'm1', date: '2026-11-05', amount: 200000 });
+  setNow('2026-11-08');
+  A.state.leverage.annualRate = 2.6;
+  A.onField('lev-annualRate', { value: '3' });
+  setNow('2026-11-15');
+  A.maybePostInterest();
+  const exp = Math.round(1000000 * 0.026 * 21 / 365 + 800000 * 0.026 * 3 / 365 + 800000 * 0.03 * 7 / 365);
+  must(intr()[1] === '2026-11-15:' + exp, '中途還款、升息要照日期分段:' + intr()[1] + ' 應該 ' + exp);
+  // 總覽的本月利息 = 本期逐日利息
+  must(A.monthLoanDues()[0].interest === exp, '總覽本月利息:' + A.monthLoanDues()[0].interest + ' 應該 ' + exp);
+  // 下一期還沒到:預估照目前餘額、目前利率 31 天
+  setNow('2026-12-01');
+  must(A.monthLoanDues()[0].interest === Math.round(800000 * 0.03 * 30 / 365), '下一期預估 11/15~12/15 30 天:' + A.monthLoanDues()[0].interest);
 }
 
 console.log('兩台裝置同時補記、舊版分頁寫回來');
