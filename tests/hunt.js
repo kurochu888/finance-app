@@ -725,12 +725,12 @@ check('分割前記的買賣紀錄:要提醒,「幫我換算」後持股正確,�
     // 今天以後照新利率
     const fut = '2027-01-01', days = (new Date(fut) - new Date(today)) / 864e5;
     const later = A.accrue(L.draws[0], L, fut);
-    const expect = before + 1000000 * 0.0305 * days / 365.25;
+    const expect = before + 1000000 * 0.0305 * days / 365;
     if (Math.abs(later - expect) > 1) bugs.push(`今天以後應該照新利率算:${later.toFixed(0)} vs ${expect.toFixed(0)}`);
     // 生效日往前改到 2026-06-01:1/1~6/1 照 2.4%,6/1 起照 3.05%
     if ((L.rateHistory || []).length) A.onField('rate-until-' + L.rateHistory[0].id, { value: '2026-06-01' });
     const d1 = (new Date('2026-06-01') - new Date('2026-01-01')) / 864e5, d2 = (new Date(today) - new Date('2026-06-01')) / 864e5;
-    const manual = 1000000 * (0.024 * d1 + 0.0305 * d2) / 365.25;
+    const manual = 1000000 * (0.024 * d1 + 0.0305 * d2) / 365;
     if (Math.abs(A.accruedInterest() - manual) > 1) bugs.push(`生效日改成 6/1 之後分段利息不對:${A.accruedInterest().toFixed(0)} vs 手算 ${manual.toFixed(0)}`);
     if (A.rateAt(L, '2026-05-31') !== 2.4 || A.rateAt(L, '2026-06-01') !== 3.05) bugs.push('rateAt 分段不對');
     // XIRR 用的利息現金流要跟帳上的利息一樣

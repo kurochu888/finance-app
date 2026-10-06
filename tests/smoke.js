@@ -560,7 +560,7 @@ console.log('還款紀錄');
   // 跟 app 一樣用「今天零點」算,否則跑到一半跨過半天就會對不上
   const nDays = (new Date(A.todayISO() + 'T00:00:00') - new Date('2026-01-01T00:00:00')) / 86400000;
   const full = A.accrue(T, 2.4);
-  const expectFull = 1000000 * 0.024 * (nDays / 365.25);
+  const expectFull = 1000000 * 0.024 * (nDays / 365);
   console.log('  借滿', nDays, '天 → 利息', Math.round(full), '(預期', Math.round(expectFull) + ')');
   if (Math.abs(full - expectFull) > 1) throw new Error('未還款時的利息算錯');
   if (A.outstanding(T) !== 1000000) throw new Error('餘額錯誤');
@@ -571,7 +571,7 @@ console.log('還款紀錄');
   if (A.outstanding(T) !== 500000) throw new Error('還款後餘額沒扣');
   const seg1 = (new Date('2026-05-01') - new Date('2026-01-01')) / 86400000;
   const seg2 = nDays - seg1;
-  const manual = 1000000 * 0.024 * (seg1 / 365.25) + 500000 * 0.024 * (seg2 / 365.25);
+  const manual = 1000000 * 0.024 * (seg1 / 365) + 500000 * 0.024 * (seg2 / 365);
   console.log('  手算分段', Math.round(manual), '→ 相符', Math.abs(partial - manual) < 1);
   if (Math.abs(partial - manual) > 1) throw new Error('分段利息與手算不符');
   if (!(partial < full)) throw new Error('還款後利息沒有變少');
