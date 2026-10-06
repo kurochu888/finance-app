@@ -667,8 +667,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-06 · aa616e328c';
-const BUILD_HASH = 'aa616e328c';
+const BUILD_VERSION = '2026-10-06 · 191ffbb6f8';
+const BUILD_HASH = '191ffbb6f8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2448,10 +2448,10 @@ function nwDeltaText(v, prevM, prevV, m, pct){
 /* 本月各筆房貸要繳多少:理財型(本月還本 + 預估利息)跟每筆一般型房貸本月那一期。沒有任何房貸回傳空陣列 */
 function monthLoanDues(){
   const out = [], m = thisMonth();
-  const r = computeLeverage();
-  if (r.usedAmount > 0){
+  const r = computeLeverage(), li = Math.round(levPeriodInterest(m));
+  if (r.usedAmount > 0 || li > 0){            // 期中全部還清的話,繳款日照樣要付這期的利息
     const mp = leverageMonthPrincipal();
-    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: Math.round(levPeriodInterest(m)), note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
+    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: li, note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
@@ -2799,10 +2799,15 @@ const draftPrice = d => Math.abs(num(d.price)) || (String(d.price).trim() === ''
 function splitMixedBuy(shares, price, fee, loanAmt){
   const total = shares * price + fee;
   if (!(shares > 0) || !(total > 0) || !(loanAmt > 0) || loanAmt >= total) return null;
+  // 無條件捨去:借來的錢買不到超過借款的股票(四捨五入會讓房貸那筆比動用金額多幾塊,對帳時對不起來)
+  const step = Number.isInteger(shares) ? 1 : 0.001;
   const raw = loanAmt / (total / shares);
-  const loanShares = Number.isInteger(shares) ? Math.round(raw) : Math.round(raw * 1000) / 1000;
+  let loanShares = Math.floor(raw / step + 1e-9) * step;
+  const feeOf = n => Math.round(fee * n / shares);
+  if (loanShares * price + feeOf(loanShares) > loanAmt) loanShares -= step;   // 手續費四捨五入剛好多一塊
+  loanShares = Math.round(loanShares * 1000) / 1000;
   if (loanShares <= 0 || loanShares >= shares) return null;
-  const loanFee = Math.round(fee * loanShares / shares);
+  const loanFee = feeOf(loanShares);
   return { loanShares, loanFee, cashShares: Math.round((shares - loanShares) * 1000) / 1000, cashFee: fee - loanFee };
 }
 const draftFee = (d, gross) => d.fee === '' ? defaultFee(d.action, gross) : Math.abs(num(d.fee));
@@ -4959,8 +4964,10 @@ function maybeAutoRepay(){
   const cur = thisMonth(), posted = L.repayPosted;
   const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
   const first = last && last < cur ? shiftMonth(last, 1) : cur;
-  let changed = false;
   const today = todayISO();
+  let changed = false;
+  // 第一次用、本月繳款日還沒到:上個月標成已處理,下次打開(就算跨月了)才知道要從本月開始記
+  if (!posted.length && levDueDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
     const day = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
@@ -5079,12 +5086,19 @@ function postLeverageInterest(){
   if (!L.autoInterest) return false;
   const cur = thisMonth();
   let changed = false;
-  // 日期還沒到的自動利息(上一版改繳款日時搬到未來日期的)拿掉、那個月改回未處理,到了繳款日再記
+  // 日期還沒到的自動利息(上一版改繳款日時搬到未來日期的)拿掉、那個月改回未處理,到了繳款日再記。
+  // 「最近一次」會因此往前退,中間沒記的月份(使用者關掉/刪掉的)要標成已處理,不然會被補記
   const today0 = todayISO(), future = state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC && t.date > today0);
+  let redo = '';
   if (future.length){
     const ms = new Set(future.map(t => t.date.slice(0, 7)));
     state.transactions = state.transactions.filter(t => !future.includes(t));
+    redo = [...ms].sort()[0];
     L.interestPosted = L.interestPosted.filter(x => !ms.has(x));
+    const rest = L.interestPosted.slice().sort(), prevLast = rest[rest.length - 1];
+    if (prevLast){
+      for (let m = shiftMonth(prevLast, 1), guard = 0; m < redo && guard < 240; m = shiftMonth(m, 1), guard++) L.interestPosted.push(m);
+    } else L.interestPosted.push(shiftMonth(redo, -1));
     changed = true;
   }
   const posted = L.interestPosted;
@@ -5097,6 +5111,8 @@ function postLeverageInterest(){
   const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
   const first = last && last < cur ? shiftMonth(last, 1) : cur;
   const today = todayISO();
+  // 第一次用、本月繳款日還沒到:上個月標成已處理,下次打開(就算跨月了)才知道要從本月開始記
+  if (!posted.length && levDueDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
     const due = levDueDate(m);
