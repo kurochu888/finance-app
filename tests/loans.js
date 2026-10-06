@@ -328,6 +328,33 @@ console.log('繳款日的邊界:第一次用在繳款日前、拿掉未來利息
   must(due && due.interest === Math.round(1000000 * 0.026 * 20 / 365), '期中還清,總覽要列本期利息:' + JSON.stringify(due));
 }
 
+console.log('改繳款日:新舊日子中間那段利息不重複、不漏');
+{
+  // 不還款、利率不變,每天利息固定:記過的利息加總要剛好 = 天數 × 日息
+  const dayInt = 1000000 * 0.026 / 365;
+  const run = (from, to, changeOn, newDay, end) => {
+    setNow(from);
+    const s = A.emptyState(); s.leverage.payDay = to; s.leverage.annualRate = 2.6; s.leverage.autoRepay = false;
+    s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-01-01', note: '', repayments: [] }];
+    A.state = A.normalize(s); A.maybePostInterest();
+    setNow(changeOn); A.maybePostInterest(); A.applyPayDay(String(newDay));
+    setNow(end); A.maybePostInterest();
+    const tx = A.state.transactions.filter(t => t.cat === '房貸利息').sort((a, b) => a.date < b.date ? -1 : 1);
+    return tx;
+  };
+  // 15 號 → 10/20 改成 1 號(本月已經記了):第一筆 9/15 那期從 8/15 起算,到 12/01
+  let tx = run('2026-09-20', 15, '2026-10-20', 1, '2026-12-02');
+  let days = (new Date('2026-12-01') - new Date('2026-08-15')) / 864e5;
+  let got = tx.reduce((a, t) => a - t.amount, 0);
+  must(Math.abs(got - dayInt * days) <= tx.length, `15 號改 1 號:記了 ${tx.map(t => t.date + ':' + (-t.amount)).join(' ')},合計 ${got},應該約 ${Math.round(dayInt * days)}(${days} 天)`);
+  must(tx.some(t => t.date === '2026-10-01'), '本月那筆搬到 10/01');
+  // 1 號 → 10/06 改成 15 號(本月 10/01 已經記了,新日子還沒到):第一筆 9/01 那期從 8/01 起算,到 12/15
+  tx = run('2026-09-02', 1, '2026-10-06', 15, '2026-12-16');
+  days = (new Date('2026-12-15') - new Date('2026-08-01')) / 864e5;
+  got = tx.reduce((a, t) => a - t.amount, 0);
+  must(Math.abs(got - dayInt * days) <= tx.length, `1 號改 15 號:記了 ${tx.map(t => t.date + ':' + (-t.amount)).join(' ')},合計 ${got},應該約 ${Math.round(dayInt * days)}(${days} 天)`);
+}
+
 console.log('兩台裝置同時補記、舊版分頁寫回來');
 {
   setNow('2026-10-05');
