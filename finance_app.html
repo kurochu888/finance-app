@@ -670,8 +670,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · 7886bfed0c';
-const BUILD_HASH = '7886bfed0c';
+const BUILD_VERSION = '2026-10-07 · a9b24d62db';
+const BUILD_HASH = 'a9b24d62db';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2563,6 +2563,7 @@ function renderOverview(){
         <div class="big-sub">整體損益(已扣借款利息)</div>
         ${xirrRow(p)}
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
+        ${(() => { const x = exitScenario(p); return x.anyLine ? `<div class="row"><span class="label">跌到出場線才賣的未實現</span><span class="val ${x.unrealized >= 0 ? 'pos' : 'neg'}">${(x.unrealized >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(x.unrealized))}</span></div>` : ''; })()}
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">${money(p.netCash)}</span></div>
         <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
         ${p.repaid ? `<div class="row"><span class="label">已還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
@@ -3324,15 +3325,15 @@ function computeTrend(it){
   }
   const last = closes.length - 1;
   const fLast = maF[last], sLast = maS[last], lastClose = closes[last];
-  let cushionPct = null;
+  let cushionPct = null, exitLine = null;
   if (status === 'HOLD' && fLast){
-    const exitLine = fLast * p.exitBuffer;
+    exitLine = fLast * p.exitBuffer;
     // 「再跌 X% 就出場」:從收盤往下算(1 − 出場線 ÷ 收盤)。以前是收盤 ÷ 出場線 − 1(從出場線往上算),
     // 收盤高出場線很多時會高估能跌的空間:顯示 +67.9% 其實跌 40% 就出場(2000-02 模擬正2 那次)
     cushionPct = lastClose > 0 && exitLine > 0 ? (1 - exitLine / lastClose) * 100 : null;
   }
   return { ...base, status, pyramidCount, basePrice,
-           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct };
+           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine };
 }
 const computeAllTrends = () => state.instruments.map(computeTrend);
 
@@ -3748,6 +3749,27 @@ function xirrRow(p){
   if (p.years < 0.95) return p.hasData ? `<div class="row total"><span class="label">年化報酬</span><span class="val muted">—(第一筆投入未滿一年,不年化)</span></div>` : '';
   return p.xirr !== null ? `<div class="row total"><span class="label">年化報酬</span><span class="val ${p.xirr >= 0 ? 'pos' : 'neg'}">${fmtPct(p.xirr)}</span></div>` : '';
 }
+/* 「跌到出場線才賣」的損益:續抱中的標的用現在的出場線(快線 × 出場乘數)當賣價,扣賣出手續費與證交稅;
+   接刀中(已經出場過、沒有出場線)、訊號算不出來的標的用目前股價。出場線會跟著快線往上移,這是「現在就開始跌、
+   一路跌到出場」的情況,不是保證值:收盤跌破才賣,實際賣價通常再低一點;也不含之後的利息。 */
+function exitScenario(p = computePosition()){
+  let gross = 0, fees = 0, cost = 0;
+  const rows = [];
+  Object.keys(p.lots).forEach(sym => {
+    const lot = p.lots[sym];
+    if (!(lot.shares > 0)) return;
+    const it = findInstrument(sym), t = it ? computeTrend(it) : null;
+    const hasLine = !!(t && t.status === 'HOLD' && t.exitLine > 0);
+    // 股價已經在出場線下面(盤中、或還沒更新訊號):收盤就會賣,用目前股價
+    const px = hasLine ? Math.min(t.exitLine, symbolPrice(sym) || t.exitLine) : symbolPrice(sym);
+    const g = lot.shares * px, f = defaultFee('sell', g);
+    gross += g; fees += f; cost += lot.cost;
+    rows.push({ sym, px, hasLine, status: t ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
+  });
+  const unrealized = gross - fees - cost;
+  return { rows, gross, fees, unrealized, total: unrealized + p.realized - p.interest,
+    anyLine: rows.some(r => r.hasLine), drop: p.marketValue > 0 ? 1 - gross / p.marketValue : 0 };
+}
 function renderPnL(){
   const p = computePosition();
   if (!p.hasData){
@@ -3767,6 +3789,18 @@ function renderPnL(){
       ${xirrRow(p)}
       <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
       <div class="row"><span class="label">未實現</span><span class="val ${cls(p.unrealized)}">${sign(p.unrealized)}</span></div>
+      ${(() => {
+        const x = exitScenario(p);
+        if (!x.anyLine) return '';
+        return `
+      <div class="row"><span class="label">跌到出場線才賣的未實現</span><span class="val ${cls(x.unrealized)}">${sign(x.unrealized)}</span></div>
+      <div class="row sub"><span class="label">那時的整體損益(市值少 ${(x.drop * 100).toFixed(1)}%)</span><span class="val ${cls(x.total)}">${sign(x.total)}</span></div>
+      ${x.rows.map(r => `<div class="row sub"><span class="label">${esc(r.sym)} ${r.hasLine ? (r.drop > 0 ? `出場線 ${r.px.toFixed(2)}(再跌 ${(r.drop * 100).toFixed(1)}%)` : '已經在出場線下面,用目前股價') : r.status === 'WAIT_RECOVER' ? '接刀中,沒有出場線,用目前股價' : '算不出出場線,用目前股價'}</span><span class="val"></span></div>`).join('')}
+      <details class="tip"><summary>這個數字怎麼看</summary><div class="body">照策略續抱,要等收盤跌破出場線(快線 × 出場乘數)才全部賣出,
+        所以這是「現在開始跌、一路跌到出場才賣」時大概還留得住的獲利,已扣賣出手續費與證交稅、沒扣之後的利息。
+        出場線會跟著快線慢慢往上移,抱越久通常越高;但收盤跌破才賣,跳空大跌時實際賣價會再低一點。
+        在那之前需要用錢而提早賣,就不是這個數字。</div></details>`;
+      })()}
       ${p.realized ? `<div class="row"><span class="label">已實現${p.dividends ? '(含配息)' : ''}</span><span class="val ${cls(p.realized)}">${sign(p.realized)}</span></div>` : ''}
       <div class="row"><span class="label">借款利息</span><span class="val neg">−NT$ ${fmt(p.interest)}</span></div>
       <div class="row sub"><span class="label">持股成本</span><span class="val">NT$ ${fmt(p.remainCost)}</span></div>

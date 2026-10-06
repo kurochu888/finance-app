@@ -18,7 +18,7 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
-  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, set levTab(v){ levTab = v; } };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, defaultFee, renderOverview, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -551,5 +551,32 @@ console.log('訊號只留最近 PRICE_HIST_KEEP 筆歷史,算出來的狀態要�
 console.log('  ok');
 
 console.log();
+console.log('跌到出場線才賣的未實現');
+{
+  const st = A.emptyState();
+  const it = st.instruments[0];
+  const sym = it.id;
+  const setHist = n => { it.priceHistory = mkHist(prices.slice(0, n)); it.splits = []; it.trend = Object.assign({}, it.trend, trend); it.price = prices[n - 1]; };
+  setHist(20);
+  st.trades = [{ id: 'b1', date: '2020-01-05', symbol: sym, action: 'buy', shares: 1000, price: 90, fee: 0, amount: 0, source: 'cash', note: '' }];
+  A.state = st;
+  const t = A.computeTrend(it);
+  must(t.status === 'HOLD' && Math.abs(t.exitLine - t.maFast * trend.exitBuffer) < 1e-9, '續抱時要回傳出場線:' + t.status + ' ' + t.exitLine);
+  const x = A.exitScenario();
+  const g = 1000 * t.exitLine, exp = g - A.defaultFee('sell', g) - 90000;
+  must(Math.abs(x.unrealized - exp) < 1e-6 && x.anyLine, `出場線賣出的未實現應該是 ${exp.toFixed(0)},得到 ${x.unrealized.toFixed(0)}`);
+  must(x.unrealized < A.computePosition().unrealized, '跌到出場線的未實現應該比現在少');
+  must(Math.abs(x.drop - (1 - t.exitLine / it.price)) < 1e-9, '市值少幾 % 要對');
+  A.levTab = 'overview';
+  must(A.renderLeverage().includes('跌到出場線才賣的未實現') && A.renderOverview().includes('跌到出場線才賣的未實現'), '損益卡跟總覽都要顯示');
+  // 股價已經在出場線下面:用目前股價,不能比現在還高
+  it.price = t.exitLine * 0.95;
+  must(A.exitScenario().rows[0].px === it.price, '股價低於出場線時用目前股價');
+  // 接刀中:沒有出場線,不顯示這一行
+  setHist(50);
+  must(A.computeTrend(it).status === 'WAIT_RECOVER' && !A.exitScenario().anyLine && !A.renderLeverage().includes('跌到出場線才賣的未實現'), '接刀中沒有出場線,不顯示');
+}
+console.log('  ok');
+
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
 process.exit(bugs.length ? 1 : 0);
