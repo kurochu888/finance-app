@@ -29,7 +29,8 @@ const fs = require('fs');
 const src = fs.readFileSync(process.env.FUZZ_FILE || (__dirname + '/../docs/index.html'), 'utf8');   // 換版本:FUZZ_FILE=finance_app_artifact.html
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, normalize, onClick, onField, renderAll,
-  switchTab, netWorth, totalAssets, totalLiab, computePosition, computeRisk, sampleData, emptyState };`);
+  switchTab, netWorth, totalAssets, totalLiab, computePosition, computeRisk, sampleData, emptyState,
+  maybePostInterest, applyPayDay, applyLoanRate };`);
 
 const STEPS = Number(process.argv[2]) || 2500;
 const SEEDS = process.argv[3] ? [Number(process.argv[3])] : [1, 2, 3];
@@ -105,7 +106,8 @@ for (const s of SEEDS){
       if (roll < 0.06){
         const t = pick(['overview', 'assets', 'leverage', 'ledger', 'help']); A.switchTab(t); desc = 'tab ' + t;
       }else if (roll < 0.09){
-        simNow += Math.floor(rnd() * 40) * 86400000; desc = 'time +' ; A.renderAll();
+        // 跨日/跨月後像真的打開 app 一樣跑每月自動記帳(還本、利息、一般型房貸)
+        simNow += Math.floor(rnd() * 40) * 86400000; desc = 'time +' ; A.maybePostInterest(); A.renderAll();
       }else{
         const ui = scanUi();
         if (roll < 0.55 && ui.acts.length){
@@ -121,6 +123,9 @@ for (const s of SEEDS){
           const v = f.opts && f.opts.length && rnd() < 0.8 ? pick(f.opts) : pick(pool);
           desc = 'field ' + f.k + ' = ' + JSON.stringify(v);
           A.onField(f.k, { value: v, dataset: { k: f.k }, checked: rnd() < 0.5 });
+          // 離開欄位(change)才套用的:繳款日、一般型房貸利率
+          if (f.k === 'lev-payDay') A.applyPayDay(v);
+          else if (f.k.startsWith('lo-rate-')) A.applyLoanRate(f.k.slice(8), v);
         }else continue;
       }
       A.renderAll();
