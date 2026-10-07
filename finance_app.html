@@ -670,8 +670,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · a40e808f53';
-const BUILD_HASH = 'a40e808f53';
+const BUILD_VERSION = '2026-10-07 · 6c3b2a06b5';
+const BUILD_HASH = '6c3b2a06b5';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4037,7 +4037,7 @@ function renderRepayments(){
         <div class="erow">
           <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">${String(r.id).startsWith(AUTO_REPAY_PREFIX) ? '<span class="badge gray" style="flex:0 0 auto;">自動</span>' : ''}
           <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
-          <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
+          ${xDel('del-repay', it.id + ':' + r.id)}
         </div>
         <div class="muted" style="margin-top:2px;">${esc(it.label)}${
           !r.date ? `<span class="neg"> · 沒有日期,這筆不會計入</span>`
@@ -5690,7 +5690,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate'];
+const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
@@ -5740,7 +5740,10 @@ function onClick(el){
       break;
     }
     case 'del-repay': {
+      // 跟其他 ✕ 一樣要再按一次:誤刪會讓借款餘額、利息跟著變,刪掉自動還本那個月也不會再補記;剛新增還沒填的空白列直接刪
       const [tid, rid] = String(id).split(':');
+      const r0 = (findById(state.leverage.draws, tid) || { repayments: [] }).repayments.find(x => x.id === rid);
+      if (r0 && r0.amount && needsConfirm('del-repay:' + id)) return;
       const target = findById(state.leverage.draws, tid);
       if (target) target.repayments = (target.repayments || []).filter(x => x.id !== rid);
       break;

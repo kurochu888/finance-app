@@ -751,6 +751,14 @@ console.log('✕ 刪除可以取消');
   if (A.state.assets.length !== n0) throw new Error('取消後再按一次 ✕ 不該直接刪掉');
   A.onClick({ dataset:{ act:'cancel-confirm' } });
   console.log('  取消後不刪、再按 ✕ 要重新確認 ✓');
+  // 還款紀錄的 ✕ 以前按一下就刪
+  const d = A.state.leverage.draws[0] || (A.state.leverage.draws[0] = { id:'dz', label:'x', amount:100000, useDate:'2026-01-05', note:'', repayments:[] });
+  d.repayments.push({ id:'rz1', date:'2026-02-05', amount:5000 });
+  A.onClick({ dataset:{ act:'del-repay', id:d.id + ':rz1' } });
+  if (!d.repayments.some(r => r.id === 'rz1')) throw new Error('還款紀錄按一下 ✕ 就刪掉了,應該要再確認');
+  A.onClick({ dataset:{ act:'del-repay', id:d.id + ':rz1' } });
+  if (d.repayments.some(r => r.id === 'rz1')) throw new Error('還款紀錄確認後沒有刪掉');
+  console.log('  還款紀錄也要再按一次才刪 ✓');
 }
 
 console.log('清空');

@@ -89,6 +89,17 @@ id 沿用舊值以確保重複呼叫不會飄動。
 `syncLoanLiabilities()` 把負債金額設成剩餘本金,`postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`;理財型利息 id `levi-YYYYMMDD`(繳款日,兩台同時記合併成一筆)。
 這幾個都從 `maybePostInterest()` 跑(還本 → 理財型利息 → 一般型)。一般型利率只在 change(離開欄位)才套用 `applyLoanRate()`,
 打字途中的「2 → 2.3」不能被當成升息記一段;`setCurrentRate()` 原本是 0 也不記。測試 `tests/loans.js`。
+這幾條是踩過才補的,改這塊時不要弄回去:
+- **第一次用不回頭補,但要記一個起點**:`repayPosted`/`interestPosted`/`loan.interestPosted` 是空的時候先把上個月標成已處理,
+  不然本月繳款日還沒到、下次又跨月才打開,本月整期會被跳過(「最近一次」是空的 → 永遠從「這個月」算起)。
+- **改繳款日**:`payDayFrom = {m, d}` 記「本月從舊的上月繳款日起算」,`levPeriodInterest()` 那個月用它;不記的話新舊日子中間那段
+  利息會重複算(15 → 1 號)或漏(1 → 15 號)。搬到還沒到的日子的利息由 `postLeverageInterest()` 開頭拿掉、到日子再記,
+  拿掉時中間沒記的月份要補標成已處理,不然使用者刪掉/關掉的月份會被補回來。
+- **自動記的項目用固定 id**(`autorepayYYYYMM`、`levi-YYYYMMDD`、`li-…`),兩台同時記合併成一筆;但固定 id 會碰到刪除紀錄的盲點:
+  剛記、還沒存檔就被刪,上次存檔裡沒有它,`recordTombs()` 看不出是刪除,另一台的同一筆同步過來又出現。所以記的時候呼叫
+  `noteAutoPosted()` 登記,`recordTombs()` 把「登記過、現在沒有」也當刪除(`tests/tombs.js` 情境 5)。新增別的自動項目照做。
+- **本月要繳的本金**(`leverageMonthPrincipal()`)是「最低還本」,跟 `maybeAutoRepay()` 同一套規則:自己額外還的不算要繳。
+- 自動記帳的金額過 `num()`(±1 兆),不然極端值存檔再讀回來會不一樣(fuzz 抓到)。
 
 **`state.netWorthHistory[]`(每月快照)**——每月一筆 `{m, v, pv, pnl, loan, items, auto}`。`items` 是 2026-09 起
 才有的當月資產/負債細項 `[{id, name, amount, t:'a'|'l'}]`(更早的月份是空陣列,補不回來):`maybeSnapshot()` 在開 app
