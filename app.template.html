@@ -3880,6 +3880,11 @@ function renderTrades(){
       <h3>買賣紀錄</h3>
       ${trades.length ? trades.map(t => t.id === editingTrade ? `
         <div class="tx-edit">
+          ${t.action === 'buy' ? `
+          <div class="seg" style="margin-bottom:8px;">
+            <button class="seg-btn ${t.source === 'loan' ? '' : 'on'}" data-act="trade-source" data-id="${t.id}" data-v="cash">自有資金</button>
+            <button class="seg-btn ${t.source === 'loan' ? 'on' : ''}" data-act="trade-source" data-id="${t.id}" data-v="loan">房貸借款</button>
+          </div>` : ''}
           <div class="grid2">
             <div class="field"><label>日期</label><input type="date" data-k="pt-date-${t.id}" value="${esc(t.date)}"></div>
             ${t.action === 'dividend' ? `
@@ -5825,6 +5830,11 @@ function onClick(el){
       break;
     }
     case 'edit-trade': editingTrade = id; break;
+    case 'trade-source': {                 // 修改既有買進的資金來源(標錯的話以前只能刪掉重記)
+      const t = findById(state.trades, id);
+      if (t && t.action === 'buy') t.source = el.dataset.v === 'loan' ? 'loan' : 'cash';
+      break;
+    }
     case 'close-trade': editingTrade = null; break;
     case 'del-trade':
       if (needsConfirm('del-trade:' + id)) return;

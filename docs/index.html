@@ -686,8 +686,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · 6c3b2a06b5';
-const BUILD_HASH = '6c3b2a06b5';
+const BUILD_VERSION = '2026-10-07 · 311ebfa42f';
+const BUILD_HASH = '311ebfa42f';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3914,6 +3914,11 @@ function renderTrades(){
       <h3>買賣紀錄</h3>
       ${trades.length ? trades.map(t => t.id === editingTrade ? `
         <div class="tx-edit">
+          ${t.action === 'buy' ? `
+          <div class="seg" style="margin-bottom:8px;">
+            <button class="seg-btn ${t.source === 'loan' ? '' : 'on'}" data-act="trade-source" data-id="${t.id}" data-v="cash">自有資金</button>
+            <button class="seg-btn ${t.source === 'loan' ? 'on' : ''}" data-act="trade-source" data-id="${t.id}" data-v="loan">房貸借款</button>
+          </div>` : ''}
           <div class="grid2">
             <div class="field"><label>日期</label><input type="date" data-k="pt-date-${t.id}" value="${esc(t.date)}"></div>
             ${t.action === 'dividend' ? `
@@ -5859,6 +5864,11 @@ function onClick(el){
       break;
     }
     case 'edit-trade': editingTrade = id; break;
+    case 'trade-source': {                 // 修改既有買進的資金來源(標錯的話以前只能刪掉重記)
+      const t = findById(state.trades, id);
+      if (t && t.action === 'buy') t.source = el.dataset.v === 'loan' ? 'loan' : 'cash';
+      break;
+    }
     case 'close-trade': editingTrade = null; break;
     case 'del-trade':
       if (needsConfirm('del-trade:' + id)) return;

@@ -737,6 +737,21 @@ console.log('買進同時用自有資金跟房貸 → 拆兩筆');
   console.log('  房貸 ' + L.shares + ' 股 + 自有 ' + C.shares + ' 股,手續費 ' + L.fee + ' + ' + C.fee + ' ✓');
 }
 
+console.log('修改買進的資金來源');
+{
+  const t = A.state.trades.find(x => x.action === 'buy');
+  const before = A.computePosition().buyLoan, gross = t.shares * t.price + t.fee, was = t.source;
+  A.onClick({ dataset:{ act:'trade-source', id:t.id, v: was === 'loan' ? 'cash' : 'loan' } });
+  if (t.source === was) throw new Error('資金來源沒有改');
+  const after = A.computePosition().buyLoan;
+  if (Math.abs(Math.abs(after - before) - gross) > 1e-6) throw new Error('改資金來源後房貸買進金額沒有跟著變:' + before + ' → ' + after);
+  A.onClick({ dataset:{ act:'trade-source', id:t.id, v: was } });
+  if (t.source !== was) throw new Error('改不回原本的資金來源');
+  const s0 = A.state.trades.find(x => x.action === 'sell');
+  if (s0){ A.onClick({ dataset:{ act:'trade-source', id:s0.id, v:'loan' } }); if (s0.source === 'loan') throw new Error('賣出不該有資金來源'); }
+  console.log('  自有 ↔ 房貸可以改,損益跟著變 ✓');
+}
+
 console.log('✕ 刪除可以取消');
 {
   const a0 = A.state.assets[0], n0 = A.state.assets.length;
