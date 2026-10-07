@@ -4019,7 +4019,7 @@ function renderRepayments(){
         <div class="erow">
           <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">${String(r.id).startsWith(AUTO_REPAY_PREFIX) ? '<span class="badge gray" style="flex:0 0 auto;">自動</span>' : ''}
           <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
-          <button class="xbtn" data-act="del-repay" data-id="${it.id}:${r.id}" aria-label="刪除">✕</button>
+          ${xDel('del-repay', it.id + ':' + r.id)}
         </div>
         <div class="muted" style="margin-top:2px;">${esc(it.label)}${
           !r.date ? `<span class="neg"> · 沒有日期,這筆不會計入</span>`
@@ -5672,7 +5672,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate'];
+const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
@@ -5722,7 +5722,10 @@ function onClick(el){
       break;
     }
     case 'del-repay': {
+      // 跟其他 ✕ 一樣要再按一次:誤刪會讓借款餘額、利息跟著變,刪掉自動還本那個月也不會再補記;剛新增還沒填的空白列直接刪
       const [tid, rid] = String(id).split(':');
+      const r0 = (findById(state.leverage.draws, tid) || { repayments: [] }).repayments.find(x => x.id === rid);
+      if (r0 && r0.amount && needsConfirm('del-repay:' + id)) return;
       const target = findById(state.leverage.draws, tid);
       if (target) target.repayments = (target.repayments || []).filter(x => x.id !== rid);
       break;
