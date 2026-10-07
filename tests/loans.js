@@ -166,7 +166,7 @@ console.log('理財型:每月繳款日自動還本(預設 1 號,剩餘餘額 × 
   // 本月利息照還本後的餘額
   must(near(A.computeLeverage().usedAmount, 995000 + 500000 + 298000), '借款餘額應該扣掉還本');
   const mp = A.leverageMonthPrincipal();
-  must(mp.amount === 7000 && !mp.estimate, '本月還本應該是 5,000 + 2,000(自己記的):' + JSON.stringify(mp));
+  must(mp.amount === 6500 && !mp.estimate, '本月還本應該是 5,000 + 1,500(自己還了 2,000,最低只要 30 萬 × 5‰):' + JSON.stringify(mp));
   // 中間沒開 app:補 11、12 月,金額照當時餘額遞減
   setNow('2026-12-20');
   A.maybePostInterest();
@@ -251,6 +251,12 @@ console.log('理財型:繳款日不是 1 號');
   const next = A.normalize(old);
   A.keepFieldsOldVersionsDrop(prev, old, next);
   must(next.leverage.payDay === 31, '舊版寫回來要保留繳款日:' + next.leverage.payDay);
+  // 認得繳款日、不認得 payDayFrom 的版本
+  const prev2 = A.normalize(JSON.parse(JSON.stringify(A.state))); prev2.leverage.payDayFrom = { m: '2027-03', d: '2027-02-28' };
+  const old2 = JSON.parse(JSON.stringify(prev2)); delete old2.leverage.payDayFrom;
+  const next2 = A.normalize(old2);
+  A.keepFieldsOldVersionsDrop(prev2, old2, next2);
+  must(next2.leverage.payDayFrom && next2.leverage.payDayFrom.d === '2027-02-28', '舊版寫回來要保留改繳款日的起算日:' + JSON.stringify(next2.leverage.payDayFrom));
 }
 
 console.log('理財型利息:上次繳款日到這次繳款日逐日計息(年利率 ÷ 365)');
@@ -364,6 +370,30 @@ console.log('一般型:第一次設定在本月繳款日前,下次跨月才打�
   setNow('2026-11-25'); A.maybePostInterest();
   const d = A.state.transactions.map(t => t.date).sort().join();
   must(d === '2026-10-20,2026-11-20', '10/20 那期不能漏:' + d);
+}
+
+console.log('本月還本預估:動用當月的不算');
+{
+  setNow('2026-10-06');
+  const s = A.emptyState(); s.leverage.payDay = 15;
+  s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-06-15', note: '', repayments: [] },
+                      { id: 'd2', label: 'y', amount: 2000000, useDate: '2026-10-03', note: '', repayments: [] }];
+  A.state = A.normalize(s); A.maybePostInterest();
+  const mp = A.leverageMonthPrincipal();
+  must(mp.estimate && mp.amount === 5000, '10/15 只有 6 月那筆要還 5,000,10/03 動用的下個月才還:' + JSON.stringify(mp));
+  setNow('2026-10-15'); A.maybePostInterest();
+  must(A.leverageMonthPrincipal().amount === 5000 && !A.leverageMonthPrincipal().estimate, '記了之後跟預估一樣');
+}
+
+console.log('本月要繳本金:月中自己還清不能顯示成要繳整筆');
+{
+  setNow('2026-10-10');
+  const s = A.emptyState(); s.leverage.payDay = 15;
+  s.leverage.draws = [{ id: 'd1', label: 'x', amount: 1000000, useDate: '2026-06-15', note: '', repayments: [{ id: 'p1', date: '2026-10-05', amount: 1000000 }] }];
+  A.state = A.normalize(s);
+  const mp = A.leverageMonthPrincipal();
+  must(mp.amount === 5000, '整筆還清的那個月,要繳的最低還本是 5,000 不是 100 萬:' + JSON.stringify(mp));
+  must(A.monthLoanDues()[0].principal === 5000, '總覽本月要繳本金:' + A.monthLoanDues()[0].principal);
 }
 
 console.log('兩台裝置同時補記、舊版分頁寫回來');
