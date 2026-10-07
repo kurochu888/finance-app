@@ -670,8 +670,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · cfe5cada86';
-const BUILD_HASH = 'cfe5cada86';
+const BUILD_VERSION = '2026-10-07 · abcf27c585';
+const BUILD_HASH = 'abcf27c585';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -5108,6 +5108,8 @@ function postLoanInterest(){
   state.liabilities.forEach(l => {
     if (!loanReady(l) || !l.loan.autoInterest) return;
     const lo = l.loan, posted = lo.interestPosted;
+    // 第一次:上個月標成已處理,不回頭補,但本月繳款日還沒到、下次跨月才打開時,本月那期不會漏(跟理財型同一條規則)
+    if (!posted.length){ posted.push(shiftMonth(cur, -1)); changed = true; }
     const rows = amortize(lo).rows;
     const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
     const first = last && last < cur ? shiftMonth(last, 1) : cur;
@@ -5168,8 +5170,12 @@ function postLeverageInterest(){
     if (due > today) break;
     const amt = levPeriodInterest(m);
     if (!(amt > 0)) continue;
+    // id 照繳款日固定:兩台裝置同一天各自記,合併時是同一筆(以前用 uid() 會變兩筆)。
+    // 帶日期不只月份:改繳款日時舊的那筆被拿掉、新日期重記,只用月份的話會被刪除紀錄擋掉
+    const id = 'levi-' + due.replace(/-/g, '');
+    if (state.transactions.some(t => t.id === id)){ posted.push(m); changed = true; continue; }
     state.transactions.push({
-      id: uid(),
+      id,
       date: due,
       cat: '房貸利息',
       desc: AUTO_INTEREST_DESC,

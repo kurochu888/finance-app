@@ -5090,6 +5090,8 @@ function postLoanInterest(){
   state.liabilities.forEach(l => {
     if (!loanReady(l) || !l.loan.autoInterest) return;
     const lo = l.loan, posted = lo.interestPosted;
+    // 第一次:上個月標成已處理,不回頭補,但本月繳款日還沒到、下次跨月才打開時,本月那期不會漏(跟理財型同一條規則)
+    if (!posted.length){ posted.push(shiftMonth(cur, -1)); changed = true; }
     const rows = amortize(lo).rows;
     const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
     const first = last && last < cur ? shiftMonth(last, 1) : cur;
@@ -5150,8 +5152,12 @@ function postLeverageInterest(){
     if (due > today) break;
     const amt = levPeriodInterest(m);
     if (!(amt > 0)) continue;
+    // id 照繳款日固定:兩台裝置同一天各自記,合併時是同一筆(以前用 uid() 會變兩筆)。
+    // 帶日期不只月份:改繳款日時舊的那筆被拿掉、新日期重記,只用月份的話會被刪除紀錄擋掉
+    const id = 'levi-' + due.replace(/-/g, '');
+    if (state.transactions.some(t => t.id === id)){ posted.push(m); changed = true; continue; }
     state.transactions.push({
-      id: uid(),
+      id,
       date: due,
       cat: '房貸利息',
       desc: AUTO_INTEREST_DESC,
