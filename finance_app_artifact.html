@@ -652,8 +652,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-07 · 9d3c57de3f';
-const BUILD_HASH = '9d3c57de3f';
+const BUILD_VERSION = '2026-10-07 · ad549f54fe';
+const BUILD_HASH = 'ad549f54fe';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4880,7 +4880,13 @@ function renderLeverage(){
     <div class="card">
       <h3>借款與利息</h3>
       <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
-      ${r.drawnAmount !== r.usedAmount ? `<div class="row"><span class="muted">累計動用 ${fmt(r.drawnAmount)} · 已還 ${fmt(r.drawnAmount - r.usedAmount)}</span><span class="muted"></span></div>` : ''}
+      ${(() => {
+        // 動用日在未來的(預定動用)不算借款、也不是已還——以前「已還」用「累計動用 − 餘額」倒推,預定動用被當成已還
+        const today = todayISO();
+        const drawn = sum(r.draws.filter(d => d.useDate && d.useDate <= today), d => d.amount);
+        const pending = r.draws.filter(d => d.useDate && d.useDate > today);
+        return `${r.repaidTotal > 0 ? `<div class="row"><span class="muted">累計動用 ${fmt(drawn)} · 已還 ${fmt(r.repaidTotal)}</span><span class="muted"></span></div>` : ''}${pending.length ? `<div class="row"><span class="muted">預定動用 ${fmt(sum(pending, d => d.amount))}(${pending.map(d => d.useDate.slice(5)).sort().join('、')},到那天才算借款)</span><span class="muted"></span></div>` : ''}`;
+      })()}
       <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
       <div class="grid2" style="margin-top:8px;">
         <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>

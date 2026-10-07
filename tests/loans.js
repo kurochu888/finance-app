@@ -435,6 +435,24 @@ console.log('兩台裝置同時補記、舊版分頁寫回來');
   must(JSON.stringify(n1) === JSON.stringify(n2), 'normalize 存檔往返後要一樣');
 }
 
+console.log('\n預定動用(動用日在未來)不能算成已還');
+{
+  setNow('2026-10-05');
+  A.state = A.normalize(A.emptyState());
+  A.state.leverage.creditLimit = 5000000;
+  A.state.leverage.draws = [
+    { id:'d1', label:'', amount:1000000, useDate:'2026-09-01', note:'', repayments:[{ id:'r1', date:'2026-09-20', amount:100000 }] },
+    { id:'d2', label:'', amount:500000, useDate:'2026-10-08', note:'', repayments:[] },
+  ];
+  A.state = A.normalize(A.state);
+  A.levTab = 'setup';
+  const html = A.renderLeverage();
+  must(html.includes('累計動用 1,000,000 · 已還 100,000'), '已還要是還款紀錄加總 100,000,預定的 50 萬不能算進累計動用或已還');
+  must(html.includes('預定動用 500,000'), '預定動用要另外列出來');
+  setNow('2026-10-08');
+  must(A.renderLeverage().includes('累計動用 1,500,000 · 已還 100,000'), '到了動用日要算進累計動用');
+}
+
 if (bugs.length){
   console.log('\n發現 ' + bugs.length + ' 個問題:');
   bugs.forEach(b => console.log('  ✗ ' + b));
