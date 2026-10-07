@@ -2116,7 +2116,8 @@ function computePositionUncached(){
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
   const sorted = sortedTrades();   // 同一天先買、再配息、最後賣,見 sortedTrades
   sorted.forEach(t => {
-    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
+    // loanCost:持股成本裡用房貸買的部分(設定頁每檔的「投資金額」拆自有/房貸);賣出時跟 cost 同比例扣
+    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0, loanCost:0 });
     const gross = t.shares * t.price;
     fees += t.fee;
     if (t.action === 'dividend'){
@@ -2131,12 +2132,13 @@ function computePositionUncached(){
       const costOut = avg * qty;
       realized += (soldGross - t.fee) - costOut;
       sellNet += soldGross - t.fee;
+      if (lot.shares > 0) lot.loanCost -= lot.loanCost * qty / lot.shares;
       lot.shares -= qty;
       lot.cost -= costOut;
     }else{
       lot.shares += t.shares;
       lot.cost += gross + t.fee;
-      if (t.source === 'loan') buyLoan += gross + t.fee; else buyCash += gross + t.fee;
+      if (t.source === 'loan'){ buyLoan += gross + t.fee; lot.loanCost += gross + t.fee; } else buyCash += gross + t.fee;
     }
   });
   let marketValue = 0, remainCost = 0;
@@ -4823,6 +4825,8 @@ function renderLeverage(){
             <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.key}" value="${it.leverage}"></div>
           <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
           ${hasCost ? `
+          <div class="row sub"><span class="label">投資金額</span><span class="val">NT$ ${fmt(lot.cost)}</span></div>
+          ${Math.round(lot.loanCost) > 0 ? `<div class="row sub"><span class="label">其中自有 / 房貸</span><span class="val">NT$ ${fmt(lot.cost - lot.loanCost)} / ${fmt(lot.loanCost)}</span></div>` : ''}
           <div class="row sub"><span class="label">平均成本</span><span class="val">${avgCost.toFixed(2)}</span></div>
           ${gainRow(gain, lot.cost)}
           ` : lot ? '' : `<div class="muted" style="margin-top:6px;">去「紀錄」分頁記買賣,才會自動算出成本跟損益。</div>`}

@@ -686,8 +686,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-07 · 311ebfa42f';
-const BUILD_HASH = '311ebfa42f';
+const BUILD_VERSION = '2026-10-07 · 9d3c57de3f';
+const BUILD_HASH = '9d3c57de3f';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2150,7 +2150,8 @@ function computePositionUncached(){
   let buyCash = 0, buyLoan = 0, sellNet = 0, realized = 0, fees = 0, dividends = 0, oversold = false;
   const sorted = sortedTrades();   // 同一天先買、再配息、最後賣,見 sortedTrades
   sorted.forEach(t => {
-    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
+    // loanCost:持股成本裡用房貸買的部分(設定頁每檔的「投資金額」拆自有/房貸);賣出時跟 cost 同比例扣
+    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0, loanCost:0 });
     const gross = t.shares * t.price;
     fees += t.fee;
     if (t.action === 'dividend'){
@@ -2165,12 +2166,13 @@ function computePositionUncached(){
       const costOut = avg * qty;
       realized += (soldGross - t.fee) - costOut;
       sellNet += soldGross - t.fee;
+      if (lot.shares > 0) lot.loanCost -= lot.loanCost * qty / lot.shares;
       lot.shares -= qty;
       lot.cost -= costOut;
     }else{
       lot.shares += t.shares;
       lot.cost += gross + t.fee;
-      if (t.source === 'loan') buyLoan += gross + t.fee; else buyCash += gross + t.fee;
+      if (t.source === 'loan'){ buyLoan += gross + t.fee; lot.loanCost += gross + t.fee; } else buyCash += gross + t.fee;
     }
   });
   let marketValue = 0, remainCost = 0;
@@ -4857,6 +4859,8 @@ function renderLeverage(){
             <input type="number" inputmode="decimal" step="0.5" data-k="in-lev-${it.key}" value="${it.leverage}"></div>
           <div class="row"><span class="muted">市值</span><span class="val" id="out-val-${it.key}">NT$ ${fmt(h.value)}</span></div>
           ${hasCost ? `
+          <div class="row sub"><span class="label">投資金額</span><span class="val">NT$ ${fmt(lot.cost)}</span></div>
+          ${Math.round(lot.loanCost) > 0 ? `<div class="row sub"><span class="label">其中自有 / 房貸</span><span class="val">NT$ ${fmt(lot.cost - lot.loanCost)} / ${fmt(lot.loanCost)}</span></div>` : ''}
           <div class="row sub"><span class="label">平均成本</span><span class="val">${avgCost.toFixed(2)}</span></div>
           ${gainRow(gain, lot.cost)}
           ` : lot ? '' : `<div class="muted" style="margin-top:6px;">去「紀錄」分頁記買賣,才會自動算出成本跟損益。</div>`}
