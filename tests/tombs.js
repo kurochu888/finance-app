@@ -97,6 +97,21 @@ function boot(cloud, lsInit){
     if (ids(A.state) !== ids(B.state) || ids(A.state) !== ids(cloud.doc)) bugs.push('一台刪、一台改同一筆,兩台最後不一致');
     if (A.state.transactions.some(t => t.id === 'b')) bugs.push('一台刪、一台改同一筆,刪掉的又回來了');
   }
+  // 5) 兩台同時打開、各自記了同一筆自動利息(固定 id);B 還沒存檔就把它刪了,之後收到 A 的那份 → 不能又冒出來
+  {
+    const cloud = mkCloud();
+    cloud.doc = Object.assign(base(['a']), { leverage: { creditLimit: 5000000, draws: [{ id: 'dr1', label: 'x', amount: 1000000, useDate: '2026-01-05', note: '', repayments: [] }] } });
+    const A = boot(cloud), B = boot(cloud);
+    A.init(); B.init(); await wait(100);
+    const auto = st => st.transactions.filter(t => String(t.id).startsWith('levi-')).map(t => t.id).join(',');
+    const lid = auto(B.state);
+    if (!lid || auto(A.state) !== lid) bugs.push('情境 5 前提:兩台應該各自記了同一筆自動利息,A ' + auto(A.state) + ' B ' + lid);
+    B.state.transactions = B.state.transactions.filter(t => t.id !== lid);
+    B.scheduleSave();
+    await wait(600); cloud.deliver(); await wait(600); cloud.deliver(); await wait(600); cloud.deliver(); await wait(50);
+    console.log('5. 兩台記同一筆自動利息、一台刪掉:A', auto(A.state) || '(無)', '| B', auto(B.state) || '(無)', '| 雲端', auto(cloud.doc) || '(無)');
+    if (auto(A.state) || auto(B.state) || auto(cloud.doc)) bugs.push('另一台記的同一筆自動利息同步過來,刪掉的又回來了');
+  }
   console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b, i) => '  ' + (i + 1) + '. ' + b).join('\n') : '沒有發現問題');
   process.exit(bugs.length ? 1 : 0);
 })();

@@ -572,6 +572,10 @@ console.log('跌到出場線才賣的未實現');
   // 股價已經在出場線下面:用目前股價,不能比現在還高
   it.price = t.exitLine * 0.95;
   must(A.exitScenario().rows[0].px === it.price, '股價低於出場線時用目前股價');
+  // 還沒有目前股價:不能說「已經在出場線下面」
+  { const keep = it.price; it.price = 0; A.levTab = 'overview'; const h = A.renderLeverage();
+    must(!h.includes('已經在出場線下面') && h.includes('還沒有目前股價'), '沒有股價時的說明不對');
+    it.price = keep; }
   // 歷史中間缺一段:出場線不算數
   { const keep = it.priceHistory, price0 = it.price; it.price = prices[19];
     it.priceHistory = keep.filter((r, i) => i < 8 || i > 14).map((r, i) => i >= 8 ? { d: (() => { const d = new Date(r.d); d.setDate(d.getDate() + 40); return d.toISOString().slice(0, 10); })(), c: r.c } : r);

@@ -735,10 +735,20 @@ function keySets(st){
   return m;
 }
 const isDeleted = k => tombs[k] > 0;
+/* 自動記的項目(理財型利息、自動還本、一般型利息)的 id 是固定的,另一台也會記出同一個 id。
+   剛記、還沒存檔就被使用者刪掉的話,上次存檔裡沒有它,下面的比對看不出是刪除,另一台的同一筆同步過來就又出現了
+   (tests/twodevice.js 抓到)。所以記的時候先登記,下次比對時「登記過、現在沒有」也算刪除。 */
+const autoPostedKeys = new Set();
+const noteAutoPosted = (path, item) => { const k = mergeKey(item); if (k) autoPostedKeys.add(path + '|' + k); };
 /* 從上次存檔到現在刪掉的記成刪除;記過刪除、現在又出現的(還原備份、匯入)記成重新出現 */
 function recordTombs(prev, cur){
   const now = Date.now(), before = keySets(prev), after = keySets(cur);
   let changed = false;
+  autoPostedKeys.forEach(pk => {
+    const cut = pk.indexOf('|'), path = pk.slice(0, cut), k = pk.slice(cut + 1);
+    if (!(after.get(path) || new Set()).has(k) && !(before.get(path) || new Set()).has(k)){ tombs[pk] = now; changed = true; }
+  });
+  autoPostedKeys.clear();
   before.forEach((keys, path) => {
     const still = after.get(path) || new Set();
     keys.forEach(k => { if (!still.has(k)){ tombs[path + '|' + k] = now; changed = true; } });
@@ -1075,6 +1085,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
     next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
+    restored = true;
+  }
+  // 改繳款日那個月的起算日更晚加:認得 payDay、不認得 payDayFrom 的版本寫回來會丟掉,那個月利息又會重複算或漏
+  if (rawL && ('payDay' in rawL) && !('payDayFrom' in rawL) && prev.leverage && prev.leverage.payDayFrom){
+    next.leverage.payDayFrom = JSON.parse(JSON.stringify(prev.leverage.payDayFrom));
     restored = true;
   }
   // 一般型房貸的參數放在負債細項的 loan 裡,舊版只留 id/name/amount
@@ -3117,7 +3132,7 @@ function renderHelp(){
       繳款日填 31 號、那個月沒有 31 號就記在月底;改繳款日時本月已經記的那幾筆會一起搬到新日期。
       動用當月不還、下個月起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
       還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動額度上限。還本不算支出、不進記帳,
-      但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月還本 + 預估利息。</p>
+      但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月最低還本 + 這期利息;月中自己多還的不算在要繳裡。</p>
       <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「是本利攤還的房貸?」,填原始貸款金額、
       撥款日、年限、目前年利率,這一項的金額就自動等於剩餘本金(之後每月同一天繳一期,沒有那天就是月底)。
       每期月付 = 餘額 × r ÷ (1 − (1 + r)<sup>−剩餘期數</sup>),r = 年利率 ÷ 12;升降息時改「目前年利率」(離開欄位才生效),
@@ -3748,7 +3763,7 @@ function exitScenario(p = computePosition()){
     const px = hasLine ? Math.min(t.exitLine, symbolPrice(sym) || t.exitLine) : symbolPrice(sym);
     const g = lot.shares * px, f = defaultFee('sell', g);
     gross += g; fees += f; cost += lot.cost;
-    rows.push({ sym, px, hasLine, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : 0 });
+    rows.push({ sym, px, hasLine, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : null });   // 還沒有股價:不知道要跌幾 %
   });
   const unrealized = gross - fees - cost;
   return { rows, gross, fees, unrealized, total: unrealized + p.realized - p.interest,
@@ -3778,8 +3793,8 @@ function renderPnL(){
         if (!x.anyLine) return '';
         return `
       <div class="row"><span class="label">跌到出場線才賣的未實現</span><span class="val ${cls(x.unrealized)}">${sign(x.unrealized)}</span></div>
-      <div class="row sub"><span class="label">那時的整體損益(市值少 ${(x.drop * 100).toFixed(1)}%)</span><span class="val ${cls(x.total)}">${sign(x.total)}</span></div>
-      ${x.rows.map(r => `<div class="row sub"><span class="label">${esc(r.sym)} ${r.hasLine ? (r.drop > 0 ? `出場線 ${r.px.toFixed(2)}(再跌 ${(r.drop * 100).toFixed(1)}%)` : '已經在出場線下面,用目前股價') : r.status === 'WAIT_RECOVER' ? '接刀中,沒有出場線,用目前股價' : '算不出出場線,用目前股價'}</span><span class="val"></span></div>`).join('')}
+      <div class="row sub"><span class="label">那時的整體損益${p.marketValue > 0 ? `(市值少 ${(x.drop * 100).toFixed(1)}%)` : ''}</span><span class="val ${cls(x.total)}">${sign(x.total)}</span></div>
+      ${x.rows.map(r => `<div class="row sub"><span class="label">${esc(r.sym)} ${r.hasLine ? (r.drop === null ? `出場線 ${r.px.toFixed(2)}(還沒有目前股價)` : r.drop > 0 ? `出場線 ${r.px.toFixed(2)}(再跌 ${(r.drop * 100).toFixed(1)}%)` : '已經在出場線下面,用目前股價') : r.status === 'WAIT_RECOVER' ? '接刀中,沒有出場線,用目前股價' : '算不出出場線,用目前股價'}</span><span class="val"></span></div>`).join('')}
       <details class="tip"><summary>這個數字怎麼看</summary><div class="body">照策略續抱,要等收盤跌破出場線(快線 × 出場乘數)才全部賣出,
         所以這是「現在開始跌、一路跌到出場才賣」時大概還留得住的獲利,已扣賣出手續費與證交稅、沒扣之後的利息。
         出場線會跟著快線慢慢往上移,抱越久通常越高;但收盤跌破才賣,跳空大跌時實際賣價會再低一點。
@@ -4877,7 +4892,7 @@ function renderLeverage(){
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
       <div class="row"><span class="label">預估每月利息</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(r.monthlyInterest)}</span></div>
       ${(() => { const mp = leverageMonthPrincipal(); return `
-      <div class="row"><span class="label">本月還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
+      <div class="row"><span class="label">本月最低還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
       <div class="field" style="margin-top:8px;"><label>每月最低還本(剩餘餘額的千分之幾)</label>
         <input type="number" inputmode="decimal" step="0.1" data-k="lev-repayPermille" value="${L.repayPermille}"></div>
@@ -4982,7 +4997,7 @@ function applyPayDay(value){
   state.transactions.forEach(t => {
     if (t.desc !== AUTO_INTEREST_DESC || t.date !== oldDue) return;
     t.date = newDue;
-    if (newDue <= todayISO()) t.amount = -Math.round(levPeriodInterest(m));   // 期間變了,金額跟著重算
+    if (newDue <= todayISO()) t.amount = num(-Math.round(levPeriodInterest(m)));   // 期間變了,金額跟著重算
   });
   maybePostInterest();
   scheduleSave();
@@ -5008,6 +5023,7 @@ function maybeAutoRepay(){
       const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
       if (!(amt > 0)) return;
       d.repayments.push({ id: rid, date: day, amount: amt });
+      noteAutoPosted('draws/' + mergeKey(d) + '/repayments', { id: rid });
     });
     posted.push(m);
     changed = true;
@@ -5023,11 +5039,27 @@ function levPeriodInterest(m){
   const from = L.payDayFrom && L.payDayFrom.m === m && L.payDayFrom.d < due ? L.payDayFrom.d : levDueDate(shiftMonth(m, -1));
   return sum(L.draws, d => Math.max(0, accrue(d, L, due) - accrue(d, L, from)));
 }
-/* 本月理財型要繳多少本金:本月已經記的還款合計;還沒記(自動還本關掉、或剛動用)就用目前餘額 × ‰ 估 */
+/* 本月理財型要繳多少本金(最低還本),每筆動用照 maybeAutoRepay 的規則:
+   - 本月已經自動記了 → 那筆的金額
+   - 本月自己還過(自動就不另外記)→ 最低還本跟自己還的取小的:月中自己把整筆還清,不能顯示成「本月要繳 100 萬」
+   - 都還沒有 → 動用當月不還;否則預估繳款日那天的餘額 × ‰ */
 function leverageMonthPrincipal(){
-  const L = state.leverage, m = thisMonth();
-  const paid = sum(L.draws, d => sum((d.repayments || []).filter(r => r.date && r.date.slice(0, 7) === m), r => r.amount));
-  return paid > 0 ? { amount: paid, estimate: false } : { amount: Math.round(computeLeverage().usedAmount * L.repayPermille / 1000), estimate: true };
+  const L = state.leverage, m = thisMonth(), due = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+  let amount = 0, estimate = false;
+  L.draws.forEach(d => {
+    const rs = (d.repayments || []).filter(r => r.date && r.date.slice(0, 7) === m);
+    const auto = rs.find(r => r.id === rid);
+    if (auto){ amount += auto.amount; return; }
+    if (!d.useDate || d.useDate >= m + '-01') return;
+    if (rs.length){
+      const min = Math.round(balanceAt(d, monthEndISO(shiftMonth(m, -1))) * L.repayPermille / 1000);
+      amount += Math.min(min, sum(rs, r => r.amount));
+      return;
+    }
+    amount += Math.round(balanceAt(d, due) * L.repayPermille / 1000);
+    estimate = true;
+  });
+  return { amount, estimate };
 }
 
 /* ---------- 一般型房貸(本利攤還) ---------- */
@@ -5104,7 +5136,8 @@ function postLoanInterest(){
       }
       const id = ('li-' + l.id).slice(0, 50) + '-' + m.replace('-', '');
       if (row.interest >= 0.5 && !state.transactions.some(t => t.id === id)){
-        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: -Math.round(row.interest) });
+        noteAutoPosted('transactions', { id });
+        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: num(-Math.round(row.interest)) });   // num():夾在 ±1 兆,跟存檔再讀回來一樣
       }
       posted.push(m);
       changed = true;
@@ -5156,12 +5189,13 @@ function postLeverageInterest(){
     // 帶日期不只月份:改繳款日時舊的那筆被拿掉、新日期重記,只用月份的話會被刪除紀錄擋掉
     const id = 'levi-' + due.replace(/-/g, '');
     if (state.transactions.some(t => t.id === id)){ posted.push(m); changed = true; continue; }
+    noteAutoPosted('transactions', { id });
     state.transactions.push({
       id,
       date: due,
       cat: '房貸利息',
       desc: AUTO_INTEREST_DESC,
-      amount: -Math.round(amt)
+      amount: num(-Math.round(amt))   // num():夾在 ±1 兆,跟存檔再讀回來一樣
     });
     posted.push(m);
     changed = true;
