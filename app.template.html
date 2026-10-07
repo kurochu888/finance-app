@@ -3763,7 +3763,7 @@ function exitScenario(p = computePosition()){
     const px = hasLine ? Math.min(t.exitLine, symbolPrice(sym) || t.exitLine) : symbolPrice(sym);
     const g = lot.shares * px, f = defaultFee('sell', g);
     gross += g; fees += f; cost += lot.cost;
-    rows.push({ sym, px, hasLine, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : null });   // 還沒有股價:不知道要跌幾 %
+    rows.push({ sym, px, hasLine, unrealized: g - f - lot.cost, status: valid ? t.status : '', drop: symbolPrice(sym) > 0 ? 1 - px / symbolPrice(sym) : null });   // 還沒有股價:不知道要跌幾 %
   });
   const unrealized = gross - fees - cost;
   return { rows, gross, fees, unrealized, total: unrealized + p.realized - p.interest,
@@ -3794,7 +3794,7 @@ function renderPnL(){
         return `
       <div class="row"><span class="label">跌到出場線才賣的未實現</span><span class="val ${cls(x.unrealized)}">${sign(x.unrealized)}</span></div>
       <div class="row sub"><span class="label">那時的整體損益${p.marketValue > 0 ? `(市值少 ${(x.drop * 100).toFixed(1)}%)` : ''}</span><span class="val ${cls(x.total)}">${sign(x.total)}</span></div>
-      ${x.rows.map(r => `<div class="row sub"><span class="label">${esc(r.sym)} ${r.hasLine ? (r.drop === null ? `出場線 ${r.px.toFixed(2)}(還沒有目前股價)` : r.drop > 0 ? `出場線 ${r.px.toFixed(2)}(再跌 ${(r.drop * 100).toFixed(1)}%)` : '已經在出場線下面,用目前股價') : r.status === 'WAIT_RECOVER' ? '接刀中,沒有出場線,用目前股價' : '算不出出場線,用目前股價'}</span><span class="val"></span></div>`).join('')}
+      ${x.rows.map(r => `<div class="row sub"><span class="label">${esc(r.sym)} ${r.hasLine ? (r.drop === null ? `出場線 ${r.px.toFixed(2)}(還沒有目前股價)` : r.drop > 0 ? `出場線 ${r.px.toFixed(2)}(再跌 ${(r.drop * 100).toFixed(1)}%)` : '已經在出場線下面,用目前股價') : r.status === 'WAIT_RECOVER' ? '接刀中,沒有出場線,用目前股價' : '算不出出場線,用目前股價'}</span><span class="val ${cls(r.unrealized)}">${sign(r.unrealized)}</span></div>`).join('')}
       <details class="tip"><summary>這個數字怎麼看</summary><div class="body">照策略續抱,要等收盤跌破出場線(快線 × 出場乘數)才全部賣出,
         所以這是「現在開始跌、一路跌到出場才賣」時大概還留得住的獲利,已扣賣出手續費與證交稅、沒扣之後的利息。
         出場線會跟著快線慢慢往上移,抱越久通常越高;但收盤跌破才賣,跳空大跌時實際賣價會再低一點。
