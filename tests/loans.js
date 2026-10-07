@@ -355,6 +355,17 @@ console.log('改繳款日:新舊日子中間那段利息不重複、不漏');
   must(Math.abs(got - dayInt * days) <= tx.length, `1 號改 15 號:記了 ${tx.map(t => t.date + ':' + (-t.amount)).join(' ')},合計 ${got},應該約 ${Math.round(dayInt * days)}(${days} 天)`);
 }
 
+console.log('一般型:第一次設定在本月繳款日前,下次跨月才打開');
+{
+  setNow('2026-10-06');
+  const s = A.emptyState(); s.leverage.autoRepay = false;
+  s.liabilities = [{ id: 'm1', name: '房貸', amount: 0, loan: { principal: 6000000, start: '2020-01-20', years: 20, annualRate: 2.3, rateHistory: [], autoInterest: true, interestPosted: [] } }];
+  A.state = A.normalize(s); A.maybePostInterest();
+  setNow('2026-11-25'); A.maybePostInterest();
+  const d = A.state.transactions.map(t => t.date).sort().join();
+  must(d === '2026-10-20,2026-11-20', '10/20 那期不能漏:' + d);
+}
+
 console.log('兩台裝置同時補記、舊版分頁寫回來');
 {
   setNow('2026-10-05');
@@ -370,6 +381,8 @@ console.log('兩台裝置同時補記、舊版分頁寫回來');
   must(merged.leverage.draws[0].repayments.length === 1, '兩台各自補記同一個月的還本,合併後應該只有一筆:' + merged.leverage.draws[0].repayments.length);
   const li = x => x.transactions.filter(t => t.id.startsWith('li-')).length;
   must(li(devA) === 1 && li(merged) === 1, '兩台各自記的一般型利息,合併後不能變兩筆:' + li(merged));
+  const lev = x => x.transactions.filter(t => t.desc === '槓桿借款利息(自動記入)').length;
+  must(lev(devA) === 1 && lev(merged) === 1, '兩台各自記的理財型利息,合併後不能變兩筆:' + lev(merged));
 
   // 舊版分頁:負債只留 id/name/amount,槓桿沒有還本設定
   const prev = A.normalize(JSON.parse(JSON.stringify(devA)));
