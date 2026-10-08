@@ -691,7 +691,10 @@ console.log('淨資產比上月');
     { id:'h1', m:m3, v:900000, pv:0, loan:0, pnl:null, items:[], auto:true },
     { id:'h2', m:m1, v:1000000, pv:0, loan:0, pnl:null, items:[], auto:true }
   ];
+  if (A.renderOverview().includes('比' + A.monthLabel(m3) + ' +100,000')) throw new Error('每月紀錄預設要收起來');
+  A.onClick({ dataset:{ act:'fold', v:'nw-months' } });   // 展開「每月紀錄」
   const html = A.renderOverview();
+  A.onClick({ dataset:{ act:'fold', v:'nw-months' } });
   if (!html.includes('比上月 +200,000(+20.0%)')) throw new Error('總覽大數字下沒有比上月');
   if (!html.includes('比' + A.monthLabel(m3) + ' +100,000')) throw new Error('列表沒有寫出跟哪個月比');
   console.log('  ' + t1 + ' | ' + t2 + ' ✓');

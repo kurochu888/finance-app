@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -51,6 +51,33 @@ dr = A.state.leverage.draws;
 const loanTrade = A.state.trades.filter(t => t.source === 'loan').pop();
 must(dr.length === 2 && dr[1].amount === Math.round(loanTrade.shares * loanTrade.price + loanTrade.fee) && dr[1].amount <= 150000, '動用金額 = 房貸那筆:' + JSON.stringify(dr[1]));
 must(!A.loanMismatch(), '拆單之後兩邊也對得起來');
+
+console.log('之前借了沒用完的先扣掉');
+{
+  const keep = A.state;
+  A.state = A.normalize(A.emptyState());
+  A.state.leverage.draws.push({ id:'w1', label:'整數動用', amount:350000, useDate:'2026-09-03', note:'', repayments:[] });
+  A.state.trades.push({ id:'b1', date:'2026-09-01', symbol:'00631L', action:'buy', source:'loan', shares:10000, price:34.8, fee:496, amount:0, note:'' });
+  must(A.unusedLoanCash() === 1504, '35 萬買了 348,496,剩 1,504:' + A.unusedLoanCash());
+  must(A.renderTrades().includes('先扣之前沒用完的 1,504') || A.tradeDraft.source !== 'loan', '草稿按鈕要說會先扣');
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'2500', price:'40', amount:'', fee:'142', note:'', loanAmt:'', autoDraw:true };
+  must(A.renderTrades().includes('先扣之前沒用完的 1,504'), '草稿按鈕要說會先扣');
+  A.onClick({ dataset:{ act:'add-trade' } });
+  let ds = A.state.leverage.draws;
+  must(ds.length === 2 && ds[1].amount === 100142 - 1504, '買 100,142 只新增 98,638:' + JSON.stringify(ds[1]));
+  must(/先用掉之前借了沒用完的 NT\$ 1,504/.test(A.tradeNote), '提示要說用掉了多少:' + A.tradeNote);
+  must(A.unusedLoanCash() === 0, '用完了');
+  // 再借一筆整數,買得比較少:剩下的夠下一筆就不新增
+  ds.push({ id:'w2', label:'整數動用', amount:50000, useDate:'2026-10-09', note:'', repayments:[] });
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'1000', price:'40', amount:'', fee:'57', note:'', loanAmt:'', autoDraw:true };
+  A.onClick({ dataset:{ act:'add-trade' } });
+  must(ds.length === 3 && /不用新增動用/.test(A.tradeNote) && /9,943/.test(A.tradeNote), '剩的 50,000 夠買 40,057,不新增、還剩 9,943:' + A.tradeNote);
+  must(!A.loanMismatch(), '兩邊還是對得起來');
+  // 全部還清了:手上不會有借來的錢(只還一部分的話分不出來是不是用剩下的錢還的,照帳面算)
+  ds.forEach((d, i) => d.repayments.push({ id:'rr' + i, date:'2026-10-10', amount:d.amount }));
+  must(A.unusedLoanCash() === 0, '都還清了就不能再拿來扣:' + A.unusedLoanCash());
+  A.state = keep;
+}
 
 console.log('關掉就不新增(已經先記過動用的人)、自有資金不新增');
 A.onClick({ dataset:{ act:'draft-autodraw' } });

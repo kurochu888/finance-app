@@ -159,7 +159,7 @@
   .erow .f-code{flex:0 1 88px; min-width:64px;}       /* 股票代號 */
   .erow .f-title{flex:1 1 90px; min-width:0;}         /* 標的名稱 */
   .erow .f-amt{
-    flex:1 1 140px; min-width:118px; max-width:190px;
+    flex:0 1 128px; min-width:104px; max-width:150px;   /* 2026-10:以前 140~190,名稱欄被擠到只剩「00631L / 00」 */
     padding-left:8px; padding-right:8px; text-align:right;
   }
   .xbtn{
@@ -288,6 +288,13 @@
   .bt-grid th{color:var(--sub); font-weight:600; background:var(--raised);}
   .bt-grid td span{display:block;}
   .linkish{background:none; border:none; font:inherit; font-size:12px; cursor:pointer; color:inherit; text-align:left;}
+  /* 收合區塊(fold()):整列可點,右邊 ▸ / ▾ */
+  .fold-head{display:flex; align-items:center; gap:8px; width:100%; background:none; border:none; font:inherit; color:var(--text);
+    cursor:pointer; text-align:left; padding:6px 0;}
+  .fold-head .ft{font-size:14px; font-weight:700; white-space:nowrap; flex:0 0 auto; max-width:62%; overflow:hidden; text-overflow:ellipsis;}
+  .fold-head .fs{font-size:12px; color:var(--sub); flex:1 1 0; min-width:0;}
+  .fold-head .fi{font-size:12px; color:var(--sub); flex:0 0 auto; margin-left:auto;}
+  .fold-body{margin-top:6px;}
   .update-banner{
     flex:0 0 auto; width:100%; border:none; cursor:pointer; padding:9px 12px; text-align:center;
     background:var(--accent); color:var(--accent-ink); font-size:13px; font-weight:700;
@@ -669,8 +676,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-08 · caa3147ab2';
-const BUILD_HASH = 'caa3147ab2';
+const BUILD_VERSION = '2026-10-08 · 07ae9c450e';
+const BUILD_HASH = '07ae9c450e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -926,20 +933,28 @@ function localUsageRatio(){
   }catch(e){ return 0; }
 }
 
+function storageStatusText(){
+  if (storageMode === 'cloud'){
+    return cloudKind === 'firebase' && authUser
+      ? '☁️ 已同步到 ' + (privacy ? '你的 Google 帳號' : authUser.email) + ' — 其他裝置登入同一帳號就看得到'
+      : '☁️ 已存到雲端 — 手機、電腦開同一個網址都看得到';
+  }
+  if (storageMode === 'local'){
+    return cloudKind === 'firebase'
+      ? '💾 只存在這台裝置 — 登入 Google 帳號即可同步到其他裝置'
+      : '💾 只存在這台裝置的瀏覽器 — 換裝置或清資料會消失';
+  }
+  return '⚠️ 無法存檔(此瀏覽器不允許儲存)';
+}
+/* 底部那條只在「有風險」時出現(只存在這台、無法存檔);已經同步到雲端就收掉,狀態改寫在總覽的「資料」卡。
+   2026-10 以前每一頁都常駐一行「已同步到 …」 */
 function updateStorageStatus(){
   const el = document.getElementById('storageStatus');
   if (!el) return;
-  if (storageMode === 'cloud'){
-    el.textContent = cloudKind === 'firebase' && authUser
-      ? '☁️ 已同步到 ' + authUser.email + ' — 其他裝置登入同一帳號就看得到'
-      : '☁️ 已存到雲端 — 手機、電腦開同一個網址都看得到';
-  }else if (storageMode === 'local'){
-    el.textContent = cloudKind === 'firebase'
-      ? '💾 只存在這台裝置 — 登入 Google 帳號即可同步到其他裝置'
-      : '💾 只存在這台裝置的瀏覽器 — 換裝置或清資料會消失';
-  }else{
-    el.textContent = '⚠️ 無法存檔(此瀏覽器不允許儲存)';
-  }
+  el.textContent = storageStatusText();
+  el.style.display = storageMode === 'cloud' ? 'none' : '';
+  const card = document.getElementById('dataSyncStatus');
+  if (card) card.textContent = storageStatusText();
 }
 
 /* 收到雲端資料:正在打字就先擱著,等游標離開欄位再套用 */
@@ -1293,6 +1308,15 @@ const BACKUP_PREFIX = 'financeBackup_';
 const BACKUP_TS_KEY = 'financeLastBackup';
 
 let levTab = 'overview';      // 槓桿頁的小分頁
+/* 收合區塊(2026-10 手機畫面精簡:很少用的東西先收起來)。開關記在 openFolds,不用 <details>:
+   抓報價、跑回測途中會整頁重畫,<details> 一重畫就自己收回去。body 傳函式,收著的時候不用算。
+   force = 正在跑 / 有訊息要看,強制打開。 */
+const openFolds = new Set();
+function fold(key, title, body, { sub = '', force = false } = {}){
+  const open = force || openFolds.has(key);
+  return `<button class="fold-head" data-act="fold" data-v="${esc(key)}"><span class="ft">${title}</span>${sub ? `<span class="fs">${sub}</span>` : ''}<span class="fi">${open ? (force ? '' : '收起 ▾') : '展開 ▸'}</span></button>
+    ${open ? `<div class="fold-body">${typeof body === 'function' ? body() : body}</div>` : ''}`;
+}
 let repayDraft = { target:'', date: todayISO(), amount:'' };
 let repayError = '';
 let chartRange = 90;          // 每日走勢圖顯示最近幾個交易日,0 = 全部
@@ -1520,6 +1544,68 @@ async function twseRows(url){
   }
   return null;
 }
+/* 證交所公布的休市日(2026-10):交割日 T+2 要跳過國定假日,「收盤價停在…」要知道哪幾天本來就沒開盤
+   (以前只看週末,連假會誤報、交割日會算錯)。每台裝置各自存 localStorage,不進 state、不同步:誰都能重抓,也不是使用者的資料。
+   清單裡有三種日子:休市(不交易也不交割)、「市場無交易,僅辦理結算交割作業」(春節前那兩天:不交易、照常交割)、
+   「開始交易日 / 最後交易日」(照常開盤,只是公告)。還沒公布的年份(年底前下一年常常是空的)當作不知道,退回只看週末。
+   颱風假這類臨時休市不在清單裡。 */
+const TWSE_HOLIDAY = 'https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule?response=json&date=';
+const HOLIDAY_KEY = 'financeTwseHolidays_v1';
+let holidayCache = null;
+function holidayData(){
+  if (holidayCache) return holidayCache;
+  let raw = null;
+  try{ raw = JSON.parse(localStorage.getItem(HOLIDAY_KEY) || 'null'); }catch(e){}
+  return holidayCache = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+function parseHolidays(rows){
+  const closed = [], settleOnly = [];
+  (Array.isArray(rows) ? rows : []).forEach(r => {
+    if (!Array.isArray(r)) return;
+    const d = isoDate(r[0]), name = String(r[1] || '');
+    if (!d || /開始交易|最後交易/.test(name)) return;
+    (/無交易/.test(name) && /交割/.test(name) ? settleOnly : closed).push(d);
+  });
+  return { closed, settleOnly };
+}
+// 這一年的休市日(null = 還不知道:沒抓過、證交所還沒公布、Artifact 版不能連線)
+function holidayYear(y){
+  const e = holidayData()[String(y)];
+  return e && Array.isArray(e.closed) && e.closed.length ? e : null;
+}
+// 這天沒開盤(settle = true:問的是有沒有交割)。不知道那年的休市日時只看週末
+function marketClosed(iso, settle = false){
+  const g = new Date(iso + 'T00:00:00').getDay();
+  if (g === 0 || g === 6) return true;
+  const y = holidayYear(iso.slice(0, 4));
+  return !!y && (y.closed.includes(iso) || (!settle && Array.isArray(y.settleOnly) && y.settleOnly.includes(iso)));
+}
+let holidayBusy = null;
+// 同時只跑一個:抓報價跟其他地方同時叫的話,第二個等第一個的結果,不重複問
+function refreshHolidays(){
+  return holidayBusy || (holidayBusy = refreshHolidaysNow().finally(() => { holidayBusy = null; }));
+}
+async function refreshHolidaysNow(){
+  const data = holidayData(), now = Date.now(), y = new Date().getFullYear();
+  const years = new Date().getMonth() === 11 ? [y, y + 1] : [y];   // 12 月就先問明年的(跨年的交割日)
+  let changed = false;
+  for (const yr of years){
+    const e = data[yr];
+    // 有清單的 30 天重問一次(公告可能修正);還沒公布的 3 天問一次
+    if (e && now - (Number(e.at) || 0) < (holidayYear(yr) ? 30 : 3) * 86400000) continue;
+    try{
+      const j = await twseJson(TWSE_HOLIDAY + yr + '0101');
+      if (!j || String(j.stat).toLowerCase() !== 'ok') continue;
+      data[yr] = { ...parseHolidays(j.data), at: now };
+      changed = true;
+    }catch(err){
+      if (err instanceof TwseBlocked) break;
+    }
+  }
+  Object.keys(data).forEach(k => { if (!(Number(k) >= y - 1)) { delete data[k]; changed = true; } });   // 只留去年起
+  if (changed) try{ localStorage.setItem(HOLIDAY_KEY, JSON.stringify(data)); }catch(e){}
+  return changed;
+}
 /* 把 TWSE STOCK_DAY 一個月的資料列併入某標的的歷史收盤價:
    日期去重(同一天多次抓到,後寫入的蓋掉前面的)、依日期排序、裁切到 PRICE_HIST_KEEP。
    回補(backfillHistory)跟每次抓報價(fetchQuotes)都呼叫這個,不重複寫合併邏輯。 */
@@ -1691,6 +1777,7 @@ async function fetchQuotes(manual){
     quoteMsg = '抓不到報價(可能沒有網路),維持原本的數字';
   }
   quoteBusy = false;
+  await refreshHolidays();   // 休市日一個月問一次(交割日、收盤價是不是舊的),失敗就照舊只看週末
   // 自動補一天最多一次:剛上市幾個月的標的、或快線/慢線設得比 14 個月還長,補完歷史還是不夠,
   // 以前每小時更新報價就再補一次 14 個月(每次十幾個請求、一半是「查無資料」)。手動按回補不受限。
   let autoDay = '';
@@ -2480,8 +2567,19 @@ function monthLoanDues(){
   const out = [], m = thisMonth();
   const r = computeLeverage(), li = Math.round(levPeriodInterest(m));
   if (r.usedAmount > 0 || li > 0){            // 期中全部還清的話,繳款日照樣要付這期的利息
-    const mp = leverageMonthPrincipal();
-    out.push({ name: '理財型房貸(槓桿)', date: levDueDate(m), principal: mp.amount, interest: li, note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
+    const mp = leverageMonthPrincipal(), L = state.leverage, due = levDueDate(m), md = x => x.slice(5).replace('-', '/');
+    const passed = due <= todayISO();
+    // 理財型的本金跟利息各列一行算式(2026-10 使用者問「千分之 5 怎麼列」:以前只寫「本金 1,750 + 利息 648」,看不出怎麼來的)
+    const lines = [];
+    if (mp.amount > 0 || mp.base > 0) lines.push(!mp.manual && mp.base > 0
+      ? `最低還本 ${fmt(mp.amount)} = 餘額 ${fmt(mp.base)} × 千分之 ${L.repayPermille}`
+      : `最低還本 ${fmt(mp.amount)}(每筆餘額 × 千分之 ${L.repayPermille},本月自己還過的照實際)`);
+    if (mp.newDraws) lines.push(`本月才動用的 ${mp.newDraws} 筆下個月起才還本`);
+    lines.push(`利息 ${fmt(li)} = ${md(levPeriodFrom(m))}~${md(due)} 逐日計息(年利率 ${rateAt(L, due)}%)`);
+    lines.push(passed
+      ? (mp.estimate ? `${md(due)} 已扣款;還本還沒記${L.autoRepay ? '' : '(自動還本關著,要自己到「紀錄」記一筆還款)'}` : `${md(due)} 已扣款`)
+      : `${md(due)} 扣款${mp.estimate ? '(還本照目前餘額估,繳款日自動記)' : ''}`);
+    out.push({ name: '理財型房貸(槓桿)', date: due, principal: mp.amount, interest: li, lines });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
@@ -2560,7 +2658,8 @@ function renderYearCard(){
       ${row('支出', 'NT$ ' + fmt(s.expense))}
       ${row('結餘', money(s.balance), s.balance >= 0 ? 'pos' : 'neg')}
       ${s.income > 0 ? sub('儲蓄率(結餘 ÷ 收入)', (s.balance / s.income * 100).toFixed(0) + '%') : ''}
-      ${s.topCats.map(c => sub(esc(c.name), `NT$ ${fmt(c.amount)}${s.expense ? `(${(c.amount / s.expense * 100).toFixed(0)}%)` : ''}`)).join('')}` : ''}
+      ${s.topCats.length ? fold('year-cats', '支出最多的類別', () => s.topCats.map(c => sub(esc(c.name), `NT$ ${fmt(c.amount)}${s.expense ? `(${(c.amount / s.expense * 100).toFixed(0)}%)` : ''}`)).join(''),
+        { sub: '全年加總' }) : ''}` : ''}
       ${s.buyCash || s.buyLoan || s.sellNet || s.dividends || s.pnlChange != null ? `
       <div class="sect" style="margin-top:10px;">投資</div>
       ${s.pnlChange != null ? row('整體損益變化', signed(s.pnlChange), s.pnlChange >= 0 ? 'pos' : 'neg') : ''}
@@ -2633,8 +2732,9 @@ function renderOverview(){
       })()}
       <div class="big-sub">資產 ${fmt(totalAssets())} − 負債 ${fmt(totalLiab())}</div>
       ${chart}
-      <div class="muted" style="margin-top:6px;">每月淨資產會自動記錄:打開 app、改資產/負債時更新本月,過了月份就固定。下面的數字可以手動改。</div>
-      ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map((h, i, arr) => {
+      ${state.netWorthHistory.length ? `<div style="margin-top:6px;">${fold('nw-months', '每月紀錄', () => `
+      <div class="muted">每月淨資產會自動記錄:打開 app、改資產/負債時更新本月,過了月份就固定。下面的數字可以手動改。</div>
+      ${state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? 1 : -1).map((h, i, arr) => {
         const older = arr[i + 1];
         const d = older ? Math.round(h.v) - Math.round(older.v) : 0;
         const t = older ? nwDeltaText(h.v, older.m, older.v, h.m, false) : '';
@@ -2645,7 +2745,7 @@ function renderOverview(){
             ? `<div class="${d > 0 ? 'pos' : d < 0 ? 'neg' : ''}" style="font-size:11px;">${t}</div>` : ''}</div>
           <input class="f-amt" type="number" inputmode="decimal" data-k="nh-${h.id}" value="${h.v || ''}">
           ${xDel('del-hist', h.id)}
-        </div>`; }).join('')}</div>` : ''}
+        </div>`; }).join('')}`, { sub: `${state.netWorthHistory.length} 個月,填錯可以改`, force: !!pendingConfirm && pendingConfirm.startsWith('del-hist:') })}</div>` : ''}
     </div>
 
     ${(() => {
@@ -2657,7 +2757,8 @@ function renderOverview(){
       <h3>${monthLabel(thisMonth())}房貸要繳</h3>
       ${dues.map(d => `
       <div class="row"><span class="label">${esc(d.name)}</span><span class="val">NT$ ${fmt(d.principal + d.interest)}</span></div>
-      <div class="row sub"><span class="label">本金 ${fmt(d.principal)} + 利息 ${fmt(d.interest)}${d.note ? ' · ' + esc(d.note) : ''}</span><span class="val"></span></div>`).join('')}
+      ${d.lines ? d.lines.map(t => `<div class="row sub"><span class="label">${esc(t)}</span><span class="val"></span></div>`).join('')
+        : `<div class="row sub"><span class="label">本金 ${fmt(d.principal)} + 利息 ${fmt(d.interest)}${d.note ? ' · ' + esc(d.note) : ''}</span><span class="val"></span></div>`}`).join('')}
       ${dues.length > 1 ? `<div class="row total"><span class="label">合計</span><span class="val">NT$ ${fmt(total)}</span></div>` : ''}
       <div class="muted" style="font-size:12px;">利息會自動記進記帳(房貸利息);還本只減少負債,不算支出。</div>
     </div>`;
@@ -2707,8 +2808,9 @@ function renderOverview(){
 
     <div class="card">
       <h3>資料</h3>
+      ${storageMode === 'cloud' && cloudKind !== 'firebase' ? `<div class="muted" id="dataSyncStatus" style="margin-bottom:8px;">${esc(storageStatusText())}</div>` : ''}
       ${cloudKind === 'firebase' ? (authUser ? `
-        <div class="row"><span class="label">雲端同步</span><span class="val pos">${esc(authUser.email)}</span></div>
+        <div class="row"><span class="label">雲端同步</span><span class="val pos">${privacy ? '已登入' : esc(authUser.email)}</span></div>
         <button class="btn quiet" data-act="sign-out">登出 Google 帳號</button>
       ` : `
         <button class="btn solid" data-act="sign-in" ${authBusy ? 'disabled' : ''}>${authBusy ? '登入中…' : '☁️ 用 Google 帳號登入以同步'}</button>
@@ -2776,13 +2878,15 @@ function itemDeltaClass(id, amount, isLiab){
   if (d === 0) return 'muted';
   return (d > 0) !== !!isLiab ? 'pos' : 'neg';   // 負債變多是壞事,顏色反過來
 }
-function itemRowExtras(x, isLiab, color){
+/* 每一項底下一行:左邊 lead(資產的佔比)+ 比上月,右邊 more(負債的「本利攤還 ▸」)+ 每月紀錄。
+   2026-10 以前佔比、比上月、本利攤還各一行,一項就四行 */
+function itemRowExtras(x, isLiab, color, lead = '', more = ''){
   const open = itemHistOpen === x.id;
   const hist = open ? itemHistory(x.id) : [];
   return `
-    <div class="row"><button class="linkish" data-act="item-hist" data-id="${x.id}" style="padding:0;">
-        <span class="${itemDeltaClass(x.id, x.amount, isLiab)}" id="${isLiab ? 'l' : 'a'}-delta-${x.id}">${itemDeltaText(x.id, x.amount) || '還沒有上月紀錄'}</span></button>
-      <button class="linkish muted" data-act="item-hist" data-id="${x.id}" style="padding:0;">${open ? '收起 ▾' : '每月紀錄 ▸'}</button></div>
+    <div class="row" style="gap:10px;"><span style="display:flex; gap:10px; align-items:center; min-width:0;">${lead}<button class="linkish" data-act="item-hist" data-id="${x.id}" style="padding:0;">
+        <span class="${itemDeltaClass(x.id, x.amount, isLiab)}" id="${isLiab ? 'l' : 'a'}-delta-${x.id}">${itemDeltaText(x.id, x.amount)}</span></button></span>
+      <span style="display:flex; gap:12px; flex:0 0 auto;">${more}<button class="linkish muted" data-act="item-hist" data-id="${x.id}" style="padding:0;">${open ? '收起 ▾' : '每月紀錄 ▸'}</button></span></div>
     ${open ? (hist.length ? `
       ${lineChart('item-' + x.id, hist.map(h => h.m), [{ name: x.name || '這一項', color: color || 'var(--s1)', values: hist.map(h => h.amount) }], { height:110 })}
       <div style="margin-top:4px;">${hist.slice().reverse().map((h, i, arr) => {
@@ -2807,7 +2911,7 @@ function loanSummaryText(l){
   return `下一期 ${nx.date}(第 ${nx.k}/${nx.N} 期)繳 NT$ ${fmt(nx.payment)}:本金 ${fmt(nx.principal)} + 利息 ${fmt(nx.interest)} · 年利率 ${rateAt(l.loan, todayISO())}%`;
 }
 function renderLoanBox(l){
-  if (!l.loan) return `<div class="row"><button class="linkish muted" data-act="loan-on" data-id="${l.id}" style="padding:0;">是本利攤還的房貸?設定後餘額自動算 ▸</button><span></span></div>`;
+  if (!l.loan) return '';   // 「本利攤還 ▸」放在 itemRowExtras 那一行
   const lo = l.loan, open = loanOpen === l.id, offArmed = pendingConfirm === 'loan-off:' + l.id;
   return `
     <div class="row" style="align-items:flex-start;"><span class="muted" style="font-size:12px;" id="lo-sum-${l.id}">本利攤還 · ${esc(loanSummaryText(l))}</span>
@@ -2857,10 +2961,8 @@ function renderAssets(){
             <input class="f-amt" type="number" inputmode="decimal" data-k="aa-${a.id}" value="${a.amount || ''}" placeholder="金額">
             ${xDel('del-asset', a.id)}
           </div>
-          <div class="row"><span class="muted"><span class="legend-dot" style="background:${seriesColor(i)}"></span>佔比</span>
-            <span class="muted" id="a-pct-${a.id}">${pct.toFixed(1)}%</span></div>
-          <div class="bar-track"><div class="bar-fill" id="a-bar-${a.id}" style="width:${pct.toFixed(1)}%;background:${seriesColor(i)}"></div></div>
-          ${itemRowExtras(a, false, seriesColor(i))}
+          <div class="bar-track" style="margin-top:8px;"><div class="bar-fill" id="a-bar-${a.id}" style="width:${pct.toFixed(1)}%;background:${seriesColor(i)}"></div></div>
+          ${itemRowExtras(a, false, seriesColor(i), `<span class="muted" style="font-size:12px; white-space:nowrap;"><span class="legend-dot" style="background:${seriesColor(i)}"></span>佔 <span id="a-pct-${a.id}">${pct.toFixed(1)}%</span></span>`)}
         </div>`;
       }).join('') : `<div class="empty">還沒有資產項目。<br>例如:現金與活存、股票、不動產。</div>`}
       <button class="btn" data-act="add-asset">＋ 新增資產</button>
@@ -2876,7 +2978,7 @@ function renderAssets(){
           ${xDel('del-liab', l.id)}
         </div>
         ${renderLoanBox(l)}
-        ${itemRowExtras(l, true, 'var(--red)')}
+        ${itemRowExtras(l, true, 'var(--red)', '', l.loan ? '' : `<button class="linkish muted" data-act="loan-on" data-id="${l.id}" style="padding:0;">本利攤還 ▸</button>`)}
         </div>`).join('') : `<div class="empty">還沒有負債項目。<br>例如:房貸、信用貸款。</div>`}
       <button class="btn" data-act="add-liab">＋ 新增負債</button>
     </div>`;
@@ -2902,7 +3004,7 @@ function refreshAssets(){
   // 「比上月」跟著打字即時更新,不整頁重畫(整頁重畫會讓正在打的欄位失焦)
   [[state.assets, 'a', false], [state.liabilities, 'l', true]].forEach(([list, pre, isLiab]) => list.forEach(x => {
     const el = document.getElementById(pre + '-delta-' + x.id);
-    if (el){ el.textContent = itemDeltaText(x.id, x.amount) || '還沒有上月紀錄'; el.className = itemDeltaClass(x.id, x.amount, isLiab); }
+    if (el){ el.textContent = itemDeltaText(x.id, x.amount); el.className = itemDeltaClass(x.id, x.amount, isLiab); }
   }));
 }
 
@@ -2915,11 +3017,13 @@ const draftPrice = d => Math.abs(num(d.price)) || (String(d.price).trim() === ''
 /* 一筆買進同時用了自有資金跟房貸(source 'mix',只存在草稿裡):拆成兩筆紀錄,每筆只有一個資金來源。
    房貸那筆的股數 = 房貸金額 ÷ 每股含手續費成本,四捨五入成整股;手續費照股數比例分,加起來等於原本的手續費。
    回傳 null = 不用拆(房貸金額 ≤ 0 全部自有、≥ 總額全部房貸、或拆完有一邊是 0 股)。 */
-/* 台股 T+2 交割:成交日往後數兩個營業日(只跳過週末,國定假日不知道,遇到連假自己改) */
+/* 台股 T+2 交割:成交日往後數兩個交割日,跳過週末跟證交所公布的休市日(「僅辦理結算交割」的日子照算);
+   那年的休市日還不知道就只跳週末 */
 function settleDate(iso, days = 2){
   const d = new Date((isoDate(iso, '') || todayISO()) + 'T00:00:00');
-  for (let n = 0; n < days; ){ d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n++; }
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  const s = () => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  for (let n = 0; n < days; ){ d.setDate(d.getDate() + 1); if (!marketClosed(s(), true)) n++; }
+  return s();
 }
 function splitMixedBuy(shares, price, fee, loanAmt){
   const total = shares * price + fee;
@@ -3165,7 +3269,7 @@ function renderHelp(){
       <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
         <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用),點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
-        <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完</li>
+        <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完;最下面「回測與研究」(策略回測、加權指數模擬 2000/2008、指定期間)平常收著,點了才展開</li>
         <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
         <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
       </ul>
@@ -3286,7 +3390,7 @@ function renderHelp(){
       <div class="formula">借款餘額 = 各筆動用記錄的金額 − 已還款
 每天利息 = 當天借款餘額 × 年利率 ÷ 365</div>
       <p>看到買進訊號、實際動用房貸買進之後,到<strong>「紀錄」分頁的「房貸動用記錄」</strong>
-      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。在「記一筆買賣」用房貸買進時,預設會順便新增一筆動用:金額 = 用房貸的那部分(含手續費),動用日 = T+2 交割日(只跳週末,不認得國定假日);已經先記過動用的話,點「同時新增房貸動用」那顆按鈕關掉。銀行實際撥款日不一樣,到「紀錄」分頁改。
+      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。在「記一筆買賣」用房貸買進時,預設會順便新增一筆動用:金額 = 用房貸的那部分(含手續費),之前借了沒用完的(動用合計 − 用房貸買進的合計)會先扣掉、不夠的才新增,動用日 = T+2 交割日(跳過週末跟證交所公布的休市日;還沒抓到那年的休市日時只跳週末);已經先記過動用的話,點「同時新增房貸動用」那顆按鈕關掉。銀行實際撥款日不一樣,到「紀錄」分頁改。
       減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也會失真。
       還款一樣記在「紀錄」分頁:選哪一筆動用記錄、填日期與金額,下面會列出所有還款,
       可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
@@ -3302,7 +3406,7 @@ function renderHelp(){
       動用當月不還、下個月起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
       還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動額度上限。還本不算支出、不進記帳,
       但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月最低還本 + 這期利息;月中自己多還的不算在要繳裡。</p>
-      <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「是本利攤還的房貸?」,填原始貸款金額、
+      <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「本利攤還 ▸」,填原始貸款金額、
       撥款日、年限、目前年利率,這一項的金額就自動等於剩餘本金(之後每月同一天繳一期,沒有那天就是月底)。
       每期月付 = 餘額 × r ÷ (1 − (1 + r)<sup>−剩餘期數</sup>),r = 年利率 ÷ 12;升降息時改「目前年利率」(離開欄位才生效),
       今天以前照舊利率,之後用剩餘本金、剩餘期數、新利率重算月付。每期利息在扣款日自動記一筆「房貸利息」
@@ -4038,7 +4142,7 @@ function renderTrades(){
       ${d.source === 'mix' ? `<div class="field" style="margin-top:9px;"><label>其中房貸出的金額</label>
         <input type="number" inputmode="decimal" data-k="pd-loanAmt" value="${esc(d.loanAmt)}" placeholder="0"></div>` : ''}
       ${d.source !== 'cash' ? `<button class="btn quiet" style="margin-top:8px;" data-act="draft-autodraw">${d.autoDraw !== false
-        ? `✓ 同時新增房貸動用(動用日 = 交割日 ${esc(settleDate(d.date || todayISO()).slice(5).replace('-', '/'))})`
+        ? `✓ 同時新增房貸動用(動用日 = 交割日 ${esc(settleDate(d.date || todayISO()).slice(5).replace('-', '/'))}${unusedLoanCash() ? `;先扣之前沒用完的 ${fmt(unusedLoanCash())}` : ''})`
         : '不自動新增房貸動用(已經先記過了;點此開啟)'}</button>` : ''}` : ''}
       ${d.action === 'dividend' ? `
       <div class="grid2" style="margin-top:9px;">
@@ -4125,21 +4229,32 @@ function levTabs(){
 
 /* 房貸動用記錄:借了多少、什麼時候借的這本帳,借款餘額跟利息都是從這裡算出來的。
    純記帳,不判斷該不該借——該不該借看「訊號」分頁的趨勢訊號跟曝險目標。 */
+/* 房貸動用記錄:每筆平常收成一行(名稱、狀態、動用日、金額、尚欠),點了才展開成表單。房貸買進會自動新增動用,
+   筆數只會越來越多,以前每筆都攤開成完整表單、一筆就半個畫面(2026-10 手機截圖看到的)。
+   還沒填完的(剛新增、沒日期或沒金額)跟刪除待確認的直接打開;已還清的收在最下面。 */
+const drawBalanceText = t => !t.balance ? '已還清' : Math.round(t.balance) === Math.round(t.amount) ? 'NT$ ' + fmt(t.amount) : '尚欠 ' + fmt(t.balance) + ' / ' + fmt(t.amount);
 function renderDrawRecords(){
   const L = state.leverage;
-  const r = computeLeverage();
+  const r = computeLeverage(), today = todayISO();
+  const badge = t => `<span class="badge ${t.useDate && t.useDate <= today ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
+          !t.useDate ? '未動用' : t.useDate > today ? '預定' : t.balance ? '動用中' : '已還清'}</span>`;
+  // 尚欠那段帶 id,打字改還款時 refreshLeverage() 不用整頁重畫就能更新(展開或收起都看得到)
+  const line = t => [t.useDate ? esc(t.useDate.slice(2).replace(/-/g, '/')) : '',
+    t.useDate && t.useDate <= today && t.amount ? `<span id="out-balance-${t.id}">${drawBalanceText(t)}</span>` : t.amount ? 'NT$ ' + fmt(t.amount) : ''].filter(Boolean).join(' · ');
+  const item = t => {
+    const force = !t.useDate || !t.amount || pendingConfirm === 'del-draw:' + t.id;
+    return `<div style="border-bottom:1px solid var(--line); padding:4px 0;">${fold('draw-' + t.id, esc(t.label || '(未命名)') + ' ' + badge(t), row(t), { sub: line(t), force })}</div>`;
+  };
   const row = (t) => `
-    <div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
+    <div style="margin-bottom:8px;">
       <div class="row">
-        <input class="f-name" style="font-weight:700; color:var(--text); max-width:60%;" data-k="draw-label-${t.id}" value="${esc(t.label)}">
-        <span class="badge ${t.useDate && t.useDate <= todayISO() ? (t.balance ? 'amber' : 'gray') : 'gray'}">${
-          !t.useDate ? '未動用' : t.useDate > todayISO() ? '預定' : t.balance ? '動用中' : '已還清'}</span>
+        <div class="field" style="flex:1; margin:0;"><label>名稱</label><input data-k="draw-label-${t.id}" value="${esc(t.label)}"></div>
       </div>
       ${t.useDate > todayISO() ? `
         <div class="muted" style="margin:4px 0 6px;">未來日期,到 ${esc(t.useDate)} 才計入借款餘額、利息與曝險。</div>
       ` : t.useDate ? `
         <div class="row"><span class="label">${t.balance ? '尚欠' : '已還清'}</span>
-          <span class="val ${t.balance ? '' : 'pos'}" id="out-balance-${t.id}">${t.balance ? 'NT$ ' + fmt(t.balance) : '已還清'}</span></div>
+          <span class="val ${t.balance ? '' : 'pos'}">${t.balance ? 'NT$ ' + fmt(t.balance) : '已還清'}</span></div>
         <div class="row sub"><span class="label">已借 ${Math.floor(t.yearsUsed * 365.25)} 天 · 利息約 ${fmt(accrue(t, L))}</span><span class="val"></span></div>
       ` : ''}
       <div class="grid2">
@@ -4153,7 +4268,13 @@ function renderDrawRecords(){
     <div class="card">
       <h3>房貸動用記錄</h3>
       <details class="tip" style="margin-bottom:10px;"><summary>按「訊號」分頁實際買進之後怎麼記</summary><div class="body">按「訊號」分頁的趨勢/曝險目標實際買進之後,在這裡記一筆動用金額——借款餘額跟利息都是從這裡算的,不是自動推算。</div></details>
-      ${r.draws.length ? r.draws.map(row).join('') : `<div class="empty">還沒有動用記錄。</div>`}
+      ${(() => {
+        const paid = r.draws.filter(t => t.useDate && t.useDate <= today && !t.balance && t.amount && pendingConfirm !== 'del-draw:' + t.id);
+        const rest = r.draws.filter(t => !paid.includes(t));
+        return (rest.length ? rest.map(item).join('') : r.draws.length ? '' : `<div class="empty">還沒有動用記錄。</div>`)
+          + (paid.length ? `<div style="margin-top:6px;">${fold('draws-paid', `已還清 ${paid.length} 筆`, () => paid.map(item).join(''))}</div>` : '');
+      })()}
+      <div class="muted" style="font-size:12px; margin:8px 0;">點一筆展開修改。</div>
       <button class="btn solid" data-act="add-draw">+ 新增一筆動用記錄</button>
     </div>`;
 }
@@ -4200,12 +4321,24 @@ function renderRepayments(){
 
     <div class="card">
       <h3>還款紀錄</h3>
-      ${items.map(it => `
-        <div class="row"><span class="label">${esc(it.label)}</span>
-          <span class="val ${outstanding(it) || it.useDate > todayISO() ? '' : 'pos'}">${it.useDate > todayISO() ? '預定 ' + esc(it.useDate) + ' 動用' : outstanding(it) ? '尚欠 NT$ ' + fmt(outstanding(it)) : '已還清'}</span></div>
-        <div class="row"><span class="muted">動用 ${fmt(it.amount)} · 已還 ${fmt(repaidOf(it))}</span><span class="muted"></span></div>
-      `).join('')}
-      ${rows.length ? `<div style="margin-top:10px;">${rows.map(({ it, r }) => `
+      ${(() => {
+        // 每筆動用一行,點了才列出它的還款(2026-10:每月自動還本每筆動用各記一筆,一年就幾十列可以改的欄位)。
+        // 有問題的還款(沒日期、早於動用日、還超過)或刪除待確認的那筆直接打開
+        const bad = (it, r) => !r.date || r.date < it.useDate || overRepaid(it, r) > 0.5;
+        const html = items.map(it => {
+          const mine = rows.filter(x => x.it === it);
+          const st = it.useDate > todayISO() ? '預定 ' + esc(it.useDate.slice(5).replace('-', '/')) + ' 動用' : outstanding(it) ? '尚欠 ' + fmt(outstanding(it)) : '已還清';
+          return `<div style="border-bottom:1px solid var(--line); padding:2px 0;">${fold('rp-' + it.id, esc(it.label), () => mine.length ? repayRows(mine) : '<div class="muted">這筆還沒有還款。</div>',
+            { sub: `${st} · 已還 ${fmt(repaidOf(it))}(${mine.length} 筆)`,
+              force: mine.some(({ r }) => bad(it, r) || pendingConfirm === 'del-repay:' + it.id + ':' + r.id) })}</div>`;
+        }).join('');
+        return rows.length ? html + `<div class="muted" style="font-size:12px; margin-top:8px;">點一筆動用,列出它的每一筆還款(可以改或刪)。</div>`
+          : items.length ? html + `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '';
+      })()}
+    </div>`;
+}
+function repayRows(rows){
+  return `<div>${rows.map(({ it, r }) => `
         <div class="erow">
           <input type="date" class="f-name" data-k="rp-date-${it.id}-${r.id}" value="${esc(r.date)}">${String(r.id).startsWith(AUTO_REPAY_PREFIX) ? '<span class="badge gray" style="flex:0 0 auto;">自動</span>' : ''}
           <input class="f-amt" type="number" inputmode="decimal" data-k="rp-amt-${it.id}-${r.id}" value="${r.amount || ''}">
@@ -4215,9 +4348,7 @@ function renderRepayments(){
           !r.date ? `<span class="neg"> · 沒有日期,這筆不會計入</span>`
           : r.date < it.useDate ? `<span class="neg"> · 早於動用日 ${esc(it.useDate)},這筆不會計入</span>`
           : overRepaid(it, r) > 0.5 ? `<span class="neg"> · 超過當時尚欠 NT$ ${fmt(overRepaid(it, r))},多的部分不會計入</span>`
-          : r.date > todayISO() ? ' · 未來日期,到那天才會扣掉餘額' : ''}</div>`).join('')}</div>`
-        : (items.length ? `<div class="empty">還沒有還款紀錄。減碼把錢還給銀行之後記一筆,餘額與利息才會跟著減。</div>` : '')}
-    </div>`;
+          : r.date > todayISO() ? ' · 未來日期,到那天才會扣掉餘額' : ''}</div>`).join('')}</div>`;
 }
 
 
@@ -4252,6 +4383,16 @@ function trendBadge(status){
 /* 正2 曝險目標卡片:目前曝險 vs 目標曝險,以及該加碼/減碼多少(現金/房貸兩個邊界值,
    兩檔 00631L/00675L 均分)。只在有正2(槓桿2倍)標的時顯示。 */
 /* 動用紀錄合計跟標「房貸借款」的買進合計差超過 2%(最少 1 萬):設定頁的警告跟「今天要做什麼」共用 */
+/* 借了還沒用完的房貸:動用(含預定)合計 − 用房貸買進的合計,不超過還欠銀行的(還掉的就不是手上的錢了)。
+   房貸買進順便記動用時先用這筆,不夠的才新增(2026-10 使用者:動用整數 35 萬、買了 348,496,剩的下次先用)。
+   exceptId:剛存進去的那筆買進不算 */
+function unusedLoanCash(exceptId){
+  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0);
+  const drawn = sum(ds, d => d.amount);
+  const owed = sum(ds, d => Math.max(0, d.amount - sum((d.repayments || []).filter(r => r.date && r.date >= d.useDate), r => r.amount)));
+  const spent = sum(state.trades.filter(t => t.action === 'buy' && t.source === 'loan' && t.id !== exceptId), t => t.shares * t.price + t.fee);
+  return Math.max(0, Math.round(Math.min(drawn - spent, owed)));
+}
 function loanMismatch(){
   const p = computePosition(), r = computeLeverage();
   if (!p.hasData || !r.drawnAmount) return null;
@@ -4485,15 +4626,29 @@ function renderSplitAlerts(){
 }
 /* 訊號用的收盤價多久沒更新。照 🔔 執行的人,「沒有提醒」要代表「沒有訊號」,不能是「沒抓到新資料」
    (沒網路、證交所冷卻中、好幾天沒開 app)。以前只有設定分頁有「報價 N 天沒更新」,訊號分頁跟總覽看不到。
-   超過 4 天才警告:週末只隔 3 天;連假會誤報,文字裡有說。 */
-function signalStaleness(){
+   知道休市日時:最後一筆收盤價之後、今天以前,只要有一天有開盤卻沒抓到就警告(今天的收盤價下午才有,不算);
+   missed = 少了幾個交易日。不知道(那幾年的休市日沒抓到、Artifact 版)時照舊:超過 4 天才警告(週末只隔 3 天),連假會誤報。 */
+function signalStaleness(today = todayISO()){
   const dates = state.instruments
     .filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && (it.priceHistory || []).length)
     .map(it => it.priceHistory[it.priceHistory.length - 1].d);
   if (!dates.length) return null;
-  const oldest = dates.sort()[0], days = Math.floor(daysSince(oldest));
-  return days > 4 ? { date: oldest, days } : null;
+  const oldest = dates.sort()[0], days = daysBetweenISO(oldest, today);
+  let known = true;
+  for (let y = Number(oldest.slice(0, 4)); y <= Number(today.slice(0, 4)); y++) if (!holidayYear(y)) known = false;
+  if (!known || days > 400) return days > 4 ? { date: oldest, days } : null;
+  let missed = 0;
+  const d = new Date(oldest + 'T00:00:00');
+  for (;;){
+    d.setDate(d.getDate() + 1);
+    const s = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    if (s >= today) break;
+    if (!marketClosed(s)) missed++;
+  }
+  return missed ? { date: oldest, days, missed } : null;
 }
+// 「(3 天前)」或知道休市日時「(少了 2 個交易日)」
+const staleLabel = st => st.missed ? `少了 ${st.missed} 個交易日` : `${st.days} 天前`;
 function renderStaleSignalAlert(){
   const st = signalStaleness();
   if (!st) return '';
@@ -4501,8 +4656,8 @@ function renderStaleSignalAlert(){
     <div class="alert amber">
       <span class="ai">🕘</span>
       <div>
-        <div class="at">訊號用的收盤價停在 ${esc(st.date)}(${st.days} 天前)</div>
-        <div class="ad">沒有 🔔 可能只是還沒抓到新的收盤價,不代表沒有訊號。${QUOTES_ENABLED ? '按下面更新;' : ''}連假期間沒開盤的話是正常的。
+        <div class="at">訊號用的收盤價停在 ${esc(st.date)}(${staleLabel(st)})</div>
+        <div class="ad">沒有 🔔 可能只是還沒抓到新的收盤價,不代表沒有訊號。${QUOTES_ENABLED ? '按下面更新;' : ''}${st.missed ? '已經扣掉週末跟證交所公布的休市日;颱風假這類臨時休市不算。' : '連假期間沒開盤的話是正常的。'}
           ${quoteMsg && !quoteBusy ? `<br><span class="neg">${esc(quoteMsg)}</span>` : ''}</div>
         ${QUOTES_ENABLED ? `<button class="go" data-act="fetch-quotes" ${quoteBusy ? 'disabled' : ''}>${quoteBusy ? '更新中…' : '🔄 更新收盤價'}</button>` : ''}
       </div>
@@ -4527,7 +4682,7 @@ function renderTrendTab(){
           <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
             <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span><span class="badge amber">資料缺一段</span></div>
             <div class="empty">歷史價格中間缺了一段(${esc(gap.from)} ~ ${esc(gap.to)},約 ${gap.days} 天沒有資料),均線會算錯,
-              <strong>先不要照這檔的訊號買賣</strong>。${QUOTES_ENABLED ? '按「設定」分頁的「從證交所更新收盤價」會自動補齊;補不齊的話按下面「手動回補歷史價格」。' : ''}</div>
+              <strong>先不要照這檔的訊號買賣</strong>。${QUOTES_ENABLED ? '按「設定」分頁的「從證交所更新收盤價」會自動補齊;補不齊的話按下面「歷史價格補不齊?」裡的「手動回補歷史價格」。' : ''}</div>
           </div>`;
         }
         if (t.barsAvailable < t.barsNeeded){
@@ -4537,7 +4692,7 @@ function renderTrendTab(){
             <div class="empty">歷史價格不夠(有 ${t.barsAvailable} 天,至少要 ${t.barsNeeded} 天才能算慢線)。${!QUOTES_ENABLED ? '這個版本不能連線抓報價。'
               : !/^[0-9A-Za-z]{3,8}$/.test(it.id) ? '代號要是 3~8 碼英數字(例如 00631L)才抓得到證交所的資料,請到「設定」分頁確認代號。'
               : !it.auto ? '這檔設定成不自動抓報價,不會回補歷史價格。'
-              : '按「設定」分頁的「從證交所更新收盤價」就會自動一併回補,不用另外按下面的「回補歷史價格」。'}</div>
+              : '按「設定」分頁的「從證交所更新收盤價」就會自動一併回補,不用另外手動回補。'}</div>
           </div>`;
         }
         return `
@@ -4550,13 +4705,13 @@ function renderTrendTab(){
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
         </div>`;
       }).join('')}
-      ${QUOTES_ENABLED ? `
+      ${QUOTES_ENABLED ? fold('backfill', '歷史價格補不齊?', `
         <button class="btn quiet" data-act="backfill-history" ${backfillBusy ? 'disabled' : ''}>${backfillBusy ? '回補中…' : '🔄 手動回補歷史價格'}</button>
-        <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '「設定」分頁按「從證交所更新收盤價」時,歷史不夠會自動一併回補,不用特地按這裡——這個按鈕是自動回補失敗或想手動重試時才用。'}</div>
-      ` : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回補歷史價格。</div>`}
+        <div class="muted" style="margin-top:6px;">${backfillMsg ? esc(backfillMsg) : '「設定」分頁按「從證交所更新收盤價」時,歷史不夠會自動一併回補,不用特地按這裡——這個按鈕是自動回補失敗或想手動重試時才用。'}</div>`,
+        { force: backfillBusy || (!!backfillMsg && backfillMsg !== '回補完成') || trends.some(t => { const it = findInstrumentByKey(t.key); return t.barsAvailable < t.barsNeeded || (it && trendHistoryGap(it)); }) })
+      : `<div class="muted" style="margin-top:6px;">這個版本(Artifact 版)不能連線抓報價,無法回補歷史價格。</div>`}
       <button class="why" data-act="go" data-v="help">這個訊號怎麼算 →</button>
-    </div>
-    ${renderBacktestCard()}`;
+    </div>`;
 }
 
 /* 策略 vs 買進持有,全期/前段/後段各自的年化、MDD、年化÷MDD。策略那格的顏色是跟同一段的買進持有比。 */
@@ -4940,10 +5095,17 @@ function renderBacktestResult(r){
         </div>
       `;
 }
+/* 回測、加權指數模擬、指定期間都是偶爾研究用的,收在訊號分頁最下面一個「回測與研究」裡(2026-10:以前攤開佔了訊號分頁一大段,
+   每天要看的曝險目標、訊號、壓力測試反而被夾在中間)。正在抓歷史的時候強制打開,才看得到進度。 */
 function renderBacktestCard(){
   return `
     <div class="card">
-      <h3>策略回測</h3>
+      ${fold('research', '回測與研究', () => renderBacktestBody(), { sub: '回測、2000/2008 模擬', force: backtestHistBusy || indexSimBusy })}
+    </div>`;
+}
+function renderBacktestBody(){
+  return `
+      <h4 style="margin:4px 0 8px;">策略回測</h4>
       <details class="tip" style="margin-bottom:12px;"><summary>這是什麼</summary><div class="body">
         拿上面同一套均線訊號規則,回放 2015 年至今的完整歷史價格,比較「照訊號進出」跟「買進後抱到現在都不動」
         誰的總報酬與最大回撤(MDD)比較好。算法:一筆錢,接刀第一層買一半、第二層買另一半,轉回續抱就全押,出場全賣;
@@ -4961,8 +5123,7 @@ function renderBacktestCard(){
         ${btCopyText ? `<textarea readonly style="width:100%; height:160px; margin-top:6px; font-size:11px;">${esc(btCopyText)}</textarea>` : ''}` : ''}
       ${(backtestResults || []).map(renderBacktestResult).join('')}
       ${renderIndexSimSection()}
-      ${renderBacktestWindow()}
-    </div>`;
+      ${renderBacktestWindow()}`;
 }
 
 /* 「今天要做什麼」:把散在訊號、紀錄、設定三個分頁的待辦收成一張卡,放在槓桿頁最上面。
@@ -4988,7 +5149,7 @@ function todoItems(){
   const out = [], today = todayISO();
   const go = (icon, text, sub, tab, html = false) => out.push({ icon, text, sub, tab, html });
   const st = signalStaleness();
-  if (st) go('🕘', `收盤價停在 ${st.date}(${st.days} 天前)`, '先更新收盤價,訊號才是今天的', 'signal');
+  if (st) go('🕘', `收盤價停在 ${st.date}(${staleLabel(st)})`, '先更新收盤價,訊號才是今天的', 'signal');
   splitTradeIssues().forEach(({ it, n }) => go('✂️', `${it.id} 分割過,有 ${n} 筆買賣紀錄要處理`, '處理完持股跟加碼金額才算得對', 'signal'));
   trendChanges().forEach(t => { const it = findInstrumentByKey(t.key); if (it) go('🔔', trendAlertText(t, it).title, '看完按「知道了」', 'signal', true); });   // title 已經跳脫過
   const ex = exposureTodo();
@@ -5037,6 +5198,7 @@ function renderLeverage(){
         <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
         <div id="stress-body">${stressBody()}</div>
       </div>
+      ${renderBacktestCard()}
     ` : levTab === 'log' ? `
       ${renderTrades()}
       ${renderDrawRecords()}
@@ -5054,8 +5216,9 @@ function renderLeverage(){
         const hasCost = lot && lot.shares > 0;
         const avgCost = hasCost ? lot.cost / lot.shares : 0;
         const gain = hasCost ? h.value - lot.cost : 0;
-        return `
-        <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+        // 沒持股、沒買賣紀錄的(例如預設的 0050,只拿來看訊號)收成一行,2026-10 以前一樣佔一整塊
+        const idle = !h.shares && !lot && !h.dup && it.id && pendingConfirm !== 'del-instrument:' + it.key;
+        const body = `
           <div class="erow" style="margin-top:0;">
             <input class="f-code" data-k="in-id-${it.key}" value="${esc(it.id)}" placeholder="代號">
             <input class="f-title" data-k="in-name-${it.key}" value="${esc(it.name)}" placeholder="名稱 如 元大台灣50">
@@ -5091,7 +5254,10 @@ function renderLeverage(){
               </div>
               <button class="btn quiet" data-act="reset-trend-params" data-id="${it.key}">趨勢參數重設為預設值</button>
             </div>
-          </details>
+          </details>`;
+        return `
+        <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+          ${idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: '沒有持股' }) : body}
         </div>`;
       }).join(''); })()}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
@@ -5181,17 +5347,18 @@ function renderLeverage(){
             </div>
           </div>`;
       })()}
-      <div class="notice">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
+      <details class="tip" style="margin-top:10px;"><summary>自動記利息、自動還本怎麼運作</summary><div class="body">實際利率以銀行核定為準,這裡是用你填的假設值試算。${L.autoInterest
         ? '每月會在記帳自動產生一筆「房貸利息」支出;你把它刪掉就不會再補記那個月。'
         : ''}${L.autoRepay && L.repayPermille > 0
         ? `每月 ${L.payDay} 號會在每筆動用底下自動記一筆還款(當時餘額的千分之 ${L.repayPermille}),借款餘額跟著減少、可動用額度跟著恢復;還本不算支出,不會進記帳。那個月已經自己記過還款就不另外記,刪掉自動那筆也不會再補。`
-        : ''}</div>
+        : ''}</div></details>
     </div>
     `}
 
+    ${levTab === 'settings' ? `
     <div class="notice">
       用房屋擔保額度做槓桿投資,會把投資虧損直接連到房子與每月現金流。以上都是簡化試算,不構成投資或貸款建議,實際動用前請與銀行確認條件。
-    </div>
+    </div>` : ''}
   `;
 }
 
@@ -5202,7 +5369,7 @@ function refreshLeverage(){
   r.holdings.forEach(h => set('out-val-' + h.key, 'NT$ ' + fmt(h.value)));
   set('out-totalValue', 'NT$ ' + fmt(r.totalValue));
   r.draws.forEach(t => {
-    set('out-balance-' + t.id, t.balance ? 'NT$ ' + fmt(t.balance) : '已還清');
+    set('out-balance-' + t.id, drawBalanceText(t));
   });
   set('out-usedAmount', 'NT$ ' + fmt(r.usedAmount));
   const bar = document.getElementById('out-usedBar');
@@ -5293,33 +5460,43 @@ function maybeAutoRepay(){
 }
 /* 理財型 m 月繳款日要繳的利息:每筆動用從上次繳款日到這次繳款日逐日計息(銀行以日計息)。
    中途還款、中途動用、升降息都照日期分段;剛動用的從動用日算起。繳款日那天的還款算下一期 */
+// m 月這一期利息從哪天算起(上次繳款日)。改過繳款日的那個月:從舊繳款日接著算,不然新舊兩個日子中間那段會重複算或漏掉
+function levPeriodFrom(m){
+  const L = state.leverage, due = levDueDate(m);
+  return L.payDayFrom && L.payDayFrom.m === m && L.payDayFrom.d < due ? L.payDayFrom.d : levDueDate(shiftMonth(m, -1));
+}
 function levPeriodInterest(m){
   const L = state.leverage, due = levDueDate(m);
-  // 改過繳款日的那個月:從舊繳款日接著算,不然新舊兩個日子中間那段會重複算或漏掉
-  const from = L.payDayFrom && L.payDayFrom.m === m && L.payDayFrom.d < due ? L.payDayFrom.d : levDueDate(shiftMonth(m, -1));
+  const from = levPeriodFrom(m);
   return sum(L.draws, d => Math.max(0, accrue(d, L, due) - accrue(d, L, from)));
 }
 /* 本月理財型要繳多少本金(最低還本),每筆動用照 maybeAutoRepay 的規則:
    - 本月已經自動記了 → 那筆的金額
    - 本月自己還過(自動就不另外記)→ 最低還本跟自己還的取小的:月中自己把整筆還清,不能顯示成「本月要繳 100 萬」
    - 都還沒有 → 動用當月不還;否則預估繳款日那天的餘額 × ‰ */
+/* 本月最低還本。base = 拿來乘千分之幾的餘額合計(總覽列「餘額 × 千分之 5」用);manual = 有一筆是自己記的還款,
+   算式對不上就不列;newDraws = 本月才動用、下個月起才還的筆數 */
 function leverageMonthPrincipal(){
   const L = state.leverage, m = thisMonth(), due = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
-  let amount = 0, estimate = false;
+  let amount = 0, estimate = false, base = 0, manual = false, newDraws = 0;
   L.draws.forEach(d => {
     const rs = (d.repayments || []).filter(r => r.date && r.date.slice(0, 7) === m);
     const auto = rs.find(r => r.id === rid);
-    if (auto){ amount += auto.amount; return; }
-    if (!d.useDate || d.useDate >= m + '-01') return;
+    if (auto){ amount += auto.amount; base += balanceAt(d, due) + auto.amount; return; }   // 自動那筆是用扣之前的餘額算的
+    if (!d.useDate) return;
+    if (d.useDate >= m + '-01'){ if (d.useDate <= due && d.amount > 0) newDraws++; return; }
     if (rs.length){
       const min = Math.round(balanceAt(d, monthEndISO(shiftMonth(m, -1))) * L.repayPermille / 1000);
       amount += Math.min(min, sum(rs, r => r.amount));
+      manual = true;
       return;
     }
+    if (!(balanceAt(d, due) > 0)) return;
     amount += Math.round(balanceAt(d, due) * L.repayPermille / 1000);
+    base += balanceAt(d, due);
     estimate = true;
   });
-  return { amount, estimate };
+  return { amount, estimate, base, manual, newDraws };
 }
 
 /* ---------- 一般型房貸(本利攤還) ---------- */
@@ -5963,6 +6140,7 @@ function onClick(el){
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
+    case 'fold': { const k = el.dataset.v; if (openFolds.has(k)) openFolds.delete(k); else openFolds.add(k); break; }
     case 'del-rate':   // 刪掉一段過去的利率:那段期間改照下一段(或目前)的利率算
       if (needsConfirm('del-rate:' + id)) return;
       state.leverage.rateHistory = (state.leverage.rateHistory || []).filter(e => e.id !== id);
@@ -6093,11 +6271,17 @@ function onClick(el){
       const loanAmt = Math.round(last.shares * last.price + last.fee);
       if (last.source === 'loan' && d0.autoDraw !== false){
         // 房貸買進順便記動用,不用兩邊各打一次(以前只提醒,忘了記就是「兩邊對不起來」)。動用日預設交割日(T+2),
-        // 動用日到之前不算借款、不算利息;銀行實際撥款日不一樣的話到「紀錄」分頁改
-        const useDate = settleDate(last.date);
-        state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: loanAmt, useDate,
-          note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增)`, repayments: [] });
-        tradeNote = mixNote + `已同時新增一筆房貸動用 NT$ ${fmt(loanAmt)},動用日 ${useDate}(交割日);金額或日期不對到「紀錄」分頁的房貸動用記錄改。`;
+        // 動用日到之前不算借款、不算利息;銀行實際撥款日不一樣的話到「紀錄」分頁改。之前借了沒用完的先扣掉
+        const useDate = settleDate(last.date), unused = unusedLoanCash(last.id), need = loanAmt - unused;
+        if (need > 0){
+          state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: need, useDate,
+            note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, repayments: [] });
+          tradeNote = mixNote + (unused
+            ? `買進 NT$ ${fmt(loanAmt)} 先用掉之前借了沒用完的 NT$ ${fmt(unused)},另外新增一筆房貸動用 NT$ ${fmt(need)}`
+            : `已同時新增一筆房貸動用 NT$ ${fmt(need)}`) + `,動用日 ${useDate}(交割日);金額或日期不對到「紀錄」分頁的房貸動用記錄改。`;
+        }else{
+          tradeNote = mixNote + `買進 NT$ ${fmt(loanAmt)} 用之前借了沒用完的房貸就夠(還剩 NT$ ${fmt(unused - loanAmt)}),不用新增動用。`;
+        }
       }else{
         tradeNote = mixNote + (last.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(loanAmt)}),借款餘額跟曝險比例才會算對。` : '');
       }
@@ -6318,7 +6502,7 @@ function onClick(el){
 
 /* ===================== 啟動 ===================== */
 /* 手機的 PWA 切到背景不會被關掉,隔天切回來是同一個頁面繼續跑,init() 裡「每次打開」該做的事都不會再做:
-   不抓新收盤價(🔔 還是前一天的訊號,要 4 天後才跳「收盤價停在…」)、不記當月利息跟快照、
+   不抓新收盤價(🔔 還是前一天的訊號;「收盤價停在…」不知道休市日時要 4 天後才跳)、不記當月利息跟快照、
    標題日期跟記帳/買賣的預設日期停在前一天(沒注意就把今天的交易記成昨天)。回到前景時補做。 */
 let foregroundDay = todayISO();
 function applyPrivacy(){
