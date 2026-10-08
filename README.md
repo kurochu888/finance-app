@@ -35,7 +35,7 @@ iPhone:分享 →「加入主畫面」;Android:選單 →「安裝應用程式�
 tests/run.sh
 ```
 
-四組測試:功能與計算、邊界情況、雲端同步(假後端)、15 年長期使用模擬。
+二十幾組測試:功能與計算、邊界情況、隨機操作與壞資料、雲端同步與兩台裝置合併、房貸還款、訊號與回測、15 年長期使用模擬等。
 細節見 [tests/README.md](tests/README.md)。
 
 ## 開發
@@ -45,7 +45,7 @@ tests/run.sh
 ```sh
 python3 build.py        # 產生下面三個版本
 python3 make_icons.py   # 只有要改圖示時才需要
-git add -A && git commit -m "..." && git push   # 推上去,Pages 會自動更新
+git add app.template.html finance_app.html finance_app_artifact.html docs/ && git commit -m "..." && git push   # 推上去,Pages 會自動更新
 ```
 
 Pages 從 `main` 分支的 `/docs` 目錄發佈。
