@@ -408,8 +408,14 @@ const DEFAULT_LEVERAGE = {
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
-     跟均線趨勢訊號的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。 */
-  exposureTargets: { byLayer:[65, 130], hold:130 }
+     跟均線趨勢訊號的加碼層數(pyramidLevels)搭配用,見 computeExposurePlan()。
+     mode = 'own'(2026-10 使用者要的):接刀各層改用 ownByLayer[i] = 「接刀用自有資金」的累計 %(不動用房貸),
+     例如 [50, 100] = 第一層用一半、第二層用完;續抱照舊用 hold(曝險比例)。自有資金的金額記在 ownBase。 */
+  exposureTargets: { byLayer:[65, 130], hold:130, mode:'exposure', ownByLayer:[50, 100] },
+  /* 接刀用的自有資金(exposureTargets.mode = 'own' 時用):app 不知道帳戶裡的現金,所以出場時記下當下的部位淨值
+     (正2 等持股市值 − 借款 = 賣光、還完房貸之後手上的錢),exit = 這輪出場日(換一輪出場就重記),auto = 是不是 app 自動記的。
+     使用者可以改(例如加上存款),見 captureOwnBase()。 */
+  ownBase: { exit:'', amount:0, auto:false }
 };
 /* 記帳的預設類別。之後在記帳頁選「新增類別…」加的,會經由交易紀錄進入清單 */
 const DEFAULT_CATEGORIES = ['餐飲','房貸 / 房租','交通','娛樂','其他','房貸利息'];
@@ -632,10 +638,17 @@ function normalize(raw){
     const defByLayer = DEFAULT_LEVERAGE.exposureTargets.byLayer;
     const byLayer = (Array.isArray(ET.byLayer) ? ET.byLayer : []).slice(0, MAX_PYRAMID_LEVELS)
       .map((v, i) => posNum(v, defByLayer[i] ?? defByLayer[defByLayer.length - 1]));
+    const defOwn = DEFAULT_LEVERAGE.exposureTargets.ownByLayer;
+    const ownByLayer = (Array.isArray(ET.ownByLayer) ? ET.ownByLayer : []).slice(0, MAX_PYRAMID_LEVELS)
+      .map((v, i) => posNum(v, defOwn[i] ?? defOwn[defOwn.length - 1]));
     base.exposureTargets = {
       byLayer: byLayer.length ? byLayer : defByLayer.slice(),
-      hold: posNum(ET.hold, DEFAULT_LEVERAGE.exposureTargets.hold)
+      hold: posNum(ET.hold, DEFAULT_LEVERAGE.exposureTargets.hold),
+      mode: ET.mode === 'own' ? 'own' : 'exposure',
+      ownByLayer: ownByLayer.length ? ownByLayer : defOwn.slice()
     };
+    const OB = L.ownBase && typeof L.ownBase === 'object' ? L.ownBase : {};
+    base.ownBase = { exit: isoDate(OB.exit, ''), amount: Math.max(0, num(OB.amount)), auto: OB.auto === true };
   }
   // 同一份清單裡 id 重複(匯入的備份檔、手動改過的資料)的話,後面那筆換新 id:刪除是用 id 過濾,會把兩筆一起刪掉;
   // 編輯是找第一筆,改第二筆其實改到第一筆(壓測抓到)。資產跟負債一起查,每月細項靠 id 對應這兩張清單。
@@ -680,8 +693,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-08 · abecc73f96';
-const BUILD_HASH = 'abecc73f96';
+const BUILD_VERSION = '2026-10-08 · e7210db7d2';
+const BUILD_HASH = 'e7210db7d2';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1126,6 +1139,17 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
     next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
+    restored = true;
+  }
+  // 接刀只用自有資金(2026-10 加):舊版分頁的 normalize 只留 byLayer/hold,寫回來會把模式跟自有資金比例、金額丟掉
+  const rawET = rawL && rawL.exposureTargets && typeof rawL.exposureTargets === 'object' ? rawL.exposureTargets : null;
+  if (rawL && (!rawET || !('mode' in rawET)) && prev.leverage && prev.leverage.exposureTargets && prev.leverage.exposureTargets.mode === 'own'){
+    next.leverage.exposureTargets.mode = 'own';
+    next.leverage.exposureTargets.ownByLayer = prev.leverage.exposureTargets.ownByLayer.slice();
+    restored = true;
+  }
+  if (rawL && !('ownBase' in rawL) && prev.leverage && prev.leverage.ownBase && (prev.leverage.ownBase.amount || prev.leverage.ownBase.exit)){
+    next.leverage.ownBase = JSON.parse(JSON.stringify(prev.leverage.ownBase));
     restored = true;
   }
   // 動用湊整(2026-10 加):舊版分頁寫回來沒有 drawRound 這個 key
@@ -2534,7 +2558,8 @@ function seedTrendBaselines(){
 }
 
 function renderAll(){
-  if (seedTrendBaselines()) scheduleSave();   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
+  if (seedTrendBaselines()) scheduleSave();
+  if (captureOwnBase()) scheduleSave();          // 接刀只用自有資金:出場時記下接刀用的錢   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
@@ -3395,6 +3420,11 @@ function renderHelp(){
       跌下來會變低,都不提示加碼或減碼,只顯示目前的曝險比例,等出場訊號(EXIT)再動作。
       <strong>接刀的每一層也一樣</strong>:剛接到第 1、第 2 層時給一次金額,調整完按「已調整完成」,之後這一層漲跌都不再提示,
       等下一層、轉回續抱或出場。出場(目標 0%)的減碼金額則是賣完之前一直顯示。</p>
+      <p><strong>接刀只用自有資金(可選):</strong>「設定」分頁的「接刀各層怎麼算」選「只用自有資金」時,接刀各層不看曝險比例,
+      改成「出場後買進正2 的錢」對照「接刀用的自有資金 × 這一層的 %」(例如 50、100:第一層用一半、第二層用完),只用自己的錢、不動用房貸;
+      轉回續抱時才照「兩檔都 HOLD」的曝險比例動用房貸。app 不知道帳戶裡的現金,所以出場那一刻記下當時的部位淨值
+      (持股市值 − 借款,就是賣光、還完房貸後手上的錢)當作接刀用的自有資金;已經賣光或接刀途中才打開時記不到,卡片會請你自己填,
+      要加上存款也可以直接改。曝險比例的分母含房貸額度,用固定 % 設「不借錢」,自有資金變多之後就不準了,這個模式就是為了這個。</p>
       <p><strong>什麼時候會跳 🔔 提醒:</strong>跌破出場線(續抱 → 接刀中)、接刀中加碼到下一層、轉回續抱,這三種都會跳,
       總覽頁跟訊號分頁都看得到;照著做完按「知道了」。價格歷史中間缺了一段(例如一個多月沒打開 app)時,均線會算錯,
       這時不給訊號也不跳提醒,更新收盤價會自動補齊。</p>
@@ -3595,14 +3625,14 @@ function computeTrend(it){
   const base = { key: it.key, id: it.id, params: p, barsAvailable: hist.length, barsNeeded };
   if (hist.length < barsNeeded){
     return { ...base, status:'WATCH', pyramidCount:0, basePrice:0,
-             maFast:null, maSlow:null, lastClose:null, lastDate:'', cushionPct:null };
+             maFast:null, maSlow:null, lastClose:null, lastDate:'', cushionPct:null, exitDate:'' };
   }
   const closes = hist.map(h => h.c);
   const dates = hist.map(h => h.d);
   const maF = sma(closes, p.maFast);
   const maS = sma(closes, p.maSlow);
   const start = window_ - 1;
-  let status = 'WATCH', basePrice = 0, pyramidCount = 0;
+  let status = 'WATCH', basePrice = 0, pyramidCount = 0, exitDate = '';   // exitDate:最近一次出場那天(接刀只用自有資金時,算出場後買了多少)
   for (let i = start + 1; i < closes.length; i++){
     const close = closes[i], f = maF[i], s = maS[i], fy = maF[i - 1];
     if (f == null || s == null || fy == null) continue;
@@ -3622,7 +3652,7 @@ function computeTrend(it){
     }
     if (action === 'RECOVER'){ basePrice = close; pyramidCount = 0; status = 'HOLD'; }
     else if (action === 'ADD'){ basePrice = close; pyramidCount += 1; status = 'WAIT_RECOVER'; }
-    else if (action === 'EXIT'){ basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER'; }
+    else if (action === 'EXIT'){ basePrice = close; pyramidCount = 0; status = 'WAIT_RECOVER'; exitDate = dates[i]; }
   }
   const last = closes.length - 1;
   const fLast = maF[last], sLast = maS[last], lastClose = closes[last];
@@ -3634,7 +3664,7 @@ function computeTrend(it){
     cushionPct = lastClose > 0 && exitLine > 0 ? (1 - exitLine / lastClose) * 100 : null;
   }
   return { ...base, status, pyramidCount, basePrice,
-           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine };
+           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine, exitDate };
 }
 const computeAllTrends = () => state.instruments.map(computeTrend);
 
@@ -3828,6 +3858,40 @@ function layerTarget(targets, n){
   const list = targets.byLayer || [];
   return list[n - 1] ?? list[list.length - 1] ?? targets.hold;
 }
+/* 接刀只用自有資金(mode 'own'):第 n 層累計要用掉「接刀用自有資金」的幾 %,沒設的層沿用最後一層 */
+function ownLayerPct(targets, n){
+  const list = targets.ownByLayer || [];
+  return list[n - 1] ?? list[list.length - 1] ?? 100;
+}
+/* 這一輪接刀從哪天開始:接刀中/已出場的那幾檔裡最早的出場日(兩檔通常同一天;一檔先出場那天整組就算出場了)。
+   都沒有(還沒進場過、或都在續抱)回傳 '' */
+function ownCycleExit(trends){
+  const d = trends.filter(t => t.status === 'WAIT_RECOVER' && t.exitDate).map(t => t.exitDate).sort();
+  return d[0] || '';
+}
+/* 出場後買進正2 花的錢(股數 × 成交價 + 手續費),接刀只用自有資金時用來扣掉已經買的 */
+function ownBoughtSince(exitDate, lev2){
+  if (!exitDate) return 0;
+  const ids = new Set(lev2.map(it => it.id));
+  return sum(state.trades.filter(t => t.action === 'buy' && t.date >= exitDate && ids.has(t.symbol)), t => t.shares * t.price + t.fee);
+}
+/* 出場時記下接刀用的自有資金:app 不知道帳戶裡的現金,出場當下的部位淨值(持股市值 − 借款)就是賣光、還完房貸之後手上的錢。
+   只在「這一輪還沒記過、出場後還沒買過正2、手上還有持股」時自動記;已經賣光或接刀途中才打開,
+   部位淨值不是出場時的錢,記 0 讓卡片請使用者自己填。換一輪出場就重記。回傳有沒有改。 */
+function captureOwnBase(){
+  const L = state.leverage;
+  if (L.exposureTargets.mode !== 'own') return false;
+  const lev2 = state.instruments.filter(it => it.leverage === 2);
+  if (!lev2.length) return false;
+  const trends = lev2.map(computeTrend);
+  if (trends.some(t => t.barsAvailable < t.barsNeeded) || lev2.some(it => trendHistoryGap(it))) return false;
+  const exit = ownCycleExit(trends);
+  if (!exit || L.ownBase.exit === exit) return false;
+  const r = computeRisk();
+  const fresh = ownBoughtSince(exit, lev2) < 1 && r.pv > 0 && r.equity > 0;
+  L.ownBase = { exit, amount: fresh ? Math.round(r.equity) : 0, auto: true };
+  return true;
+}
 /* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
 const expoLayerCount = () => Math.min(MAX_PYRAMID_LEVELS, Math.max(state.leverage.exposureTargets.byLayer.length,
   ...state.instruments.filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels)));
@@ -3855,8 +3919,17 @@ function computeExposurePlan(){
   // 跟續抱的規則、跟回測(每層買一次就不動)都不一致。「沒確認」= 任一檔的狀態或層數跟上次看過的不一樣。
   const layerAdjustPending = progress >= 1 && progress <= N && lev2.some((it, i) => it.trend.lastSeenStatus !== trends[i].status
     || (trends[i].status === 'WAIT_RECOVER' && it.trend.lastSeenLayers !== trends[i].pyramidCount));
+  // 接刀只用自有資金(mode 'own'):出場到接完各層,不看曝險比例,改成「出場後買進正2 的錢」對照「接刀用自有資金 × 這一層的 %」
+  let own = null;
+  if (targets.mode === 'own' && progress <= N){
+    const exitDate = ownCycleExit(trends);
+    const base = state.leverage.ownBase.exit === exitDate ? state.leverage.ownBase.amount : 0;
+    const pct = progress >= 1 ? ownLayerPct(targets, progress) : 0;
+    const bought = ownBoughtSince(exitDate, lev2);
+    own = { exitDate, base, auto: state.leverage.ownBase.auto, pct, target: base * pct / 100, bought, need: Math.max(0, base * pct / 100 - bought) };
+  }
   return {
-    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio, holdAdjustPending, layerAdjustPending,
+    progress, layerCount: N, targetRatio, currentRatio: risk.exposureRatio, holdAdjustPending, layerAdjustPending, own,
     deltaCash: denomCash > 0.0001 ? raw / denomCash : null,   // null = 這個目標純用現金到不了
     deltaLoan: raw / L,
     instruments: lev2.map(it => it.key)
@@ -4488,6 +4561,31 @@ function renderExposurePlanCard(){
     if (!(tot > 0)) return split(amt);
     return '(' + hv.filter(h => h.value > 0).map(h => `${esc(h.id)} 約 NT$ ${fmt(Math.min(h.value, amt * h.value / tot))}`).join('、') + ',照目前市值比例)';
   };
+  // 接刀只用自有資金:接刀各層用自己的卡片(出場那一刻照舊叫你賣光,下面多一列記下的自有資金)
+  const ownBaseRow = () => `
+      <div class="row sub"><span class="label">接刀用的自有資金${p.own.auto && p.own.base ? '(出場時自動記下,可改)' : ''}</span>
+        <span class="val"><input class="f-amt" type="number" inputmode="decimal" data-k="ownbase-amt" value="${p.own.base || ''}" placeholder="填金額" style="max-width:9em;"></span></div>`;
+  if (p.own && p.progress >= 1){
+    const pending = p.layerAdjustPending;
+    return `
+    <div class="card">
+      <h3>正2 曝險目標</h3>
+      <div class="row"><span class="label">目前階段</span><span class="val">${pending ? `剛接到第 ${p.progress} / ${p.layerCount} 層` : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`}</span></div>
+      ${ownBaseRow()}
+      ${!p.own.base ? `<div class="muted neg" style="margin-top:6px;">app 不知道你帳戶裡的現金。填上出場賣掉、還完房貸之後打算拿來接刀的錢,才算得出這一層要買多少。</div>` : `
+      <div class="row sub"><span class="label">這一層累計用到自有資金的</span><span class="val">${p.own.pct}%(NT$ ${fmt(p.own.target)})</span></div>
+      <div class="row sub"><span class="label">出場後已經買進正2</span><span class="val">NT$ ${fmt(p.own.bought)}</span></div>
+      ${pending ? (p.own.need > 0.5 ? `
+      <div class="row"><span class="label" style="font-weight:700;">這一層要買(只用自己的錢,不動用房貸)</span>
+        <span class="val" style="font-weight:800;">NT$ ${fmt(p.own.need)}</span></div>
+      ${n > 1 ? `<div class="row sub"><span class="label"></span><span class="val">${split(p.own.need)}</span></div>` : ''}`
+        : `<div class="muted" style="margin-top:6px;">已經買到這一層的金額了,不用再買。</div>`)
+      : `<div class="muted" style="margin-top:6px;">這一層已經調整過,等下一層、轉回續抱或出場。接刀期間漲跌都不加碼也不減碼。</div>`}`}
+      ${pending ? `
+        <div class="muted" style="margin-top:6px;">接刀只用自己的錢:第 ${p.progress} 層累計用到 ${p.own.pct}%。買完按下面這顆,這一層漲跌都不再提示,等下一層、轉回續抱或出場;轉回續抱時才動用房貸,照「兩檔都 HOLD」的 ${state.leverage.exposureTargets.hold}% 調整。</div>
+        <button class="btn" data-act="ack-hold" style="margin-top:8px;">✓ 已調整完成</button>` : ''}
+    </div>`;
+  }
   const stageLabel = p.progress === 0 ? '尚未進場或已出場'
     : p.progress > p.layerCount ? '兩檔都 HOLD'
     : `加碼中(第 ${p.progress} / ${p.layerCount} 層)`;
@@ -4516,6 +4614,7 @@ function renderExposurePlanCard(){
       <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : p.layerAdjustPending ? `剛接到第 ${p.progress} / ${p.layerCount} 層` : esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
+      ${p.own && p.progress === 0 && p.own.exitDate ? ownBaseRow() + `<div class="muted" style="margin-top:4px; font-size:12px;">接刀只用自有資金:出場賣掉、還完房貸後,接刀第 1 層用這筆的 ${ownLayerPct(state.leverage.exposureTargets, 1)}%。要加上存款之類的錢就直接改。</div>` : ''}
       ${overTarget && lev2Value() < 1 ? `
         <div class="muted" style="margin-top:6px;">正2 已經沒有持股,不用再減碼;目前的曝險來自其他標的(例如 0050),照它們自己的訊號處理。</div>
       ` : overTarget ? (
@@ -5157,6 +5256,11 @@ function exposureTodo(){
   if (splitTradeIssues().some(x => p.instruments.includes(x.it.key))) return null;   // 分割提醒另外列
   if (p.progress > p.layerCount && !p.holdAdjustPending) return null;               // 續抱中,不再平衡
   if (p.progress >= 1 && p.progress <= p.layerCount && !p.layerAdjustPending) return null;   // 這一層調整過了
+  if (p.own && p.progress >= 1){                     // 接刀只用自有資金:跟卡片同一套判斷
+    if (!p.own.base) return { text: `接刀第 ${p.progress} 層:先填接刀用的自有資金`, sub: 'app 不知道帳戶裡的現金,填了才算得出要買多少', tab: 'signal' };
+    if (p.own.need > 0.5) return { text: `接刀第 ${p.progress} 層:用自有資金買正2`, sub: '不動用房貸,要買多少看「正2 曝險目標」卡', tab: 'signal' };
+    return { text: '這一層已經買到目標', sub: '到「正2 曝險目標」卡按「已調整完成」', tab: 'signal' };
+  }
   const lev2Value = sum(computeLeverage().holdings.filter(h => p.instruments.includes(h.key)), h => h.value);
   const now = `目前 ${p.currentRatio.toFixed(0)}% → 目標 ${p.targetRatio}%`;
   if (p.deltaLoan < -0.5) return lev2Value < 1 ? null
@@ -5302,11 +5406,21 @@ function renderLeverage(){
     <div class="card">
       <h3>曝險目標設定</h3>
       <details class="tip" style="margin-bottom:10px;"><summary>這個設定是做什麼用的</summary><div class="body">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「訊號」分頁會照這個算出該投入/該減碼多少錢。</div></details>
-      ${Array.from({ length: expoLayerCount() }, (_, i) => layerTarget(L.exposureTargets, i + 1)).map((v, i) => `
+      <div class="field"><label>接刀各層怎麼算</label>
+        <div>${[['exposure', '曝險比例(%)'], ['own', '只用自有資金(不動用房貸)']].map(([v, t]) =>
+          `<button class="seg-btn ${L.exposureTargets.mode === v ? 'on' : ''}" data-act="expo-mode" data-v="${v}">${t}</button>`).join('')}</div></div>
+      ${L.exposureTargets.mode === 'own' ? `
+        ${Array.from({ length: expoLayerCount() }, (_, i) => ownLayerPct(L.exposureTargets, i + 1)).map((v, i) => `
+          <div class="field"><label>加碼第 ${i+1} 層:累計用掉接刀自有資金的(%)</label>
+            <input type="number" inputmode="decimal" data-k="expo-own-${i}" value="${v}"></div>
+        `).join('')}
+        <div class="muted" style="margin-bottom:10px; font-size:12px;">例如 50、100:第一層用一半、第二層用完,接刀期間不動用房貸。接刀用的自有資金是出場時 app 自動記下的部位淨值
+          (持股市值 − 借款,也就是賣光、還完房貸後手上的錢),可以在「訊號」分頁的曝險卡改。轉回續抱才照下面的 % 動用房貸。</div>
+      ` : Array.from({ length: expoLayerCount() }, (_, i) => layerTarget(L.exposureTargets, i + 1)).map((v, i) => `
         <div class="field"><label>加碼第 ${i+1} 層的目標曝險(%)</label>
           <input type="number" inputmode="decimal" data-k="expo-layer-${i}" value="${v}"></div>
       `).join('')}
-      <div class="field"><label>兩檔都 HOLD 的目標曝險(%)</label>
+      <div class="field"><label>兩檔都 HOLD(轉回續抱)的目標曝險(%)</label>
         <input type="number" inputmode="decimal" data-k="expo-hold" value="${L.exposureTargets.hold}"></div>
     </div>
 
@@ -5801,12 +5915,25 @@ function onField(key, el){
       else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
     }
   }
+  else if (kind === 'ownbase'){                  // 曝險卡的「接刀用的自有資金」:使用者自己改的,記在這一輪出場上
+    if (String(el.value).trim() === '') return;
+    const lev2 = state.instruments.filter(it => it.leverage === 2);
+    state.leverage.ownBase = { exit: ownCycleExit(lev2.map(computeTrend)) || state.leverage.ownBase.exit, amount: Math.max(0, num(el.value)), auto: false };
+  }
   else if (kind === 'expo'){                     // 正2 曝險目標設定
     // 0/空白保留原值:normalize() 會把 0 當「沒填」換回預設,這裡如果收 0,當下照 0 算、重新整理又變回 130%
     const raw = num(el.value);
     if (!(raw > 0)) return;
     const v = raw;
     if (rest === 'hold') state.leverage.exposureTargets.hold = v;
+    else if (rest.indexOf('own-') === 0){        // 接刀只用自有資金:第 i 層累計用掉幾 %
+      const i = Number(rest.slice(4));
+      if (Number.isInteger(i) && i >= 0 && i < MAX_PYRAMID_LEVELS){
+        const list = state.leverage.exposureTargets.ownByLayer;
+        for (let k = list.length; k < i; k++) list[k] = ownLayerPct(state.leverage.exposureTargets, k + 1);
+        list[i] = v;
+      }
+    }
     else if (rest.indexOf('layer-') === 0){
       const i = Number(rest.slice(6));
       if (Number.isInteger(i) && i >= 0 && i < MAX_PYRAMID_LEVELS){
@@ -6396,6 +6523,9 @@ function onClick(el){
       if (it) it.trend = Object.assign(defaultTrendParams(it.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenLayers: it.trend.lastSeenLayers, lastSeenDate: it.trend.lastSeenDate });
       break;
     }
+    case 'expo-mode':  // 接刀各層:曝險比例 / 只用自有資金
+      state.leverage.exposureTargets.mode = el.dataset.v === 'own' ? 'own' : 'exposure';
+      break;
     case 'ack-hold':   // 曝險卡片的「已調整完成」:兩檔正2 一起確認,跟按提醒的「知道了」效果一樣
       state.instruments.filter(it => it.leverage === 2).forEach(ackTrend);
       break;
