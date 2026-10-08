@@ -356,7 +356,8 @@ function shiftMonth(m, delta){
 function daysBetweenISO(a, b){
   const d1 = new Date(a + 'T00:00:00'), d2 = new Date(b + 'T00:00:00');
   if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 0;
-  return Math.max(0, (d2 - d1) / 86400000);
+  // 四捨五入成整天:手機時區有日光節約(出國)時,跨過切換日的那段會差一小時,算出 29.958 天,利息跟著有零頭
+  return Math.max(0, Math.round((d2 - d1) / 86400000));
 }
 function daysSince(dateStr){
   if (!dateStr) return 0;
@@ -652,8 +653,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-07 · ad549f54fe';
-const BUILD_HASH = 'ad549f54fe';
+const BUILD_VERSION = '2026-10-08 · b8dc8f6c66';
+const BUILD_HASH = 'b8dc8f6c66';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -5429,7 +5430,7 @@ function onField(key, el){
   // 資產/負債細項一改就更新本月快照——不然月底最後一天改的數字,要等下個月打開才會存,那時已經算到下個月了
   if (['an', 'aa', 'ln', 'la', 'lo', 'lr'].includes(kind)) maybeSnapshot();
   scheduleSave();
-  if (kind === 'tr' && rest.startsWith('date-')){
+  if (kind === 'draw' && rest.startsWith('date-')){   // 以前欄位叫 tr-,改名成 draw- 時這裡沒跟著改,一直沒執行到
     maybePostInterest();
     renderAll();                                // 動用日期會長出/收起動用紀錄欄位
     return;
@@ -5751,7 +5752,9 @@ function onClick(el){
     case 'del-draw': {
       const d = findById(state.leverage.draws, id);
       if (!d) break;
-      if ((d.repayments || []).length && needsConfirm('del-draw:' + id)) return;
+      // 填了金額或日期就要再按一次確認(以前只看有沒有還款,一筆 100 萬、還沒還過的動用按一下就沒了,借款餘額跟利息跟著消失);
+      // 剛新增還沒填的空白列直接刪
+      if ((d.amount || d.useDate || (d.repayments || []).length) && needsConfirm('del-draw:' + id)) return;
       state.leverage.draws = state.leverage.draws.filter(x => x.id !== id);
       break;
     }

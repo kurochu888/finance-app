@@ -453,6 +453,36 @@ console.log('\n預定動用(動用日在未來)不能算成已還');
   must(A.renderLeverage().includes('累計動用 1,500,000 · 已還 100,000'), '到了動用日要算進累計動用');
 }
 
+console.log('\n填動用日期當下就補記利息(欄位改名 tr- → draw- 時漏改,以前要等下次打開 app)');
+{
+  setNow('2026-10-05');
+  A.state = A.normalize(A.emptyState());
+  A.state.leverage.creditLimit = 5000000;
+  A.state.leverage.annualRate = 2.4;
+  A.state.leverage.autoInterest = true;
+  A.state.leverage.draws = [{ id:'d1', label:'', amount:1000000, useDate:'', note:'', repayments:[] }];
+  A.state = A.normalize(A.state);
+  A.maybePostInterest();
+  must(!A.state.transactions.some(t => /^levi-/.test(t.id)), '還沒填動用日期不該記利息');
+  A.onField('draw-date-d1', { value: '2026-08-01' });
+  must(A.state.transactions.some(t => /^levi-/.test(t.id)), '填了過去的動用日期,當下就要記本月繳款日的利息');
+}
+
+console.log('\n刪除填了金額的動用記錄要按兩次');
+{
+  A.state = A.normalize(A.emptyState());
+  A.state.leverage.draws = [
+    { id:'d1', label:'', amount:1000000, useDate:'2026-09-01', note:'', repayments:[] },
+    { id:'d2', label:'', amount:0, useDate:'', note:'', repayments:[] },
+  ];
+  A.onClick({ dataset:{ act:'del-draw', id:'d1' } });
+  must(A.state.leverage.draws.some(d => d.id === 'd1'), '有金額、日期的動用按一次 ✕ 不能直接刪掉');
+  A.onClick({ dataset:{ act:'del-draw', id:'d1' } });
+  must(!A.state.leverage.draws.some(d => d.id === 'd1'), '連按兩次要刪掉');
+  A.onClick({ dataset:{ act:'del-draw', id:'d2' } });
+  must(!A.state.leverage.draws.some(d => d.id === 'd2'), '還沒填的空白列按一次就刪');
+}
+
 if (bugs.length){
   console.log('\n發現 ' + bugs.length + ' 個問題:');
   bugs.forEach(b => console.log('  ✗ ' + b));
