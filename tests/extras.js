@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -174,6 +174,23 @@ console.log('年度總結(手算對照)');
   const y25 = A.yearSummary(2025);
   must(y25.income === 100000 && y25.interest === 0 && y25.nwStart === 800000 && y25.nwEnd === 1000000 && y25.nwStartLabel === '2025年6月', '2025:沒有前年 12 月就從最早那個月:' + JSON.stringify([y25.nwStart, y25.nwEnd, y25.nwStartLabel]));
   must(near(y25.pnlChange, 10000), '2025 整體損益變化 10,000:' + y25.pnlChange);
+  // 使用者回報的情況:今年才開始投資,幾個月後才開始用 app(第一個快照就已經賺了),年初整體損益要當 0
+  {
+    const keep = A.state;
+    const st = JSON.parse(JSON.stringify(keep));
+    st.netWorthHistory = [{ id:'s9', m:'2026-08', v: 900000, pv:0, pnl: 50000, loan:0, items:[], auto:true }];
+    A.state = A.normalize(st);
+    const yy = A.yearSummary(2026), total = A.computePosition().total;
+    must(near(yy.pnlChange, total) && !yy.pnlStartLabel, '今年才開始投資:整體損益變化 = 目前整體損益 ' + Math.round(total) + ',得到 ' + yy.pnlChange);
+    // 去年就有投資、去年 12 月又沒有快照:只能跟今年最早那個月比,要標出月份
+    st.trades.push({ id:'t0', date:'2025-03-01', symbol:'00631L', action:'buy', shares:100, price:50, fee:0, source:'cash' });
+    A.state = A.normalize(st);
+    const y2 = A.yearSummary(2026);
+    must(near(y2.pnlChange, A.computePosition().total - 50000) && y2.pnlStartLabel === '2026年8月', '跟 8 月比要標出來:' + [y2.pnlChange, y2.pnlStartLabel]);
+    A.summaryYear = 2026;
+    must(A.renderYearCard().includes('(比2026年8月)'), '卡片上要寫比哪個月');
+    A.state = keep;
+  }
   A.summaryYear = 2026;
   const html = A.renderYearCard();
   must(html.includes('2026 年總結') && html.includes('240,000') && html.includes('儲蓄率'), '卡片要畫出來');

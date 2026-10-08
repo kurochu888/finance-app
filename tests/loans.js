@@ -26,7 +26,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
-  applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
+  applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, nextLevInterest, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
@@ -289,6 +289,10 @@ console.log('理財型利息:上次繳款日到這次繳款日逐日計息(年�
   // 下一期還沒到:預估照目前餘額、目前利率 31 天
   setNow('2026-12-01');
   must(A.monthLoanDues()[0].interest === Math.round(800000 * 0.03 * 30 / 365), '下一期預估 11/15~12/15 30 天:' + A.monthLoanDues()[0].interest);
+  // 設定頁「下一期利息」跟總覽同一套(以前是餘額 × 年利率 ÷ 12,兩邊對不起來)
+  must(A.nextLevInterest().amount === Math.round(800000 * 0.03 * 30 / 365) && A.nextLevInterest().label.includes('12/15'), '12/01 看:下一期是 12/15:' + JSON.stringify(A.nextLevInterest()));
+  setNow('2026-12-15');
+  must(A.nextLevInterest().label.includes('01/15'), '繳款日當天已經記了,下一期是 1/15:' + A.nextLevInterest().label);
 }
 
 console.log('還房貸本金算成自有投入');

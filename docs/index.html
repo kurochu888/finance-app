@@ -714,8 +714,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · 40cf75ed10';
-const BUILD_HASH = '40cf75ed10';
+const BUILD_VERSION = '2026-10-08 · 7b1a3f3d06';
+const BUILD_HASH = '7b1a3f3d06';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2665,10 +2665,17 @@ function yearSummary(Y){
   const p = isNow ? computePosition() : null;
   const nwEnd = isNow ? netWorth() : endSnap ? endSnap.v : null;
   const pnlEnd = isNow ? (p.hasData ? p.total : null) : endSnap ? endSnap.pnl : null;
+  // 整體損益的起點:去年 12 月有快照就用它;第一筆買賣就在今年(年初還沒投資)= 0;
+  // 都不是才退回今年最早那個月的快照,並標出是跟哪個月比。2026-10 使用者回報:今年才開始投資、幾個月後才開始用 app,
+  // 以前拿第一個月快照(已經賺了 158 萬)當年初,「整體損益變化」只剩 42 萬,也沒說是從哪個月比
+  const firstTrade = state.trades.map(t => t.date).filter(Boolean).sort()[0] || '';
+  const decSnap = startSnap && startSnap.m === (Y - 1) + '-12' && startSnap.pnl != null;
+  const pnlStart = decSnap ? startSnap.pnl : firstTrade && firstTrade >= from ? 0 : startSnap && startSnap.pnl != null ? startSnap.pnl : null;
+  const pnlStartLabel = decSnap || (firstTrade && firstTrade >= from) ? '' : startSnap ? monthLabel(startSnap.m) : '';
   return {
     Y, isNow, income, expense, balance: income - expense, topCats, buyCash, buyLoan, sellNet, dividends, interest, principal,
     nwStart: startSnap ? startSnap.v : null, nwStartLabel: startSnap ? (startSnap.m === (Y - 1) + '-12' ? '年初' : monthLabel(startSnap.m)) : '',
-    nwEnd, pnlChange: startSnap && startSnap.pnl != null && pnlEnd != null ? pnlEnd - startSnap.pnl : null,
+    nwEnd, pnlChange: pnlStart != null && pnlEnd != null ? pnlEnd - pnlStart : null, pnlStartLabel,
     hasData: tx.length || tr.length || interest >= 0.5 || principal > 0 || !!endSnap
   };
 }
@@ -2705,18 +2712,20 @@ function renderYearCard(){
         { sub: '全年加總' }) : ''}` : ''}
       ${s.buyCash || s.buyLoan || s.sellNet || s.dividends || s.pnlChange != null ? `
       <div class="sect" style="margin-top:10px;">投資</div>
-      ${s.pnlChange != null ? row('整體損益變化', signed(s.pnlChange), s.pnlChange >= 0 ? 'pos' : 'neg') : ''}
+      ${s.pnlChange != null ? row('整體損益變化' + (s.pnlStartLabel ? `<span class="muted" style="font-weight:400;">(比${esc(s.pnlStartLabel)})</span>` : ''), signed(s.pnlChange), s.pnlChange >= 0 ? 'pos' : 'neg') : ''}
       ${s.buyCash ? sub('自有資金買進', 'NT$ ' + fmt(s.buyCash)) : ''}
       ${s.buyLoan ? sub('房貸買進', 'NT$ ' + fmt(s.buyLoan)) : ''}
       ${s.sellNet ? sub('賣出回收', 'NT$ ' + fmt(s.sellNet)) : ''}
       ${s.dividends ? sub('配息', 'NT$ ' + fmt(s.dividends)) : ''}` : ''}
       ${s.interest >= 0.5 || s.principal > 0 ? `
       <div class="sect" style="margin-top:10px;">房貸</div>
-      ${s.interest >= 0.5 ? sub('付的利息', 'NT$ ' + fmt(s.interest)) : ''}
+      ${s.interest >= 0.5 ? sub(s.isNow ? '利息(算到今天)' : '利息', 'NT$ ' + fmt(s.interest)) : ''}
       ${s.principal > 0 ? sub('還的本金', 'NT$ ' + fmt(s.principal)) : ''}` : ''}
       <details class="tip" style="margin-bottom:0;"><summary>這些數字怎麼來的</summary><div class="body">
-        收支是記帳裡這一年的紀錄;淨資產跟整體損益用每月快照,從去年 12 月(沒有就用今年最早那個月)比到今年最後一個月,
-        今年用目前的數字;投資是買賣紀錄;房貸利息照天數算(理財型)加上一般型每期的利息,今年的算到今天。
+        收支是記帳裡這一年的紀錄;淨資產跟整體損益用每月快照,從去年 12 月比到今年最後一個月,今年用目前的數字。
+        整體損益:第一筆買賣就在這一年的話,年初當 0(還沒投資);去年 12 月沒有快照又不是今年才開始,就跟今年最早那個月比,會標出月份。
+        投資是買賣紀錄。利息是這一年「發生」的利息:理財型照天數算(今年算到今天,還沒到繳款日、銀行還沒扣的也算在內,
+        跟整體損益扣的利息同一套),加上一般型這一年繳的每期利息。
       </div></details>`}
     </div>`;
 }
@@ -2821,7 +2830,7 @@ function renderOverview(){
         <div class="row"><span class="label">目前市值</span><span class="val">NT$ ${fmt(p.marketValue)}</span></div>
         ${(() => { const x = exitScenario(p); return x.anyLine ? `<div class="row"><span class="label">跌到出場線才賣的未實現</span><span class="val ${x.unrealized >= 0 ? 'pos' : 'neg'}">${(x.unrealized >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(x.unrealized))}</span></div>` : ''; })()}
         <div class="row"><span class="label">淨投入自有資金</span><span class="val">${money(p.netCash)}</span></div>
-        <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
+        <div class="row"><span class="label">用房貸買進</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
         ${p.repaid ? `<div class="row"><span class="label">已還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
         <div class="row"><span class="label">累計報酬(對累計自有投入)</span><span class="val">${p.ownIn > 0 ? fmtPct(p.returnOnCash) : '—'}</span></div>
         <button class="btn" data-act="go" data-v="leverage">看明細與買賣紀錄</button>
@@ -4142,7 +4151,7 @@ function renderPnL(){
       <h3>投入的錢</h3>
       <div class="mid-num">${money(p.netCash)}</div>
       <div class="big-sub">淨投入 —— 還放在裡面的自有資金</div>
-      <div class="row"><span class="label">房貸動用</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
+      <div class="row"><span class="label">用房貸買進</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
       ${p.repaid ? `<div class="row"><span class="label">已還房貸本金</span><span class="val">NT$ ${fmt(p.repaid)}</span></div>` : ''}
       ${p.interest >= 0.5 ? `<div class="row"><span class="label">累計房貸利息</span><span class="val">NT$ ${fmt(p.interest)}</span></div>` : ''}
       <div class="bar-track"><div class="bar-fill" style="width:${p.ownShare.toFixed(1)}%"></div></div>
@@ -5362,7 +5371,7 @@ function renderLeverage(){
       <div class="muted" style="margin-top:6px;">銀行調利率時直接改「目前年利率」就好:已經借出去的錢,今天以前的利息照舊利率算,今天起照新利率。
         生效日不是今天的話,改上面那段的日期。</div>
       <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
-      <div class="row"><span class="label">預估每月利息</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(r.monthlyInterest)}</span></div>
+      <div class="row"><span class="label" id="out-nextInterestLabel">${nextLevInterest().label}</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(nextLevInterest().amount)}</span></div>
       ${(() => { const mp = leverageMonthPrincipal(); return `
       <div class="row"><span class="label">本月最低還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
@@ -5422,7 +5431,8 @@ function refreshLeverage(){
   const bar = document.getElementById('out-usedBar');
   if (bar) bar.style.width = (L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0).toFixed(1) + '%';
   set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount)));
-  set('out-monthlyInterest', 'NT$ ' + fmt(r.monthlyInterest));
+  set('out-monthlyInterest', 'NT$ ' + fmt(nextLevInterest().amount));
+  set('out-nextInterestLabel', nextLevInterest().label);
   { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))); }
   const stress = document.getElementById('stress-body');
   if (stress) stress.innerHTML = stressBody();
@@ -5511,6 +5521,12 @@ function maybeAutoRepay(){
 function levPeriodFrom(m){
   const L = state.leverage, due = levDueDate(m);
   return L.payDayFrom && L.payDayFrom.m === m && L.payDayFrom.d < due ? L.payDayFrom.d : levDueDate(shiftMonth(m, -1));
+}
+/* 設定頁「下一期利息」:還沒到的最近一個繳款日要扣的利息,照目前餘額逐日算(跟總覽「房貸要繳」同一套)。
+   2026-10 以前是「餘額 × 年利率 ÷ 12」,跟總覽的逐日計息對不起來(758 vs 919) */
+function nextLevInterest(){
+  const m0 = thisMonth(), m = levDueDate(m0) > todayISO() ? m0 : shiftMonth(m0, 1), due = levDueDate(m);
+  return { amount: Math.round(levPeriodInterest(m)), label: `下一期利息(${due.slice(5).replace('-', '/')} 扣,照目前餘額估)` };
 }
 function levPeriodInterest(m){
   const L = state.leverage, due = levDueDate(m);
