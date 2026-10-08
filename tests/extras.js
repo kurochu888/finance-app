@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -76,6 +76,38 @@ console.log('之前借了沒用完的先扣掉');
   // 全部還清了:手上不會有借來的錢(只還一部分的話分不出來是不是用剩下的錢還的,照帳面算)
   ds.forEach((d, i) => d.repayments.push({ id:'rr' + i, date:'2026-10-10', amount:d.amount }));
   must(A.unusedLoanCash() === 0, '都還清了就不能再拿來扣:' + A.unusedLoanCash());
+  A.state = keep;
+}
+
+console.log('動用金額湊整到萬元(自己先轉整數到交割戶)');
+{
+  const keep = A.state;
+  A.state = A.normalize(A.emptyState());
+  must(A.state.leverage.drawRound === 0, '預設不湊整');
+  A.onClick({ dataset:{ act:'draw-round', v:'10000' } });
+  must(A.state.leverage.drawRound === 10000, '選萬元');
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'2500', price:'40', amount:'', fee:'142', note:'', loanAmt:'', autoDraw:true };
+  must(A.renderTrades().includes('湊整到萬元'), '草稿按鈕要說會湊整');
+  A.onClick({ dataset:{ act:'add-trade' } });
+  const ds = A.state.leverage.draws;
+  must(ds.length === 1 && ds[0].amount === 110000, '買 100,142 → 動用 110,000:' + JSON.stringify(ds));
+  must(/多的 NT\$ 9,858 下次房貸買進先扣/.test(A.tradeNote), '提示要說多借了多少:' + A.tradeNote);
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'100', price:'40', amount:'', fee:'20', note:'', loanAmt:'', autoDraw:true };
+  A.onClick({ dataset:{ act:'add-trade' } });
+  must(ds.length === 1 && /不用新增動用/.test(A.tradeNote), '多借的夠買 4,020,不新增:' + A.tradeNote);
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'1000', price:'40', amount:'', fee:'57', note:'', loanAmt:'', autoDraw:true };
+  A.onClick({ dataset:{ act:'add-trade' } });
+  must(ds.length === 2 && ds[1].amount === 40000, '剩 5,838,買 40,057 差 34,219 → 湊整 40,000:' + JSON.stringify(ds[1]));
+  must(!A.loanMismatch(), '湊整的差額在容許範圍內');
+  A.onClick({ dataset:{ act:'draw-round', v:'1000' } });
+  must(A.state.leverage.drawRound === 1000, '選千元');
+  must(A.normalize({ ...A.state, leverage: { ...A.state.leverage, drawRound: 777 } }).leverage.drawRound === 0, '亂填的值當不湊整');
+  must(A.normalize(JSON.parse(JSON.stringify(A.state))).leverage.drawRound === 1000, '存檔往返要保留');
+  // 舊版分頁寫回來沒有 drawRound:要保留本機的
+  const raw = JSON.parse(JSON.stringify(A.state)); delete raw.leverage.drawRound;
+  const next = A.normalize(raw);
+  A.keepFieldsOldVersionsDrop(A.state, raw, next);
+  must(next.leverage.drawRound === 1000, '舊版分頁寫回來要保留湊整設定:' + next.leverage.drawRound);
   A.state = keep;
 }
 

@@ -436,6 +436,9 @@ const DEFAULT_LEVERAGE = {
   // 利息也在同一天記。
   // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
   autoRepay:true, repayPermille:5, repayPosted:[], payDay:1, payDayFrom:null,
+  // 房貸買進自動新增動用時金額往上湊整到幾元(0 = 不湊、1000、10000)。自己先轉整數到交割戶的人用(2026-10 使用者要的),
+  // 多借的那一點下次房貸買進先扣(unusedLoanCash)
+  drawRound:0,
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
@@ -647,6 +650,7 @@ function normalize(raw){
   base.interestPosted = arr(L.interestPosted).map(str).filter(m => isoDate(m + '-01', ''));
   base.autoRepay = L.autoRepay !== false;
   base.repayPermille = L.repayPermille === undefined ? DEFAULT_LEVERAGE.repayPermille : Math.min(1000, Math.max(0, num(L.repayPermille)));
+  base.drawRound = [1000, 10000].includes(Number(L.drawRound)) ? Number(L.drawRound) : 0;
   base.payDay = L.payDay === undefined ? DEFAULT_LEVERAGE.payDay : Math.min(31, Math.max(1, Math.round(num(L.payDay)) || 1));
   // 改繳款日那個月的利息從哪天算起(見 applyPayDay);{m:'YYYY-MM', d:'YYYY-MM-DD'} 或 null
   base.payDayFrom = L.payDayFrom && typeof L.payDayFrom === 'object' && isoDate(str(L.payDayFrom.m) + '-01', '') && isoDate(L.payDayFrom.d, '')
@@ -710,8 +714,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · 07ae9c450e';
-const BUILD_HASH = '07ae9c450e';
+const BUILD_VERSION = '2026-10-08 · 40cf75ed10';
+const BUILD_HASH = '40cf75ed10';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1156,6 +1160,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
     next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
+    restored = true;
+  }
+  // 動用湊整(2026-10 加):舊版分頁寫回來沒有 drawRound 這個 key
+  if (rawL && !('drawRound' in rawL) && prev.leverage && prev.leverage.drawRound){
+    next.leverage.drawRound = prev.leverage.drawRound;
     restored = true;
   }
   // 改繳款日那個月的起算日更晚加:認得 payDay、不認得 payDayFrom 的版本寫回來會丟掉,那個月利息又會重複算或漏
@@ -3424,7 +3433,8 @@ function renderHelp(){
       <div class="formula">借款餘額 = 各筆動用記錄的金額 − 已還款
 每天利息 = 當天借款餘額 × 年利率 ÷ 365</div>
       <p>看到買進訊號、實際動用房貸買進之後,到<strong>「紀錄」分頁的「房貸動用記錄」</strong>
-      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。在「記一筆買賣」用房貸買進時,預設會順便新增一筆動用:金額 = 用房貸的那部分(含手續費),之前借了沒用完的(動用合計 − 用房貸買進的合計)會先扣掉、不夠的才新增,動用日 = T+2 交割日(跳過週末跟證交所公布的休市日;還沒抓到那年的休市日時只跳週末);已經先記過動用的話,點「同時新增房貸動用」那顆按鈕關掉。銀行實際撥款日不一樣,到「紀錄」分頁改。
+      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。在「記一筆買賣」用房貸買進時,預設會順便新增一筆動用:金額 = 用房貸的那部分(含手續費),之前借了沒用完的(動用合計 − 用房貸買進的合計)會先扣掉、不夠的才新增,
+      「設定」分頁可以選金額湊整到千元或萬元(自己先轉整數到交割戶的話),多借的下次先扣,動用日 = T+2 交割日(跳過週末跟證交所公布的休市日;還沒抓到那年的休市日時只跳週末);已經先記過動用的話,點「同時新增房貸動用」那顆按鈕關掉。銀行實際撥款日不一樣,到「紀錄」分頁改。
       減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也會失真。
       還款一樣記在「紀錄」分頁:選哪一筆動用記錄、填日期與金額,下面會列出所有還款,
       可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
@@ -4176,7 +4186,7 @@ function renderTrades(){
       ${d.source === 'mix' ? `<div class="field" style="margin-top:9px;"><label>其中房貸出的金額</label>
         <input type="number" inputmode="decimal" data-k="pd-loanAmt" value="${esc(d.loanAmt)}" placeholder="0"></div>` : ''}
       ${d.source !== 'cash' ? `<button class="btn quiet" style="margin-top:8px;" data-act="draft-autodraw">${d.autoDraw !== false
-        ? `✓ 同時新增房貸動用(動用日 = 交割日 ${esc(settleDate(d.date || todayISO()).slice(5).replace('-', '/'))}${unusedLoanCash() ? `;先扣之前沒用完的 ${fmt(unusedLoanCash())}` : ''})`
+        ? `✓ 同時新增房貸動用(動用日 = 交割日 ${esc(settleDate(d.date || todayISO()).slice(5).replace('-', '/'))}${unusedLoanCash() ? `;先扣之前沒用完的 ${fmt(unusedLoanCash())}` : ''}${state.leverage.drawRound ? `;湊整到${state.leverage.drawRound === 10000 ? '萬' : '千'}元` : ''})`
         : '不自動新增房貸動用(已經先記過了;點此開啟)'}</button>` : ''}` : ''}
       ${d.action === 'dividend' ? `
       <div class="grid2" style="margin-top:9px;">
@@ -5360,6 +5370,9 @@ function renderLeverage(){
         <input type="number" inputmode="decimal" step="0.1" data-k="lev-repayPermille" value="${L.repayPermille}"></div>
       <div class="field"><label>每月繳款日(幾號,還本跟利息都記在這天)</label>
         <input type="number" inputmode="numeric" min="1" max="31" step="1" data-k="lev-payDay" value="${L.payDay}"></div>
+      <div class="field"><label>房貸買進自動新增動用時,金額湊整到(自己先轉整數到交割戶的話選)</label>
+        <div class="seg">${[[0, '不湊整'], [1000, '千元'], [10000, '萬元']].map(([v, t]) =>
+          `<button class="seg-btn ${L.drawRound === v ? 'on' : ''}" data-act="draw-round" data-v="${v}">${t}</button>`).join('')}</div></div>
       <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 利息每月自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
       <button class="btn quiet" data-act="toggle-autorepay">${L.autoRepay ? `✓ 每月 ${L.payDay} 號自動記還本` : '不自動記還本(點此開啟)'}</button>
       ${(() => {
@@ -6174,6 +6187,7 @@ function onClick(el){
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
+    case 'draw-round': { const v = Number(el.dataset.v); state.leverage.drawRound = [1000, 10000].includes(v) ? v : 0; scheduleSave(); break; }
     case 'fold': { const k = el.dataset.v; if (openFolds.has(k)) openFolds.delete(k); else openFolds.add(k); break; }
     case 'del-rate':   // 刪掉一段過去的利率:那段期間改照下一段(或目前)的利率算
       if (needsConfirm('del-rate:' + id)) return;
@@ -6278,7 +6292,7 @@ function onClick(el){
         const price = draftPrice(d0);
         if (!shares || !price){ tradeError = '請填股數與成交價'; renderAll(); return; }
         const gross = shares * price;
-        const fee = d0.fee === '' ? defaultFee(d0.action, gross) : Math.abs(num(d0.fee));
+        const fee = d0.fee === '' ? num(defaultFee(d0.action, gross)) : Math.abs(num(d0.fee));   // 估出來的也要過 num():金額極大時會超過 1 兆,存檔再讀回來不一樣(fuzz 抓到)
         if (d0.action === 'buy' && d0.source === 'mix'){
           const loanAmt = Math.abs(num(d0.loanAmt));
           if (!loanAmt){ tradeError = '請填其中房貸出的金額(全部自有資金就選「自有資金」)'; renderAll(); return; }
@@ -6306,13 +6320,15 @@ function onClick(el){
       if (last.source === 'loan' && d0.autoDraw !== false){
         // 房貸買進順便記動用,不用兩邊各打一次(以前只提醒,忘了記就是「兩邊對不起來」)。動用日預設交割日(T+2),
         // 動用日到之前不算借款、不算利息;銀行實際撥款日不一樣的話到「紀錄」分頁改。之前借了沒用完的先扣掉
-        const useDate = settleDate(last.date), unused = unusedLoanCash(last.id), need = loanAmt - unused;
+        const useDate = settleDate(last.date), unused = unusedLoanCash(last.id), short = loanAmt - unused;
+        const unit = state.leverage.drawRound, need = unit && short > 0 ? Math.ceil(short / unit) * unit : short;
         if (need > 0){
           state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: need, useDate,
             note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, repayments: [] });
           tradeNote = mixNote + (unused
             ? `買進 NT$ ${fmt(loanAmt)} 先用掉之前借了沒用完的 NT$ ${fmt(unused)},另外新增一筆房貸動用 NT$ ${fmt(need)}`
-            : `已同時新增一筆房貸動用 NT$ ${fmt(need)}`) + `,動用日 ${useDate}(交割日);金額或日期不對到「紀錄」分頁的房貸動用記錄改。`;
+            : `已同時新增一筆房貸動用 NT$ ${fmt(need)}`) + (need > short ? `(湊整到${unit === 10000 ? '萬' : '千'}元,多的 NT$ ${fmt(need - short)} 下次房貸買進先扣)` : '')
+            + `,動用日 ${useDate}(交割日);金額或日期不對到「紀錄」分頁的房貸動用記錄改。`;
         }else{
           tradeNote = mixNote + `買進 NT$ ${fmt(loanAmt)} 用之前借了沒用完的房貸就夠(還剩 NT$ ${fmt(unused - loanAmt)}),不用新增動用。`;
         }
