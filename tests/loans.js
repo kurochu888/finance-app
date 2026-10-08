@@ -26,7 +26,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
-  applyLoanRate, applyPayDay, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
+  applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; } };`);
 
 const bugs = [];
@@ -481,6 +481,35 @@ console.log('\n刪除填了金額的動用記錄要按兩次');
   must(!A.state.leverage.draws.some(d => d.id === 'd1'), '連按兩次要刪掉');
   A.onClick({ dataset:{ act:'del-draw', id:'d2' } });
   must(!A.state.leverage.draws.some(d => d.id === 'd2'), '還沒填的空白列按一次就刪');
+}
+
+console.log('\n讀進來的資料:負的槓桿倍數、同一筆動用裡還款 id 重複');
+{
+  const raw = A.normalize(A.emptyState());
+  raw.instruments = [{ key:'k1', id:'X', leverage:-2 }, { key:'k2', id:'Y', leverage:0 }, { key:'k3', id:'Z', leverage:2 }];
+  raw.leverage.draws = [
+    { id:'d1', amount:100, useDate:'2026-09-01', repayments:[{ id:'r1', date:'2026-09-10', amount:10 }, { id:'r1', date:'2026-09-20', amount:20 }] },
+    { id:'d2', amount:100, useDate:'2026-09-01', repayments:[{ id:'r1', date:'2026-09-10', amount:10 }] },
+  ];
+  const n = A.normalize(JSON.parse(JSON.stringify(raw)));
+  must(n.instruments.map(i => i.leverage).join() === '1,1,2', '0/負的槓桿倍數要變成 1,得到 ' + n.instruments.map(i => i.leverage).join());
+  const r1 = n.leverage.draws[0].repayments;
+  must(r1.length === 2 && r1[0].id !== r1[1].id, '同一筆動用裡的還款 id 要唯一');
+  must(n.leverage.draws[1].repayments[0].id === 'r1', '不同動用裡同一個還款 id 不用改(自動還本就是這樣)');
+}
+
+console.log('\n手機時間往回調,每日快照不能在後面接一筆較早的日期');
+{
+  setNow('2026-10-05');
+  A.state = A.normalize(A.emptyState());
+  A.state.instruments = [{ key:'k1', id:'X', name:'', leverage:1, price:10, shares:100, auto:true }];
+  A.state = A.normalize(A.state);
+  A.maybeDailySnapshot();
+  setNow('2026-10-03');
+  A.state.instruments[0].price = 12;
+  A.maybeDailySnapshot();
+  must(A.state.dailyHistory.map(h => h.d).join() === '2026-10-05', '時間往回調不該多記,得到 ' + A.state.dailyHistory.map(h => h.d).join());
+  setNow('2026-10-05');
 }
 
 if (bugs.length){
