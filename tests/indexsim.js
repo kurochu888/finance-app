@@ -22,9 +22,10 @@ const level = (y, mo, d) => {
 };
 let reqs = 0;
 global.fetch = async (url) => {
+  // 只數加權指數的請求:app 開啟時自己也會抓報價、休市日,機器忙的時候會落在歸零之後被算進來(2026-10 跑出 368 > 345 的假警報)
+  if (!/MI_5MINS_HIST/.test(url)) return { ok: true, json: async () => ({ stat: 'no' }) };
   reqs++;
   const m = /date=(\d{4})(\d{2})/.exec(url); const y = +m[1], mo = +m[2];
-  if (!/MI_5MINS_HIST/.test(url)) return { ok: true, json: async () => ({ stat: 'no' }) };
   if (y < 1999) return { ok: true, json: async () => ({ stat: '很抱歉，沒有符合條件的資料!' }) };
   const rows = [];
   for (let d = 1; d <= 28; d++){ const dow = new Date(y, mo - 1, d).getDay(); if (dow === 0 || dow === 6) continue;
@@ -44,7 +45,9 @@ eval([...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]).sort((a,b)=
   console.log('第一次抓:', reqs, '個請求 |', A.msg);
   if (!A.hist.length || A.hist[0].d.slice(0, 7) !== '1999-01') bugs.push('沒有抓到 1999-01 起的資料:' + (A.hist[0] || {}).d);
   if (A.first !== '1999-01') bugs.push('連續查無資料後沒有記下最早月份(' + A.first + '),之後每次更新都會再往前問');
-  if (reqs > 345) bugs.push('查無資料後沒有停下來,多發了請求(' + reqs + ')');
+  // 上限跟著日期走:1999-01 到這個月每月一次 + 往前試 3 個查無資料的月份 + 一點餘裕(以前寫死 345,月份一年多 12 個,幾個月後就會誤報)
+  const nowD = new Date(), monthsSince1999 = (nowD.getFullYear() - 1999) * 12 + nowD.getMonth() + 1;
+  if (reqs > monthsSince1999 + 3 + 2) bugs.push('查無資料後沒有停下來,多發了請求(' + reqs + ',應該不超過 ' + (monthsSince1999 + 5) + ')');
   reqs = 0; await A.fetchIndexSim();
   console.log('第二次更新:', reqs, '個請求');
   if (reqs > 3) bugs.push('已經抓齊的月份又重抓了(' + reqs + ' 個請求)');
