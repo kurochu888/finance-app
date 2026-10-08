@@ -2370,6 +2370,7 @@ function monthlyHistory(maxMonths){
 let currentTab = 'overview';
 let viewMonth = thisMonth();
 let editingTx = null;
+let editingTpl = null;   // 正在修改的固定收支範本 id
 let editingTrade = null;
 let tradeError = '';
 let tradeNote = '';   // 記完一筆後的提醒(例如用房貸買的要去記動用),不是錯誤
@@ -2861,14 +2862,32 @@ const tplTxId = (t, m) => ('tp-' + t.id).slice(0, 50) + '-' + m.replace('-', '')
 function renderTemplates(){
   const list = state.templates || [];
   const m = viewMonth;
+  const cats = knownCats();
   return `
     <div class="card">
       <h3>固定收支</h3>
       ${list.length ? list.map(t => {
         const tx = state.transactions.find(x => x.id === tplTxId(t, m));
+        // 調薪、保費調整:改範本只影響之後記的,已經記過的交易不動(過去的薪資還是當時的金額)
+        if (t.id === editingTpl) return `
+        <div class="tx-edit">
+          <div class="grid2">
+            <div class="field"><label>${t.amount > 0 ? '收入' : '支出'}金額</label><input type="number" inputmode="decimal" data-k="tpl-amt-${t.id}" value="${Math.abs(t.amount)}"></div>
+            <div class="field"><label>類別</label>
+              <select data-k="tpl-cat-${t.id}">
+                ${cats.concat(cats.includes(t.cat) ? [] : [t.cat]).map(c => `<option value="${esc(c)}" ${t.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+              </select></div>
+          </div>
+          <div class="field"><label>說明</label><input data-k="tpl-desc-${t.id}" value="${esc(t.desc)}"></div>
+          <div class="muted" style="margin-bottom:6px;">只影響之後記的,已經記過的不會跟著改。</div>
+          <div class="btn-row">
+            <button class="btn quiet" data-act="close-tpl">完成</button>
+            ${xDel('del-tpl', t.id)}
+          </div>
+        </div>`;
         return `
         <div class="erow">
-          <div class="f-name">
+          <div class="f-name" data-act="edit-tpl" data-id="${t.id}" style="cursor:pointer;">
             <div>${esc(t.cat)}${t.desc ? ` <span class="muted">· ${esc(t.desc)}</span>` : ''}</div>
             <div class="${t.amount > 0 ? 'pos' : ''}" style="font-size:13px;">${t.amount > 0 ? '+' : '−'}${fmt(Math.abs(t.amount))}</div>
           </div>
@@ -2877,7 +2896,7 @@ function renderTemplates(){
           ${xDel('del-tpl', t.id)}
         </div>`; }).join('')
       : `<div class="empty">還沒有固定收支。<br>在上面填好一筆(例如月薪、保險費),按「把上面填的存成固定收支」,之後每個月按一下就記好。</div>`}
-      ${list.length ? `<div class="muted" style="margin-top:8px;">記到上面月份切換正在看的那個月,一個月記一次;記錯了到下面交易紀錄點那筆改或刪。</div>` : ''}
+      ${list.length ? `<div class="muted" style="margin-top:8px;">記到上面月份切換正在看的那個月,一個月記一次;記錯了到下面交易紀錄點那筆改或刪。點範本可以改金額(例如調薪)。</div>` : ''}
     </div>`;
 }
 function renderLedger(){
@@ -5521,6 +5540,15 @@ function onField(key, el){
     }
     structural = true;
   }
+  else if (kind === 'tpl'){                                         // 修改固定收支範本:tpl-amt|cat|desc-<範本 id>
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), t = findById(state.templates || [], rest.slice(cut + 1));
+    if (t){
+      if (what === 'amt'){ const v = Math.abs(num(el.value)); if (v) t.amount = t.amount < 0 ? -v : v; }   // 清空準備重打的那一下不算;收入/支出不變
+      else if (what === 'cat') t.cat = el.value || '其他';
+      else if (what === 'desc') t.desc = el.value;
+    }
+    structural = true;
+  }
   else if (kind === 'tdate' || kind === 'tamt' || kind === 'tcat' || kind === 'tdesc'){
     const t = findById(state.transactions, rest);
     if (t){
@@ -6110,9 +6138,12 @@ function onClick(el){
       state.transactions.push({ id: txid, date: m === thisMonth() ? todayISO() : m + '-01', cat: t.cat, desc: t.desc, amount: t.amount });
       break;
     }
+    case 'edit-tpl': editingTpl = editingTpl === id ? null : id; break;
+    case 'close-tpl': editingTpl = null; break;
     case 'del-tpl':
       if (needsConfirm('del-tpl:' + id)) return;
       state.templates = (state.templates || []).filter(t => t.id !== id);
+      editingTpl = null;
       break;
     case 'add-tx': {
       const amt = Math.abs(num(draft.amount));
@@ -6150,7 +6181,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (!['month', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
+  if (!['month', 'edit-tpl', 'close-tpl', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 
