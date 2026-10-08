@@ -334,8 +334,25 @@ id 沿用舊值以確保重複呼叫不會飄動。
    - 「出場快」反而變差:比 MA 120 快的 EMA 120/150/180 全輸,唯一變好的 240 其實是出場更慢;放寬乘數也救不回來。
      結論:原本的 MA 出場規則最穩。以後有人提換出場線,先看這段跟第 11、12 點。
 
+14. **收盤後自動檢查訊號(2026-10,使用者要的)**——app 的 🔔 只在打開 app 時算,`scripts/signal-check.js` 由
+   `.github/workflows/signal-check.yml` 每個交易日台灣時間 15:30、19:30 跑:eval `docs/index.html` 的 app 程式(跟測試同一招),
+   用 `twseJson`/`mergeHistory` 抓 14 個月、`computeTrend` 算「到最後一天」跟「到前一天」,不一樣就開 GitHub issue(@ 擁有者,GitHub 寄通知)。
+   不存狀態(跟 computeTrend 無狀態重算同一個想法);issue 標題帶日期,同標題開過不再開。**只用預設標的與預設訊號參數**
+   (使用者資料不在 repo 裡),app 裡改過參數就會不一致。本機試跑 `node scripts/signal-check.js --dry [--fake]`。
+   改 `computeTrend`/`trendAlertText` 的介面時要一起看這支。
+
 一句話版本:**現在唯一的決策依據是「訊號」分頁(均線趨勢 + 曝險目標 + 壓力測試);
 「紀錄」分頁的動用記錄純粹是記帳,不做任何判斷。**
+
+## 記帳頁固定收支、槓桿頁「今天要做什麼」(2026-10)
+
+- **`state.templates[]`** `{id, cat, desc, amount}`(金額帶正負號):記帳頁按「記到 X月」記一筆到正在看的月份,交易 id
+  `tp-<範本id>-YYYYMM`(`tplTxId()`)固定,一個月一次、兩台各按一次合併成一筆。**刻意不自動記**:自動記要重做一次房貸利息那套
+  (第一次用、沒開 app 的月份、刪掉不補回…)。有進 `keyedLists()`(刪除紀錄)跟 `keepFieldsOldVersionsDrop()`。測試 `tests/templates.js`。
+- **`renderTodo()`/`todoItems()`**:槓桿頁概況最上面,把收盤價太舊、分割、🔔、曝險要調整(`exposureTodo()`)、帳對不起來
+  (`loanMismatch()`,設定頁的警告共用)、一週內扣款(`monthLoanDues()` 的 `date`)、一週內預定動用收成一張卡。
+  **只列要做的事,不重算金額**,金額以各自的卡片為準;`exposureTodo()` 的「要不要調整」條件要跟 `renderExposurePlanCard()` 一致,
+  改那張卡的判斷時兩邊一起改。測試 `tests/todo.js`。
 
 ## 曝險比例公式(`computeRisk()`)
 

@@ -1,0 +1,28 @@
+# 每個交易日收盤後檢查均線訊號,狀態改變就開 issue(GitHub 會寄 email / 推播到 GitHub app)。
+# 規則跟 app 同一份程式,說明見 scripts/signal-check.js 開頭。
+name: 收盤後檢查訊號
+
+on:
+  schedule:
+    # 台灣時間週一到週五 15:30、19:30(UTC 07:30、11:30)。第二次是備援:證交所資料晚更新、
+    # GitHub 排程延遲時補跑;同一天同一個訊號只會開一次 issue
+    - cron: '30 7 * * 1-5'
+    - cron: '30 11 * * 1-5'
+  workflow_dispatch:   # Actions 頁面可以手動按「Run workflow」
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/signal-check.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
