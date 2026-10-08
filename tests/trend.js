@@ -18,7 +18,8 @@ const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
-  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, trendHistoryGap, defaultFee, renderOverview, set levTab(v){ levTab = v; } };`);
+  computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, trendHistoryGap, defaultFee, renderOverview, set levTab(v){ levTab = v; },
+  exposureTodo, captureOwnBase, keepFieldsOldVersionsDrop };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -591,6 +592,102 @@ console.log('跌到出場線才賣的未實現');
   setHist(50);
   must(A.computeTrend(it).status === 'WAIT_RECOVER' && !A.exitScenario().anyLine && !A.renderLeverage().includes('跌到出場線才賣的未實現'), '接刀中沒有出場線,不顯示');
 }
+console.log('  ok');
+
+console.log('接刀只用自有資金(2026-10):出場時記下自有資金、各層照 % 給「只用自己的錢」的金額、扣掉出場後已買的');
+(function testOwnMode(){
+  const findN = (status, pc) => { for (let n = 30; n <= prices.length; n++){ const t = A.computeTrend({ key:'k', id:'X', leverage:2, trend, priceHistory: mkHist(prices.slice(0, n)) });
+    if (t.barsAvailable >= t.barsNeeded && t.status === status && t.pyramidCount === pc) return { n, t }; } return null; };
+  const ex = findN('WAIT_RECOVER', 0), l1 = findN('WAIT_RECOVER', 1), l2 = findN('WAIT_RECOVER', 2);
+  must(ex && l1 && l2 && ex.t.exitDate && ex.t.exitDate === l1.t.exitDate && l1.t.exitDate === l2.t.exitDate, '測試路徑要有出場、第 1 層、第 2 層,而且是同一次出場');
+  if (!(ex && l1 && l2)) return;
+  const exitDate = ex.t.exitDate;
+  const setup = (n, equity) => {
+    const s = A.emptyState();
+    s.leverage.creditLimit = 8000000;
+    s.leverage.exposureTargets = { byLayer:[75, 150], hold:140, mode:'own', ownByLayer:[50, 100] };
+    s.instruments.filter(it => it.leverage === 2).forEach(it => {
+      it.trend = Object.assign({}, trend, { lastSeenStatus:'', lastSeenDate:'' });
+      it.priceHistory = mkHist(prices.slice(0, n));
+      it.price = 1; it.shares = equity / 2;
+    });
+    return s;
+  };
+  // 1) 出場那天還沒賣:自動記下部位淨值 600 萬當接刀用的自有資金
+  A.state = setup(ex.n, 6000000);
+  A.renderAll();
+  let ob = A.state.leverage.ownBase;
+  must(ob.exit === exitDate && ob.amount === 6000000 && ob.auto === true, `出場時要自動記下 600 萬,得到 ${JSON.stringify(ob)}`);
+  let p = A.computeExposurePlan();
+  must(p.progress === 0 && p.targetRatio === 0 && p.own && p.own.base === 6000000, '出場時目標 0%(照舊叫你賣光),own 要帶記下的金額');
+  let card = A.renderExposurePlanCard();
+  must(card.includes('data-k="ownbase-amt"') && card.includes('6000000'), '出場卡片要顯示記下的自有資金、可以改');
+  // 2) 賣光之後接到第 1 層:這一層用 50% = 300 萬,只用自己的錢
+  A.state.instruments.forEach(it => { it.shares = 0; it.priceHistory = mkHist(prices.slice(0, l1.n)); });
+  A.renderAll();
+  must(A.state.leverage.ownBase.amount === 6000000, '同一輪出場不能重記(賣光之後部位淨值是 0)');
+  p = A.computeExposurePlan();
+  must(p.progress === 1 && p.layerAdjustPending && Math.abs(p.own.need - 3000000) < 1, `第 1 層要買 300 萬,得到 ${p.own && p.own.need}`);
+  card = A.renderExposurePlanCard().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  must(card.includes('只用自己的錢,不動用房貸') && card.includes('3,000,000') && !card.includes('方案B') && !card.includes('房貸額度'), '第 1 層卡片只給自有資金的金額:' + card.slice(0, 300));
+  let todo = A.exposureTodo();
+  must(todo && todo.text.includes('用自有資金買'), '今天要做什麼要列「用自有資金買」:' + JSON.stringify(todo));
+  // 3) 出場後買了 100 萬:剩 200 萬;出場前的買進不算
+  const last = l1.t.lastDate;
+  A.state.trades = [
+    { id:'t0', date: '2000-01-01', symbol:'00631L', action:'buy', source:'cash', shares:1000, price:500, amount:0, fee:0, note:'' },
+    { id:'t1', date: last, symbol:'00631L', action:'buy', source:'cash', shares:100000, price:9.99, amount:0, fee:1000, note:'' },
+  ];
+  p = A.computeExposurePlan();
+  must(Math.abs(p.own.bought - 1000000) < 1 && Math.abs(p.own.need - 2000000) < 1, `買了 100 萬後剩 200 萬,得到 bought ${p.own.bought} need ${p.own.need}`);
+  // 4) 已調整完成:這一層漲跌都不再給金額
+  A.onClick({ dataset: { act: 'ack-hold' } });
+  p = A.computeExposurePlan();
+  card = A.renderExposurePlanCard();
+  must(!p.layerAdjustPending && card.includes('這一層已經調整過') && !card.includes('這一層要買'), '確認過的這一層不再給金額');
+  must(A.exposureTodo() === null, '確認過的這一層不該出現在今天要做什麼');
+  // 5) 第 2 層:累計 100% = 600 萬,扣掉已買 100 萬 → 500 萬
+  A.state.instruments.forEach(it => { it.priceHistory = mkHist(prices.slice(0, l2.n)); });
+  p = A.computeExposurePlan();
+  must(p.progress === 2 && p.layerAdjustPending && Math.abs(p.own.need - 5000000) < 1, `第 2 層要買 500 萬,得到 ${p.own && p.own.need}`);
+  // 6) 自己改金額(加上存款)
+  A.onField('ownbase-amt', { value: '8000000' });
+  ob = A.state.leverage.ownBase;
+  must(ob.amount === 8000000 && ob.auto === false && ob.exit === exitDate, `改成 800 萬、標成自己改的、記在這一輪:${JSON.stringify(ob)}`);
+  must(Math.abs(A.computeExposurePlan().own.need - 7000000) < 1, '改成 800 萬後第 2 層要買 700 萬');
+  A.onField('ownbase-amt', { value: '' });
+  must(A.state.leverage.ownBase.amount === 8000000, '清空欄位那一下不算');
+  // 7) 換了一輪出場(記的是上一輪的),而且出場後已經買過:記 0,卡片請使用者自己填
+  A.state.leverage.ownBase = { exit: '1999-01-01', amount: 5000000, auto: true };
+  A.renderAll();
+  must(A.state.leverage.ownBase.exit === exitDate && A.state.leverage.ownBase.amount === 0, '新的一輪、出場後已經買過時不能拿現在的部位淨值當自有資金');
+  card = A.renderExposurePlanCard();
+  must(card.includes('app 不知道你帳戶裡的現金'), '沒有自有資金金額時卡片要請使用者填');
+  todo = A.exposureTodo();
+  must(todo && todo.text.includes('先填接刀用的自有資金'), '今天要做什麼要提醒先填自有資金');
+  // 8) 存檔往返、舊資料預設、舊版分頁寫回來不丟
+  A.onField('ownbase-amt', { value: '6000000' });
+  const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  must(back.leverage.exposureTargets.mode === 'own' && back.leverage.exposureTargets.ownByLayer.join(',') === '50,100' && back.leverage.ownBase.amount === 6000000,
+    '存檔再讀回來要保留模式、各層 %、自有資金');
+  const old = A.normalize({ leverage: { exposureTargets: { byLayer:[65, 130], hold:130 } } });
+  must(old.leverage.exposureTargets.mode === 'exposure' && old.leverage.ownBase.amount === 0, '舊資料預設是原本的曝險比例模式');
+  const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  const raw = JSON.parse(JSON.stringify(A.state));
+  raw.leverage.exposureTargets = { byLayer: raw.leverage.exposureTargets.byLayer, hold: raw.leverage.exposureTargets.hold };   // 舊版分頁只認得這兩個
+  delete raw.leverage.ownBase;
+  const next = A.normalize(raw);
+  must(A.keepFieldsOldVersionsDrop(prev, raw, next) && next.leverage.exposureTargets.mode === 'own' && next.leverage.ownBase.amount === 6000000,
+    '舊版分頁寫回來把模式跟自有資金丟掉時要補回來');
+  // 9) 設定頁:切換模式、改各層 %
+  A.onClick({ dataset: { act: 'expo-mode', v: 'exposure' } });
+  must(A.state.leverage.exposureTargets.mode === 'exposure' && A.computeExposurePlan().own === null, '切回曝險比例模式後不用自有資金算');
+  A.onClick({ dataset: { act: 'expo-mode', v: 'own' } });
+  A.onField('expo-own-0', { value: '40' });
+  must(A.state.leverage.exposureTargets.ownByLayer[0] === 40, '第 1 層的 % 要改得到');
+  A.onField('expo-own-0', { value: '0' });
+  must(A.state.leverage.exposureTargets.ownByLayer[0] === 40, '填 0 不算(跟曝險比例一樣)');
+})();
 console.log('  ok');
 
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
