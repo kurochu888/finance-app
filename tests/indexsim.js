@@ -78,6 +78,8 @@ eval([...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]).sort((a,b)=
     if (A.hist.some(h => h.d.slice(0, 4) === '2005') === false) bugs.push('再按一次沒有補回維護中那幾個月');
   }
   A.onClick({ dataset:{ act:'btw-preset', v:'2000-01-01|2001-12-31' } });
+  A.onClick({ dataset:{ act:'fold', v:'research' } });   // 「回測與研究」平常收著(2026-10)
+  if (!A.renderBacktestCard().includes('期初狀態')) A.onClick({ dataset:{ act:'fold', v:'research' } });   // 原本就開著(抓資料中強制打開)的話剛剛那下是收起來
   const t = A.renderBacktestCard().replace(/<svg[\s\S]*?<\/svg>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   if (!t.includes('模擬正2(加權×2) 2 倍') || !t.includes('期初狀態')) bugs.push('指定期間沒有列出模擬的結果');
   // 真實標的(2016 起)在 2000 年沒有資料:表格寫沒資料就好,不能再列「策略動作 0 次、還沒進場」

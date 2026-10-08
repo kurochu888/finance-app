@@ -81,7 +81,7 @@ console.log('一般型房貸:負債金額自動 = 剩餘本金,每期利息記�
   s.liabilities = [{ id: 'm1', name: '一般房貸', amount: 0, loan: null }];
   A.state = A.normalize(s);
   A.onClick({ dataset: { act: 'loan-on', id: 'm1' } });
-  must(A.state.liabilities[0].loan, '按「是本利攤還的房貸」之後要有 loan');
+  must(A.state.liabilities[0].loan, '按「本利攤還 ▸」之後要有 loan');
   field('lo-principal-m1', 8000000);
   field('lo-start-m1', '2016-10-03');
   field('lo-years-m1', 30);
@@ -232,12 +232,16 @@ console.log('理財型:繳款日不是 1 號');
   setNow('2026-11-10');
   A.maybePostInterest();
   must(rp().length === 1 && !L.repayPosted.includes('2026-11') && !L.interestPosted.includes('2026-11'), '繳款日還沒到不應該記:' + JSON.stringify(rp()));
-  must(A.monthLoanDues()[0].note.startsWith('11/15 扣款'), '總覽要寫幾號扣款:' + A.monthLoanDues()[0].note);
+  const lastLine = () => A.monthLoanDues()[0].lines.slice(-1)[0];
+  must(lastLine().startsWith('11/15 扣款'), '總覽要寫幾號扣款:' + lastLine());
+  must(A.monthLoanDues()[0].lines[0] === '最低還本 4,975 = 餘額 995,000 × 千分之 5', '還沒記的時候照目前餘額估:' + A.monthLoanDues()[0].lines[0]);
+  must(A.monthLoanDues()[0].lines.some(t => t.startsWith('利息 ') && t.includes('10/15~11/15')), '利息要寫期間:' + A.monthLoanDues()[0].lines.join(' / '));
   setNow('2026-11-15');
   A.maybePostInterest();
   must(rp().map(r => r.date + ':' + r.amount).join(' ') === '2026-10-15:5000 2026-11-15:4975', '11/15 應該記:' + JSON.stringify(rp()));
   must(intr().split(' ').length === 2 && intr().split(' ')[1].startsWith('2026-11-15:'), '利息也記在 11/15:' + intr());
-  must(A.monthLoanDues()[0].note.startsWith('已於 11/15'), '過了繳款日要寫已於:' + A.monthLoanDues()[0].note);
+  must(lastLine() === '11/15 已扣款', '過了繳款日要寫已扣款:' + lastLine());
+  must(A.monthLoanDues()[0].lines[0] === '最低還本 4,975 = 餘額 995,000 × 千分之 5', '記了之後算式一樣(用扣之前的餘額):' + A.monthLoanDues()[0].lines[0]);
   // 31 號:沒有 31 號的月份用月底;中間沒開 app 照樣補
   A.applyPayDay('31');
   must(rp()[1].date === '2026-11-30', '11 月沒有 31 號,搬到 11/30:' + rp()[1].date);
