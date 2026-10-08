@@ -506,7 +506,8 @@ function normalize(raw){
   // 以前空清單也補預設,刪光標的之後重新整理又冒出 00631L/00675L(壓測比對「當下 vs 重新整理後」抓到的)
   if (Array.isArray(raw.instruments)){
     s.instruments = objs(raw.instruments).map(x => {
-      const leverage = x.leverage === undefined ? 1 : num(x.leverage);
+      // 0/負數不收(跟設定欄位 in-lev 一樣):匯入的資料帶負倍數,曝險會變成負的
+      const leverage = num(x.leverage) > 0 ? num(x.leverage) : 1;
       const def = defaultTrendParams(leverage);
       const t = x.trend && typeof x.trend === 'object' ? x.trend : {};
       const out = {
@@ -652,6 +653,7 @@ function normalize(raw){
   dedupe(s.assets, 'id', itemIds); dedupe(s.liabilities, 'id', itemIds);
   dedupe(s.transactions); dedupe(s.trades); dedupe(s.netWorthHistory); dedupe(s.budgets);
   dedupe(s.instruments, 'key'); dedupe(base.draws);
+  base.draws.forEach(d => dedupe(d.repayments));   // 還款 id 只在同一筆動用裡要唯一(自動還本的 id 照月份,每筆動用都一樣)
   s.liabilities.forEach(l => { if (l.loan) dedupe(l.loan.rateHistory); });
   base.draws.forEach(d => dedupe(d.repayments));
   // 舊版把兩檔的股數與股價放在 leverage 底下,搬進標的清單
@@ -687,8 +689,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · b8dc8f6c66';
-const BUILD_HASH = 'b8dc8f6c66';
+const BUILD_VERSION = '2026-10-08 · 24676fc5de';
+const BUILD_HASH = '24676fc5de';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2343,6 +2345,9 @@ function maybeDailySnapshot(){
     pnl: p.hasData ? finNum(Math.round(p.total)) : null
   };
   const list = state.dailyHistory;
+  // 已經有比今天還新的 = 手機時間被往回調了(同 maybeSnapshot):照寫的話會在最後面接一筆較早的日期,
+  // 同一天可能變兩筆,走勢圖重複畫
+  if (list.some(h => h.d > today)) return false;
   const last = list.length ? list[list.length - 1] : null;
   if (last && last.d === today){
     if (last.pv === rec.pv && last.loan === rec.loan && last.eq === rec.eq && last.pnl === rec.pnl) return false;
