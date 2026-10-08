@@ -483,7 +483,7 @@ console.log('\n刪除填了金額的動用記錄要按兩次');
   must(!A.state.leverage.draws.some(d => d.id === 'd2'), '還沒填的空白列按一次就刪');
 }
 
-console.log('\n讀進來的資料:負的槓桿倍數、同一筆動用裡還款 id 重複');
+console.log('\n讀進來的資料:負的槓桿倍數、同一筆動用裡還款 id 重複(後者原本就有處理,當回歸測試)');
 {
   const raw = A.normalize(A.emptyState());
   raw.instruments = [{ key:'k1', id:'X', leverage:-2 }, { key:'k2', id:'Y', leverage:0 }, { key:'k3', id:'Z', leverage:2 }];
@@ -496,6 +496,10 @@ console.log('\n讀進來的資料:負的槓桿倍數、同一筆動用裡還款 
   const r1 = n.leverage.draws[0].repayments;
   must(r1.length === 2 && r1[0].id !== r1[1].id, '同一筆動用裡的還款 id 要唯一');
   must(n.leverage.draws[1].repayments[0].id === 'r1', '不同動用裡同一個還款 id 不用改(自動還本就是這樣)');
+  const raw2 = A.normalize(A.emptyState());
+  raw2.leverage.rateHistory = [{ id:'x', until:'2025-01-01', rate:2 }, { id:'x', until:'2026-01-01', rate:2.2 }];
+  const rh = A.normalize(raw2).leverage.rateHistory;
+  must(rh.length === 2 && rh[0].id !== rh[1].id, '理財型過去利率的 id 要唯一');
 }
 
 console.log('\n手機時間往回調,每日快照不能在後面接一筆較早的日期');
@@ -510,6 +514,18 @@ console.log('\n手機時間往回調,每日快照不能在後面接一筆較早�
   A.maybeDailySnapshot();
   must(A.state.dailyHistory.map(h => h.d).join() === '2026-10-05', '時間往回調不該多記,得到 ' + A.state.dailyHistory.map(h => h.d).join());
   setNow('2026-10-05');
+}
+
+console.log('\n代號重複的那列不再列一次投資金額');
+{
+  A.state = A.normalize(A.emptyState());
+  A.state.instruments = [{ key:'k1', id:'X', leverage:1, price:12 }, { key:'k2', id:'X', leverage:1, price:12 }];
+  A.state.trades = [{ id:'t1', date:'2026-09-01', symbol:'X', action:'buy', shares:1000, price:10, fee:20, source:'loan' }];
+  A.state = A.normalize(A.state);
+  A.levTab = 'setup';
+  const html = A.renderLeverage();
+  must((html.match(/投資金額/g) || []).length === 1, '投資金額應該只出現一次,得到 ' + (html.match(/投資金額/g) || []).length);
+  must(html.includes('NT$ 10,020') && html.includes('NT$ 0 / 10,020'), '投資金額 10,020,全部是房貸');
 }
 
 if (bugs.length){
