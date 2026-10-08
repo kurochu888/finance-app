@@ -99,6 +99,9 @@ window.FinanceCloud.ready = new Promise(resolve => {
   }
   .top-tab.active{color:var(--accent); font-weight:700; border-bottom-color:var(--accent);}
   .topbar .date{flex:0 0 auto; font-size:11px; color:var(--sub); padding:0 8px 8px 2px;}
+  .topbar .eye{flex:0 0 auto; border:none; background:none; cursor:pointer; font-size:15px; padding:0 2px 8px; opacity:.55;}
+  .topbar .eye.on{opacity:1;}
+  body.privacy .content input[type=number]:not(:focus){filter:blur(5px);}
   .content{
     flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
     padding:14px; padding-bottom:10px; overscroll-behavior:contain; overflow-x:hidden;
@@ -335,6 +338,7 @@ window.FinanceCloud.ready = new Promise(resolve => {
       <button class="top-tab" data-tab="ledger">記帳</button>
       <button class="top-tab" data-tab="help">說明</button>
     </nav>
+    <button class="eye" id="privacyBtn" aria-label="隱藏金額" title="隱藏金額">👁</button>
     <div class="date" id="todayDate"></div>
   </header>
   <main class="content" id="content"></main>
@@ -363,7 +367,13 @@ const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? Math.max
 const finNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? Math.max(-1e15, Math.min(1e15, n)) : 0; };
 // finiteNum:同上,但可以指定不合法時的預設值(normalize() 補均線參數這類欄位用)。
 const finiteNum = (v, fallback) => { const n = num(v); return Number.isFinite(n) ? n : fallback; };
-const fmt = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
+/* 隱藏金額(頁首 👁,在外面打開 app 不怕旁邊的人看到):所有金額都經過 fmt,這裡統一換成 ••••。
+   只影響畫面;會存進資料的文字(例如自動新增動用的備註)用 fmtRaw,不然隱藏時記下來的就是 ••••。
+   百分比、股價不遮(看不出身家)。輸入框裡的數字用 CSS 模糊,點進去編輯時才看得到。 */
+let privacy = false;
+try{ privacy = localStorage.getItem('financePrivacy') === '1'; }catch(e){}
+const fmtRaw = n => (Math.round(n) || 0).toLocaleString('zh-Hant-TW');
+const fmt = n => privacy ? '••••' : fmtRaw(n);
 const money = v => (v < 0 ? '−' : '') + 'NT$ ' + fmt(Math.abs(v));   // 負數寫成「−NT$ 400,000」,不是「NT$ -400,000」
 const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -693,8 +703,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · 6dd306b3b4';
-const BUILD_HASH = '6dd306b3b4';
+const BUILD_VERSION = '2026-10-08 · 7a8d7daa4e';
+const BUILD_HASH = '7a8d7daa4e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2404,11 +2414,12 @@ function monthlyHistory(maxMonths){
 let currentTab = 'overview';
 let viewMonth = thisMonth();
 let editingTx = null;
-let editingTpl = null;   // 正在修改的固定收支範本 id
+let editingTpl = null;
+let summaryYear = Number(todayISO().slice(0, 4));   // 總覽頁「年度總結」看哪一年   // 正在修改的固定收支範本 id
 let editingTrade = null;
 let tradeError = '';
 let tradeNote = '';   // 記完一筆後的提醒(例如用房貸買的要去記動用),不是錯誤
-let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'' };
+let tradeDraft = { date: todayISO(), symbol:'00631L', action:'buy', source:'cash', shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'', autoDraw:true };
 let pendingConfirm = null;   // iframe 內 confirm() 可能被擋,改用頁面內二次確認
 let dataMsg = '';
 let draftError = '';
@@ -2514,6 +2525,92 @@ function monthLoanDues(){
     if (p) out.push({ name: l.name || '房貸', date: p.date, principal: p.principal, interest: p.interest, note: (row ? '已於 ' : '') + p.date.slice(5).replace('-', '/') + ' 扣款' });
   });
   return out;
+}
+/* 年度總結:一年的收支、淨資產變化、投資進出、房貸利息跟還本,年底檢討或報稅時看。
+   淨資產跟整體損益用每月快照(去年 12 月 → 今年最後一筆;今年就用目前的數字),沒有快照的年份就不顯示那兩行。
+   利息照天數算(跟損益頁同一套 accrue),今年的算到今天。 */
+function yearSummary(Y){
+  const y = String(Y), from = y + '-01-01', to = (Y + 1) + '-01-01', today = todayISO();
+  const inY = d => d && d.slice(0, 4) === y;
+  const tx = state.transactions.filter(t => inY(t.date));
+  const income = sum(tx.filter(t => t.amount > 0), t => t.amount), expense = sum(tx.filter(t => t.amount < 0), t => -t.amount);
+  const cats = {};
+  tx.filter(t => t.amount < 0).forEach(t => { cats[t.cat] = (cats[t.cat] || 0) - t.amount; });
+  const topCats = Object.keys(cats).map(k => ({ name: k, amount: cats[k] })).sort((a, b) => b.amount - a.amount).slice(0, 5);
+  const sellQty = soldQtyById();
+  const tr = state.trades.filter(t => inY(t.date) && t.date <= today);
+  const buyCash = sum(tr.filter(t => t.action === 'buy' && t.source !== 'loan'), t => t.shares * t.price + t.fee);
+  const buyLoan = sum(tr.filter(t => t.action === 'buy' && t.source === 'loan'), t => t.shares * t.price + t.fee);
+  const sellNet = sum(tr.filter(t => t.action === 'sell'), t => (sellQty[t.id] ?? t.shares) * t.price - t.fee);
+  const dividends = sum(tr.filter(t => t.action === 'dividend'), t => t.amount - t.fee);
+  const L = state.leverage, end = to > today ? today : to;
+  let interest = sum(L.draws, d => Math.max(0, accrue(d, L, end) - accrue(d, L, from > end ? end : from)));
+  let principal = sum(L.draws, d => sum(effectiveRepayments(d).filter(r => inY(r.date)), r => r.amount));
+  state.liabilities.forEach(l => {
+    if (!loanReady(l)) return;
+    amortize(l.loan).rows.filter(r => inY(r.date)).forEach(r => { interest += r.interest; principal += r.principal; });
+  });
+  // 淨資產、整體損益:年初 = 去年 12 月的快照(沒有就用今年最早那個月),年底 = 今年最後一筆快照,今年用目前的數字
+  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1);
+  const startSnap = hist.find(h => h.m === (Y - 1) + '-12') || hist.find(h => h.m.slice(0, 4) === y);
+  const isNow = y === today.slice(0, 4);
+  const endSnap = hist.filter(h => h.m.slice(0, 4) === y).pop();
+  const p = isNow ? computePosition() : null;
+  const nwEnd = isNow ? netWorth() : endSnap ? endSnap.v : null;
+  const pnlEnd = isNow ? (p.hasData ? p.total : null) : endSnap ? endSnap.pnl : null;
+  return {
+    Y, isNow, income, expense, balance: income - expense, topCats, buyCash, buyLoan, sellNet, dividends, interest, principal,
+    nwStart: startSnap ? startSnap.v : null, nwStartLabel: startSnap ? (startSnap.m === (Y - 1) + '-12' ? '年初' : monthLabel(startSnap.m)) : '',
+    nwEnd, pnlChange: startSnap && startSnap.pnl != null && pnlEnd != null ? pnlEnd - startSnap.pnl : null,
+    hasData: tx.length || tr.length || interest >= 0.5 || principal > 0 || !!endSnap
+  };
+}
+function summaryYears(){
+  const ys = [...state.transactions.map(t => t.date), ...state.trades.map(t => t.date), ...state.netWorthHistory.map(h => h.m)]
+    .map(d => Number(String(d).slice(0, 4))).filter(n => n > 1900);
+  const now = Number(todayISO().slice(0, 4));
+  return { min: ys.length ? Math.min(now, ...ys) : now, max: now };
+}
+function renderYearCard(){
+  const yr = summaryYears();
+  summaryYear = Math.min(yr.max, Math.max(yr.min, summaryYear));
+  const s = yearSummary(summaryYear);
+  const signed = n => (n >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(n));
+  const row = (label, val, cls = '') => `<div class="row"><span class="label">${label}</span><span class="val ${cls}">${val}</span></div>`;
+  const sub = (label, val) => `<div class="row sub"><span class="label">${label}</span><span class="val">${val}</span></div>`;
+  return `
+    <div class="card">
+      <div class="row" style="margin-bottom:6px;">
+        <button class="xbtn step" data-act="sum-year" data-v="-1" ${summaryYear <= yr.min ? 'disabled' : ''} aria-label="前一年">◀</button>
+        <h3 style="margin:0; flex:1 1 auto; text-align:center;">${summaryYear} 年總結${s.isNow ? `(到 ${todayISO().slice(5).replace('-', '/')})` : ''}</h3>
+        <button class="xbtn step" data-act="sum-year" data-v="1" ${summaryYear >= yr.max ? 'disabled' : ''} aria-label="後一年">▶</button>
+      </div>
+      ${!s.hasData ? `<div class="empty">這一年沒有紀錄。</div>` : `
+      ${s.nwStart != null && s.nwEnd != null ? `
+      ${row('淨資產', `${money(s.nwStart)} → ${money(s.nwEnd)}`)}
+      ${sub(`比${s.nwStartLabel}`, `<span class="${s.nwEnd >= s.nwStart ? 'pos' : 'neg'}">${signed(s.nwEnd - s.nwStart)}${s.nwStart > 0 ? `(${fmtPct((s.nwEnd - s.nwStart) / s.nwStart * 100)})` : ''}</span>`)}` : ''}
+      ${s.income || s.expense ? `
+      ${row('收入', 'NT$ ' + fmt(s.income), 'pos')}
+      ${row('支出', 'NT$ ' + fmt(s.expense))}
+      ${row('結餘', money(s.balance), s.balance >= 0 ? 'pos' : 'neg')}
+      ${s.income > 0 ? sub('儲蓄率(結餘 ÷ 收入)', (s.balance / s.income * 100).toFixed(0) + '%') : ''}
+      ${s.topCats.map(c => sub(esc(c.name), `NT$ ${fmt(c.amount)}${s.expense ? `(${(c.amount / s.expense * 100).toFixed(0)}%)` : ''}`)).join('')}` : ''}
+      ${s.buyCash || s.buyLoan || s.sellNet || s.dividends || s.pnlChange != null ? `
+      <div class="sect" style="margin-top:10px;">投資</div>
+      ${s.pnlChange != null ? row('整體損益變化', signed(s.pnlChange), s.pnlChange >= 0 ? 'pos' : 'neg') : ''}
+      ${s.buyCash ? sub('自有資金買進', 'NT$ ' + fmt(s.buyCash)) : ''}
+      ${s.buyLoan ? sub('房貸買進', 'NT$ ' + fmt(s.buyLoan)) : ''}
+      ${s.sellNet ? sub('賣出回收', 'NT$ ' + fmt(s.sellNet)) : ''}
+      ${s.dividends ? sub('配息', 'NT$ ' + fmt(s.dividends)) : ''}` : ''}
+      ${s.interest >= 0.5 || s.principal > 0 ? `
+      <div class="sect" style="margin-top:10px;">房貸</div>
+      ${s.interest >= 0.5 ? sub('付的利息', 'NT$ ' + fmt(s.interest)) : ''}
+      ${s.principal > 0 ? sub('還的本金', 'NT$ ' + fmt(s.principal)) : ''}` : ''}
+      <details class="tip" style="margin-bottom:0;"><summary>這些數字怎麼來的</summary><div class="body">
+        收支是記帳裡這一年的紀錄;淨資產跟整體損益用每月快照,從去年 12 月(沒有就用今年最早那個月)比到今年最後一個月,
+        今年用目前的數字;投資是買賣紀錄;房貸利息照天數算(理財型)加上一般型每期的利息,今年的算到今天。
+      </div></details>`}
+    </div>`;
 }
 function renderOverview(){
   const hist = monthlyHistory(12);
@@ -2639,6 +2736,8 @@ function renderOverview(){
         <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
       }).join('')}
     </div>` : ''}
+
+    ${renderYearCard()}
 
     <div class="card">
       <h3>資料</h3>
@@ -2850,6 +2949,12 @@ const draftPrice = d => Math.abs(num(d.price)) || (String(d.price).trim() === ''
 /* 一筆買進同時用了自有資金跟房貸(source 'mix',只存在草稿裡):拆成兩筆紀錄,每筆只有一個資金來源。
    房貸那筆的股數 = 房貸金額 ÷ 每股含手續費成本,四捨五入成整股;手續費照股數比例分,加起來等於原本的手續費。
    回傳 null = 不用拆(房貸金額 ≤ 0 全部自有、≥ 總額全部房貸、或拆完有一邊是 0 股)。 */
+/* 台股 T+2 交割:成交日往後數兩個營業日(只跳過週末,國定假日不知道,遇到連假自己改) */
+function settleDate(iso, days = 2){
+  const d = new Date((isoDate(iso, '') || todayISO()) + 'T00:00:00');
+  for (let n = 0; n < days; ){ d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n++; }
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
 function splitMixedBuy(shares, price, fee, loanAmt){
   const total = shares * price + fee;
   if (!(shares > 0) || !(total > 0) || !(loanAmt > 0) || loanAmt >= total) return null;
@@ -3953,7 +4058,10 @@ function renderTrades(){
         <button class="seg-btn ${d.source === 'mix' ? 'on' : ''}" data-act="draft-source" data-v="mix">兩者都有</button>
       </div>
       ${d.source === 'mix' ? `<div class="field" style="margin-top:9px;"><label>其中房貸出的金額</label>
-        <input type="number" inputmode="decimal" data-k="pd-loanAmt" value="${esc(d.loanAmt)}" placeholder="0"></div>` : ''}` : ''}
+        <input type="number" inputmode="decimal" data-k="pd-loanAmt" value="${esc(d.loanAmt)}" placeholder="0"></div>` : ''}
+      ${d.source !== 'cash' ? `<button class="btn quiet" style="margin-top:8px;" data-act="draft-autodraw">${d.autoDraw !== false
+        ? `✓ 同時新增房貸動用(動用日 = 交割日 ${esc(settleDate(d.date || todayISO()).slice(5).replace('-', '/'))})`
+        : '不自動新增房貸動用(已經先記過了;點此開啟)'}</button>` : ''}` : ''}
       ${d.action === 'dividend' ? `
       <div class="grid2" style="margin-top:9px;">
         <div class="field"><label>配息日期</label><input type="date" data-k="pd-date" value="${esc(d.date)}"></div>
@@ -5957,6 +6065,7 @@ function onClick(el){
       break;
     }
     case 'draft-source': tradeDraft.source = el.dataset.v; break;
+    case 'draft-autodraw': tradeDraft.autoDraw = tradeDraft.autoDraw === false; break;
     case 'add-trade': {
       const d0 = tradeDraft;
       // 沒有對應標的(標的全刪光、選單是空的)時不能記:空的代號重新整理後會被補成 00631L,等於默默算到別檔頭上
@@ -6004,9 +6113,19 @@ function onClick(el){
       // 「房貸借款」只是標記資金來源,不會自動記動用:借款餘額、利息、曝險比例都靠「紀錄」分頁的動用紀錄,
       // 忘了記的話曝險比例被低估,曝險卡片會叫你再多借多買
       const last = state.trades[state.trades.length - 1];
-      tradeNote = mixNote + (last.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(last.shares * last.price + last.fee)}),借款餘額跟曝險比例才會算對。` : '');
+      const loanAmt = Math.round(last.shares * last.price + last.fee);
+      if (last.source === 'loan' && d0.autoDraw !== false){
+        // 房貸買進順便記動用,不用兩邊各打一次(以前只提醒,忘了記就是「兩邊對不起來」)。動用日預設交割日(T+2),
+        // 動用日到之前不算借款、不算利息;銀行實際撥款日不一樣的話到「紀錄」分頁改
+        const useDate = settleDate(last.date);
+        state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: loanAmt, useDate,
+          note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增)`, repayments: [] });
+        tradeNote = mixNote + `已同時新增一筆房貸動用 NT$ ${fmt(loanAmt)},動用日 ${useDate}(交割日);金額或日期不對到「紀錄」分頁的房貸動用記錄改。`;
+      }else{
+        tradeNote = mixNote + (last.source === 'loan' ? `用房貸買的,記得到「紀錄」分頁新增一筆房貸動用(約 NT$ ${fmt(loanAmt)}),借款餘額跟曝險比例才會算對。` : '');
+      }
       tradeDraft = { date: d0.date, symbol: d0.symbol, action: d0.action, source: d0.source,
-                     shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'' };
+                     shares:'', price:'', amount:'', fee:'', note:'', loanAmt:'', autoDraw: d0.autoDraw };
       break;
     }
     case 'edit-trade': editingTrade = id; break;
@@ -6172,6 +6291,7 @@ function onClick(el){
       state.transactions.push({ id: txid, date: m === thisMonth() ? todayISO() : m + '-01', cat: t.cat, desc: t.desc, amount: t.amount });
       break;
     }
+    case 'sum-year': summaryYear += Number(el.dataset.v) || 0; break;
     case 'edit-tpl': editingTpl = editingTpl === id ? null : id; break;
     case 'close-tpl': editingTpl = null; break;
     case 'del-tpl':
@@ -6215,7 +6335,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (!['month', 'edit-tpl', 'close-tpl', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
+  if (!['month', 'sum-year', 'edit-tpl', 'close-tpl', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 
@@ -6224,6 +6344,21 @@ function onClick(el){
    不抓新收盤價(🔔 還是前一天的訊號,要 4 天後才跳「收盤價停在…」)、不記當月利息跟快照、
    標題日期跟記帳/買賣的預設日期停在前一天(沒注意就把今天的交易記成昨天)。回到前景時補做。 */
 let foregroundDay = todayISO();
+function applyPrivacy(){
+  if (document.body && document.body.classList) document.body.classList.toggle('privacy', privacy);
+  const eye = document.getElementById('privacyBtn');
+  if (eye){
+    if (eye.classList) eye.classList.toggle('on', privacy);
+    if (eye.setAttribute) eye.setAttribute('aria-label', privacy ? '顯示金額' : '隱藏金額');
+    eye.title = privacy ? '顯示金額' : '隱藏金額';
+  }
+}
+function togglePrivacy(){
+  privacy = !privacy;
+  try{ localStorage.setItem('financePrivacy', privacy ? '1' : '0'); }catch(e){}   // 每台裝置各自記,不同步
+  applyPrivacy();
+  renderAll();
+}
 function showTodayDate(){
   const d = new Date();
   // 分頁列旁邊只放短日期,免得窄螢幕擠不下
@@ -6302,6 +6437,9 @@ function init(){
   document.querySelectorAll('[data-tab]').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
+  applyPrivacy();
+  const eye = document.getElementById('privacyBtn');
+  if (eye) eye.addEventListener('click', togglePrivacy);
 
   storageMode = 'local';
   maybePostInterest();
