@@ -339,7 +339,8 @@ id 沿用舊值以確保重複呼叫不會飄動。
    用 `twseJson`/`mergeHistory` 抓 14 個月、`computeTrend` 算「到最後一天」跟「到前一天」,不一樣就開 GitHub issue(@ 擁有者,GitHub 寄通知)。
    不存狀態(跟 computeTrend 無狀態重算同一個想法);issue 標題帶日期,同標題開過不再開。**只用預設標的與預設訊號參數**
    (使用者資料不在 repo 裡),app 裡改過參數就會不一致。本機試跑 `node scripts/signal-check.js --dry [--fake]`。
-   改 `computeTrend`/`trendAlertText` 的介面時要一起看這支。
+   改 `computeTrend`/`trendAlertText` 的介面時要一起看這支。續抱中「再跌幾 % 就出場」掉進 5%(`WARN_PCT`)以內的那天另外預警一次
+   (前一天還在範圍外才發)。判斷在 `evaluate()`,`tests/signalcheck.js` 不連網餵假歷史測。
 
 一句話版本:**現在唯一的決策依據是「訊號」分頁(均線趨勢 + 曝險目標 + 壓力測試);
 「紀錄」分頁的動用記錄純粹是記帳,不做任何判斷。**
@@ -353,6 +354,13 @@ id 沿用舊值以確保重複呼叫不會飄動。
   (`loanMismatch()`,設定頁的警告共用)、一週內扣款(`monthLoanDues()` 的 `date`)、一週內預定動用收成一張卡。
   **只列要做的事,不重算金額**,金額以各自的卡片為準;`exposureTodo()` 的「要不要調整」條件要跟 `renderExposurePlanCard()` 一致,
   改那張卡的判斷時兩邊一起改。測試 `tests/todo.js`。
+
+- **房貸買進順便記動用**:`add-trade` 存的是房貸那筆(含「兩者都有」拆出來的)時,`tradeDraft.autoDraw`(預設開)就新增一筆動用,
+  金額 = 那筆買進總額,動用日 = `settleDate()`(T+2,只跳週末)。已經先記過動用的人在草稿關掉。
+- **隱藏金額**:`fmt()` 在 `privacy` 開著時回傳 ••••(所有金額都經過它),**會存進 state 的文字要用 `fmtRaw()`**,不然隱藏時記下來的就是 ••••。
+  開關存 localStorage `financePrivacy`(每台裝置各自),輸入框用 CSS 模糊。
+- **年度總結**(`yearSummary()`/`renderYearCard()`,總覽頁):淨資產跟整體損益用每月快照(去年 12 月 → 今年最後一筆,今年用目前數字),
+  利息用 `accrue()` 切年度。測試都在 `tests/extras.js`。
 
 ## 曝險比例公式(`computeRisk()`)
 

@@ -17,6 +17,8 @@ const path = require('path');
 const DRY = process.argv.includes('--dry');
 const FAKE = process.argv.includes('--fake');
 const APP_URL = 'https://kurochu888.github.io/finance-app/';
+// 續抱中「再跌幾 % 就出場」掉進這個範圍的那天先預警一次(前一天還在範圍外才發,同一段不會天天發)
+const WARN_PCT = 5;
 
 // ---- 載入 app(DOM 用假的,localStorage 記成「剛抓過報價」,啟動時才不會自己去抓) ----
 const el = (id) => ({ id, innerHTML:'', textContent:'', value:'', style:{}, dataset:{}, scrollTop:0, className:'', hidden:true,
@@ -54,18 +56,51 @@ async function main(){
       }
     }
     it.priceHistory = hist; it.splits = splits;
-    const t = A.computeTrend(it);
-    if (t.barsAvailable < t.barsNeeded || A.trendHistoryGap(it)){
-      problems.push(`${it.id}:歷史不夠或中間缺一段(${t.barsAvailable}/${t.barsNeeded} 天),訊號不可信`);
-      continue;
-    }
+    const r = evaluate(it, FAKE);
+    if (r.problem) problems.push(r.problem);
+    alerts.push(...r.alerts);
+  }
+  if (FAKE) alerts.forEach(a => { a.title = '[測試] ' + a.title; });
+  for (const a of alerts) await notify(a);
+  if (!alerts.length) console.log('沒有狀態改變。');
+  if (problems.length){
+    problems.forEach(p => console.error('✗ ' + p));
+    process.exitCode = 1;
+  }
+}
+
+/* 一檔標的(priceHistory 已經填好)今天要發哪些通知。拆出來是為了測試能直接餵價格歷史(tests/signalcheck.js) */
+function evaluate(it, fake = false){
+  const alerts = [], hist = it.priceHistory;
+  const t = A.computeTrend(it);
+  if (t.barsAvailable < t.barsNeeded || A.trendHistoryGap(it))
+    return { alerts, problem: `${it.id}:歷史不夠或中間缺一段(${t.barsAvailable}/${t.barsNeeded} 天),訊號不可信` };
+  {
     const prev = A.computeTrend({ ...it, priceHistory: hist.slice(0, -1) });
     console.log(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${describe(t)}(前一天 ${describe(prev)})`
       + (t.exitLine ? `,出場線 ${t.exitLine.toFixed(2)}、再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''));
     const changed = prev.status !== t.status || (t.status === 'WAIT_RECOVER' && prev.pyramidCount !== t.pyramidCount);
-    if (!changed && !FAKE) continue;
+    const nearExit = t.status === 'HOLD' && prev.status === 'HOLD' && t.cushionPct != null && t.cushionPct < WARN_PCT
+      && !(prev.cushionPct != null && prev.cushionPct < WARN_PCT);
+    if (nearExit){
+      alerts.push({
+        title: `⚠️ ${t.lastDate} ${it.id} 再跌 ${t.cushionPct.toFixed(1)}% 就出場`,
+        body: [
+          `**${it.id} ${t.lastDate}** 收盤 ${t.lastClose},出場線 ${t.exitLine.toFixed(2)}(快線 ${t.maFast.toFixed(2)} × ${it.trend.exitBuffer}),`
+            + `再跌 ${t.cushionPct.toFixed(1)}% 收盤跌破就是出場訊號。`,
+          '',
+          '還不用動,只是先準備:出場的話正2 要賣多少、賣得的錢要不要還房貸,先在 app 的「正2 曝險目標」卡想好。'
+            + '出場線會跟著快線移動,之後真的跌破會再發一次 🔔。',
+          '',
+          `app:${APP_URL}`,
+          '',
+          `<sub>續抱中距離出場線掉進 ${WARN_PCT}% 以內的那天發一次;GitHub Actions 用預設參數自動算的(scripts/signal-check.js)。</sub>`,
+        ].join('\n'),
+      });
+    }
+    if (!changed && !fake) return { alerts };
     // 提醒文字用 app 的同一份(trendAlertText),「上次看過的」當成前一天的狀態
-    it.trend.lastSeenStatus = FAKE && !changed ? (t.status === 'HOLD' ? 'WAIT_RECOVER' : 'HOLD') : prev.status;
+    it.trend.lastSeenStatus = fake && !changed ? (t.status === 'HOLD' ? 'WAIT_RECOVER' : 'HOLD') : prev.status;
     it.trend.lastSeenLayers = prev.pyramidCount;
     const a = A.trendAlertText(t, it);
     alerts.push({
@@ -83,13 +118,7 @@ async function main(){
       ].join('\n'),
     });
   }
-  if (FAKE) alerts.forEach(a => { a.title = '[測試] ' + a.title; });
-  for (const a of alerts) await notify(a);
-  if (!alerts.length) console.log('沒有狀態改變。');
-  if (problems.length){
-    problems.forEach(p => console.error('✗ ' + p));
-    process.exitCode = 1;
-  }
+  return { alerts };
 }
 
 async function notify(a){
@@ -109,4 +138,5 @@ async function notify(a){
   console.log('已開 issue:' + (await r.json()).html_url);
 }
 
-main().catch(e => { console.error('✗ ' + (e && e.message || e)); process.exitCode = 1; });
+if (require.main === module) main().catch(e => { console.error('✗ ' + (e && e.message || e)); process.exitCode = 1; });
+else module.exports = { evaluate, A, WARN_PCT };
