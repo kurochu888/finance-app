@@ -73,6 +73,30 @@ must(A.state.templates.length === 2, '按一次不刪');
 A.onClick({ dataset:{ act:'del-tpl', id: ins.id } });
 must(A.state.templates.length === 1 && tx().length === n, '按兩次刪掉範本,交易留著');
 
+console.log('修改範本(調薪):之後記的用新金額,已經記過的不動');
+{
+  const t = A.state.templates[0];   // 月薪 120000,10 月已記
+  A.onClick({ dataset:{ act:'edit-tpl', id: t.id } });
+  must(A.renderLedger().includes('tpl-amt-' + t.id), '點範本要展開修改欄位');
+  A.onField('tpl-amt-' + t.id, { value: '' });
+  must(t.amount === 120000, '清空準備重打的那一下不算');
+  A.onField('tpl-amt-' + t.id, { value: '125000' });
+  A.onField('tpl-desc-' + t.id, { value: '月薪(調薪後)' });
+  A.onField('tpl-cat-' + t.id, { value: '其他' });
+  must(t.amount === 125000 && t.desc === '月薪(調薪後)' && t.cat === '其他', '金額、說明、類別要改到:' + JSON.stringify(t));
+  must(tx().some(x => x.amount === 120000) && !tx().some(x => x.amount === 125000), '10 月已記的還是 120000');
+  A.viewMonth = '2026-11';
+  A.onClick({ dataset:{ act:'use-tpl', id: t.id } });
+  must(tx().some(x => x.date === '2026-11-01' && x.amount === 125000 && x.desc === '月薪(調薪後)'), '11 月記的是新金額');
+  A.state.templates.push({ id:'exp1', cat:'其他', desc:'保險費', amount:-19000 });
+  A.onField('tpl-amt-exp1', { value: '20000' });
+  must(A.state.templates.find(x => x.id === 'exp1').amount === -20000, '支出範本改金額還是支出');
+  A.state.templates = A.state.templates.filter(x => x.id !== 'exp1');
+  A.onClick({ dataset:{ act:'close-tpl' } });
+  must(!A.renderLedger().includes('tpl-amt-'), '按完成收起來');
+  A.viewMonth = '2026-10';
+}
+
 console.log('存檔往返、壞資料');
 const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
 must(JSON.stringify(back.templates) === JSON.stringify(A.state.templates), '存檔再讀回來範本要一樣');
