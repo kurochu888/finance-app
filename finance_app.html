@@ -441,6 +441,7 @@ function emptyState(){
     instruments: newInstruments(),
     budgets: DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 })),   // 類別清單
     transactions:[], netWorthHistory:[],
+    templates:[],   // 固定收支範本(月薪、保險…),記帳頁按一下記到那個月,見 renderTemplates
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
   };
 }
@@ -548,6 +549,9 @@ function normalize(raw){
     id:safeId(t.id), date:isoDate(t.date, todayISO()),
     cat:str(t.cat) || '其他', desc:str(t.desc), amount:num(t.amount)
   }));
+  // 固定收支範本:金額帶正負號(收入正、支出負),跟 transactions 一樣
+  s.templates = objs(raw.templates).map(t => ({ id: safeId(t.id), cat: str(t.cat) || '其他', desc: str(t.desc), amount: num(t.amount) }))
+    .filter(t => t.amount);
   s.dailyHistory = objs(raw.dailyHistory)
     .map(h => ({
       d: isoDate(str(h.d), ''),
@@ -635,7 +639,7 @@ function normalize(raw){
   const dedupe = (list, field = 'id', seen = new Set()) => { list.forEach(x => { while (seen.has(x[field])) x[field] = uid(); seen.add(x[field]); }); };
   const itemIds = new Set();
   dedupe(s.assets, 'id', itemIds); dedupe(s.liabilities, 'id', itemIds);
-  dedupe(s.transactions); dedupe(s.trades); dedupe(s.netWorthHistory); dedupe(s.budgets);
+  dedupe(s.transactions); dedupe(s.trades); dedupe(s.netWorthHistory); dedupe(s.budgets); dedupe(s.templates);
   dedupe(s.instruments, 'key'); dedupe(base.draws);
   s.liabilities.forEach(l => { if (l.loan) dedupe(l.loan.rateHistory); });
   dedupe(base.rateHistory);   // 理財型的過去利率以前漏了(一般型有):id 重複時刪一段會兩段一起刪
@@ -673,8 +677,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · 08abda8edc';
-const BUILD_HASH = '08abda8edc';
+const BUILD_VERSION = '2026-10-08 · 4ccf5f102d';
+const BUILD_HASH = '4ccf5f102d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -738,7 +742,7 @@ let lastSavedObj = null;          // 上次存檔(或套用雲端)時的內容,�
 function keyedLists(st){
   const out = [];
   if (!st || typeof st !== 'object') return out;
-  ['transactions', 'trades', 'assets', 'liabilities', 'netWorthHistory', 'budgets'].forEach(k => {
+  ['transactions', 'trades', 'assets', 'liabilities', 'netWorthHistory', 'budgets', 'templates'].forEach(k => {
     if (Array.isArray(st[k])) out.push([k, st[k], mergeKey]);
   });
   if (Array.isArray(st.instruments)) out.push(['instruments', st.instruments, x => x && x.key != null ? 'k:' + x.key : null]);
@@ -1089,6 +1093,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
       restored = true;
     }
   });
+  // 固定收支範本(2026-10 加):舊版分頁寫回來沒有 templates 這個 key
+  if (!Array.isArray(raw.templates) && (prev.templates || []).length){
+    next.templates = JSON.parse(JSON.stringify(prev.templates));
+    restored = true;
+  }
   // 過去各段利率同理:舊版分頁不認得,寫回來整個不見,過去的利息又會照目前利率重算
   const rawL = raw.leverage && typeof raw.leverage === 'object' ? raw.leverage : null;
   if (rawL && !Array.isArray(rawL.rateHistory) && prev.leverage && (prev.leverage.rateHistory || []).length){
@@ -2478,14 +2487,14 @@ function monthLoanDues(){
   const r = computeLeverage(), li = Math.round(levPeriodInterest(m));
   if (r.usedAmount > 0 || li > 0){            // 期中全部還清的話,繳款日照樣要付這期的利息
     const mp = leverageMonthPrincipal();
-    out.push({ name: '理財型房貸(槓桿)', principal: mp.amount, interest: li, note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
+    out.push({ name: '理財型房貸(槓桿)', date: levDueDate(m), principal: mp.amount, interest: li, note: (levDueDate(m) <= todayISO() ? '已於 ' : '') + levDueDate(m).slice(5).replace('-', '/') + ' 扣款' + (mp.estimate ? '(還本為預估)' : '') });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
     const row = amortize(l.loan).rows.find(x => x.date.slice(0, 7) === m);
     const nx = row ? null : nextLoanPayment(l.loan);
     const p = row || (nx && nx.date.slice(0, 7) === m ? nx : null);
-    if (p) out.push({ name: l.name || '房貸', principal: p.principal, interest: p.interest, note: (row ? '已於 ' : '') + p.date.slice(5).replace('-', '/') + ' 扣款' });
+    if (p) out.push({ name: l.name || '房貸', date: p.date, principal: p.principal, interest: p.interest, note: (row ? '已於 ' : '') + p.date.slice(5).replace('-', '/') + ' 扣款' });
   });
   return out;
 }
@@ -2863,6 +2872,32 @@ function refreshTradeDraft(){
 }
 
 /* ===================== 記帳 ===================== */
+/* 固定收支範本:月薪、保險、房租這類每月一樣的,記帳頁按一下記到正在看的那個月。
+   不自動記(自動記要處理第一次用、沒開 app 的月份、刪掉不補回…,房貸利息那套踩過的坑都會再來一次),
+   一個月只記一次:交易 id 照範本跟月份固定,兩台各按一次合併後還是同一筆,記過的顯示 ✓。 */
+const tplTxId = (t, m) => ('tp-' + t.id).slice(0, 50) + '-' + m.replace('-', '');   // id 上限 64 字(safeId),太長會在 normalize 被換掉
+function renderTemplates(){
+  const list = state.templates || [];
+  const m = viewMonth;
+  return `
+    <div class="card">
+      <h3>固定收支</h3>
+      ${list.length ? list.map(t => {
+        const tx = state.transactions.find(x => x.id === tplTxId(t, m));
+        return `
+        <div class="erow">
+          <div class="f-name">
+            <div>${esc(t.cat)}${t.desc ? ` <span class="muted">· ${esc(t.desc)}</span>` : ''}</div>
+            <div class="${t.amount > 0 ? 'pos' : ''}" style="font-size:13px;">${t.amount > 0 ? '+' : '−'}${fmt(Math.abs(t.amount))}</div>
+          </div>
+          ${tx ? `<span class="badge gray" style="flex:0 0 auto;">✓ ${esc(shortMonth(m))}已記</span>`
+               : `<button class="btn quiet" style="flex:0 0 auto; width:auto; margin:0; padding:6px 12px;" data-act="use-tpl" data-id="${t.id}">記到${esc(shortMonth(m))}</button>`}
+          ${xDel('del-tpl', t.id)}
+        </div>`; }).join('')
+      : `<div class="empty">還沒有固定收支。<br>在上面填好一筆(例如月薪、保險費),按「把上面填的存成固定收支」,之後每個月按一下就記好。</div>`}
+      ${list.length ? `<div class="muted" style="margin-top:8px;">記到上面月份切換正在看的那個月,一個月記一次;記錯了到下面交易紀錄點那筆改或刪。</div>` : ''}
+    </div>`;
+}
 function renderLedger(){
   const cats0 = knownCats();
   if (!draft.newCat && !cats0.includes(draft.cat)) draft.cat = cats0[0] || '';
@@ -2906,8 +2941,10 @@ function renderLedger(){
       </details>
       <div class="field"><label>說明(可留空)</label><input data-k="d-desc" value="${esc(draft.desc)}" placeholder="例如:超市採買"></div>
       <button class="btn solid" data-act="add-tx">新增紀錄</button>
+      <button class="btn quiet" data-act="save-tpl">把上面填的存成固定收支</button>
       ${draftError ? `<div class="muted neg" style="text-align:center; margin-top:8px;">${esc(draftError)}</div>` : ''}
     </div>
+    ${renderTemplates()}
 
     <div class="card">
       <h3>${esc(monthLabel(viewMonth))}</h3>
@@ -4093,6 +4130,13 @@ function trendBadge(status){
 }
 /* 正2 曝險目標卡片:目前曝險 vs 目標曝險,以及該加碼/減碼多少(現金/房貸兩個邊界值,
    兩檔 00631L/00675L 均分)。只在有正2(槓桿2倍)標的時顯示。 */
+/* 動用紀錄合計跟標「房貸借款」的買進合計差超過 2%(最少 1 萬):設定頁的警告跟「今天要做什麼」共用 */
+function loanMismatch(){
+  const p = computePosition(), r = computeLeverage();
+  if (!p.hasData || !r.drawnAmount) return null;
+  const diff = r.drawnAmount - p.buyLoan;
+  return Math.abs(diff) > Math.max(10000, r.drawnAmount * 0.02) ? { p, r, diff } : null;
+}
 /* 有「房貸借款」的買進紀錄,房貸動用紀錄卻一筆都沒有:借款餘額當成 0,部位淨值被高估、曝險比例被低估 */
 const loanLedgerMissing = () => state.trades.some(t => t.action === 'buy' && t.source === 'loan') && !state.leverage.draws.some(d => d.amount > 0);
 const LOAN_LEDGER_MSG = '有用「房貸借款」買進的紀錄,但「紀錄」分頁還沒有任何房貸動用:借款餘額被當成 0,曝險比例會偏低、曝險目標卡片會叫你多買。先到「紀錄」分頁新增動用。';
@@ -4800,6 +4844,61 @@ function renderBacktestCard(){
     </div>`;
 }
 
+/* 「今天要做什麼」:把散在訊號、紀錄、設定三個分頁的待辦收成一張卡,放在槓桿頁最上面。
+   只列要動手的事跟一句話的原因,金額跟細節還是看各自的卡片(不在這裡重算一次,避免兩邊說法不一樣)。
+   沒事就說今天不用動。 */
+function exposureTodo(){
+  const p = computeExposurePlan();
+  if (!p || loanLedgerMissing() || computeRisk().capacity <= 0) return null;
+  const lev2 = p.instruments.map(findInstrumentByKey).filter(Boolean);
+  if (lev2.some(it => { const t = computeTrend(it); return t.barsAvailable < t.barsNeeded || trendHistoryGap(it); })) return null;
+  if (splitTradeIssues().some(x => p.instruments.includes(x.it.key))) return null;   // 分割提醒另外列
+  if (p.progress > p.layerCount && !p.holdAdjustPending) return null;               // 續抱中,不再平衡
+  if (p.progress >= 1 && p.progress <= p.layerCount && !p.layerAdjustPending) return null;   // 這一層調整過了
+  const lev2Value = sum(computeLeverage().holdings.filter(h => p.instruments.includes(h.key)), h => h.value);
+  const now = `目前 ${p.currentRatio.toFixed(0)}% → 目標 ${p.targetRatio}%`;
+  if (p.deltaLoan < -0.5) return lev2Value < 1 ? null
+    : { text: p.targetRatio === 0 ? '正2 出場:賣出' : '正2 減碼', sub: now + ',要賣多少看「正2 曝險目標」卡', tab: 'signal' };
+  if (p.deltaLoan > 0.5) return { text: p.progress > p.layerCount ? '轉回續抱:正2 加碼' : `接刀第 ${p.progress} 層:正2 加碼`, sub: now + ',要買多少看「正2 曝險目標」卡', tab: 'signal' };
+  if (p.holdAdjustPending || p.layerAdjustPending) return { text: '曝險已經在目標附近', sub: '到「正2 曝險目標」卡按「已調整完成」', tab: 'signal' };
+  return null;
+}
+function todoItems(){
+  const out = [], today = todayISO();
+  const go = (icon, text, sub, tab, html = false) => out.push({ icon, text, sub, tab, html });
+  const st = signalStaleness();
+  if (st) go('🕘', `收盤價停在 ${st.date}(${st.days} 天前)`, '先更新收盤價,訊號才是今天的', 'signal');
+  splitTradeIssues().forEach(({ it, n }) => go('✂️', `${it.id} 分割過,有 ${n} 筆買賣紀錄要處理`, '處理完持股跟加碼金額才算得對', 'signal'));
+  trendChanges().forEach(t => { const it = findInstrumentByKey(t.key); if (it) go('🔔', trendAlertText(t, it).title, '看完按「知道了」', 'signal', true); });   // title 已經跳脫過
+  const ex = exposureTodo();
+  if (ex) go('⚖️', ex.text, ex.sub, ex.tab);
+  if (loanLedgerMissing()) go('📒', '有用房貸買進,但還沒有房貸動用紀錄', '借款餘額被當成 0,曝險比例會偏低', 'log');
+  else { const mm = loanMismatch(); if (mm) go('📒', '動用紀錄跟房貸買進金額對不起來', `差 NT$ ${fmt(Math.abs(mm.diff))},詳細在設定分頁`, 'setup'); }
+  const future = state.trades.filter(t => t.date > today).length;
+  if (future) go('📅', `有 ${future} 筆買賣的日期在未來`, '是不是年份打錯了', 'log');
+  monthLoanDues().forEach(d => {
+    const days = d.date ? daysBetweenISO(today, d.date) : -1;
+    if (d.date >= today && days <= 7) go('🏦', `${d.date.slice(5).replace('-', '/')} ${d.name}扣款 約 NT$ ${fmt(d.principal + d.interest)}`,
+      (days === 0 ? '今天' : days + ' 天後') + ',帳戶記得留錢', state.liabilities.some(l => l.name === d.name) ? '' : 'setup');
+  });
+  state.leverage.draws.filter(d => d.useDate > today && daysBetweenISO(today, d.useDate) <= 7)
+    .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '到那天才算借款', 'log'));
+  return out;
+}
+function renderTodo(){
+  const items = todoItems();
+  return `
+    <div class="card">
+      <h3>今天要做什麼</h3>
+      ${items.length ? items.map(x => `
+        <div class="row" style="align-items:flex-start;">
+          <span class="label"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
+            <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
+          ${x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
+        </div>`).join('')
+      : `<div class="muted">✓ 今天不用動。${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>`}
+    </div>`;
+}
 function renderLeverage(){
   const L = state.leverage;
   const r = computeLeverage();
@@ -4807,6 +4906,7 @@ function renderLeverage(){
   return `
     ${levTabs()}
     ${levTab === 'overview' ? `
+      ${renderTodo()}
       ${renderPnL()}
       ${renderRisk()}
     ` : levTab === 'signal' ? `
@@ -4942,11 +5042,9 @@ function renderLeverage(){
       <button class="btn quiet" data-act="toggle-autointerest">${L.autoInterest ? '✓ 利息每月自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
       <button class="btn quiet" data-act="toggle-autorepay">${L.autoRepay ? `✓ 每月 ${L.payDay} 號自動記還本` : '不自動記還本(點此開啟)'}</button>
       ${(() => {
-        const p = computePosition();
-        if (!p.hasData || !r.drawnAmount) return '';
-        const diff = r.drawnAmount - p.buyLoan;
-        const tol = Math.max(10000, r.drawnAmount * 0.02);
-        if (Math.abs(diff) <= tol) return '';
+        const mm = loanMismatch();
+        if (!mm) return '';
+        const { p, diff } = mm;
         return `
           <div class="alert amber" style="margin-top:12px;">
             <span class="ai">⚠️</span>
@@ -5713,7 +5811,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
+const CONFIRM_ACTS = ['del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
   const act = el.dataset.act;
   const id = el.dataset.id;
@@ -6012,6 +6110,28 @@ function onClick(el){
     case 'sign-in': signInCloud(); return;
     case 'sign-out': signOutCloud(); return;
     case 'draft-type': draft.type = el.dataset.v; break;
+    case 'save-tpl': {                      // 把「新增一筆」填的內容存成固定收支範本
+      const amt = Math.abs(num(draft.amount));
+      if (!amt){ draftError = '先填金額,才能存成固定收支'; renderAll(); return; }
+      const cat = (draft.newCat ? (draft.cat || '').trim() : draft.cat) || knownCats()[0] || '其他';
+      const t = { id: uid(), cat, desc: draft.desc.trim(), amount: draft.type === 'income' ? amt : -amt };
+      if ((state.templates || []).some(x => x.cat === t.cat && x.desc === t.desc && x.amount === t.amount)){ draftError = '已經有一樣的固定收支了'; renderAll(); return; }
+      draftError = '';
+      state.templates.push(t);
+      break;
+    }
+    case 'use-tpl': {                       // 用範本記一筆到正在看的月份,一個月一次
+      const t = findById(state.templates || [], id);
+      if (!t) break;
+      const m = viewMonth, txid = tplTxId(t, m);
+      if (state.transactions.some(x => x.id === txid)) break;
+      state.transactions.push({ id: txid, date: m === thisMonth() ? todayISO() : m + '-01', cat: t.cat, desc: t.desc, amount: t.amount });
+      break;
+    }
+    case 'del-tpl':
+      if (needsConfirm('del-tpl:' + id)) return;
+      state.templates = (state.templates || []).filter(t => t.id !== id);
+      break;
     case 'add-tx': {
       const amt = Math.abs(num(draft.amount));
       if (!amt){ draftError = '請先填金額'; renderAll(); return; }
