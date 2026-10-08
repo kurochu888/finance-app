@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -122,6 +122,25 @@ Object.assign(A.tradeDraft, { source:'cash', shares:'1000', price:'40', autoDraw
 A.onClick({ dataset:{ act:'add-trade' } });
 must(A.state.leverage.draws.length === 2, '自有資金不新增動用');
 must(!A.renderTrades().includes('同時新增房貸動用'), '選自有資金時不顯示這個選項');
+
+console.log('預定動用:剩餘可動用先扣掉,並列出網路銀行現在看到的(使用者 2026-10-08 的真實數字)');
+{
+  const keep = A.state;
+  A.state = A.normalize(A.emptyState());
+  Object.assign(A.state.leverage, { annualRate: 2.58, payDay: 17, creditLimit: 8000000, rateHistory: [] });
+  A.state.leverage.draws = [['2026-10-05', 200000], ['2026-10-06', 420000], ['2026-10-08', 1200000], ['2026-10-12', 410000], ['2026-10-12', 360000]]
+    .map(([d, a], i) => ({ id: 'u' + i, label: '動用', amount: a, useDate: d, note: '', repayments: [] }));
+  must(A.plannedDrawAmount() === 770000, '預定 770,000:' + A.plannedDrawAmount());
+  const ni = A.nextLevInterest();
+  must(ni.amount === 1532 && ni.bank === 1260 && ni.label.includes('10/17'), '10/17 利息 app 1,532、網路銀行 1,260:' + JSON.stringify(ni));
+  A.levTab = 'settings';
+  const t = A.renderLeverage().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  must(/剩餘可動用\(已扣預定動用\) NT\$ 5,410,000/.test(t), '剩餘可動用 = 800 萬 − 182 萬 − 77 萬:' + (t.match(/剩餘可動用[^網]*/) || [''])[0]);
+  must(/網路銀行現在顯示\(預定的 770,000 還沒轉出\) NT\$ 6,180,000/.test(t), '要列網路銀行現在的 6,180,000');
+  must(/網路銀行現在顯示\(不含還沒轉出的預定動用\) NT\$ 1,260/.test(t), '要列網路銀行現在的利息 1,260');
+  A.levTab = 'overview';
+  A.state = keep;
+}
 
 console.log('隱藏金額');
 A.state = A.sampleData();
