@@ -14,9 +14,14 @@ ROOT = pathlib.Path(__file__).parent
 tpl = (ROOT / 'app.template.html').read_text(encoding='utf-8')
 
 # 版號不是手動維護的 semantic version——單人持續部署的 app,手動編號只會忘記更新。
-# 用「原始檔內容的 hash + build 當天日期」當版號,build.py 一跑就自動換,三份產物共用同一個值,
+# 用「原始檔內容的 hash」當版號(畫面上另外顯示 build 當天日期),原始檔一改就自動換,三份產物共用同一個值,
 # 拿來確認「網頁上看到的是不是最新那次 build」用,不代表任何相容性語意。
-BUILD_HASH = hashlib.sha256(tpl.encode()).hexdigest()[:10]
+# 線上版一起發佈的雲端同步程式跟圖示也要算進去:service worker 對它們是「有快取就用快取」,
+# 以前只算 app.template.html,只改 firebase-sync.js 時版號不變,手機會一直用舊的同步程式、也不會跳「有新版」
+_h = hashlib.sha256(tpl.encode())
+for _name in ['firebase-sync.js', 'firebase-config.js', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'favicon-32.png']:
+    _h.update(_name.encode() + b'\0' + (ROOT / _name).read_bytes())
+BUILD_HASH = _h.hexdigest()[:10]
 BUILD_VERSION = f'{datetime.date.today().isoformat()} · {BUILD_HASH}'
 
 NOTE_LOCAL = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。'

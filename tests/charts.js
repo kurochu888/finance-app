@@ -81,6 +81,21 @@ const mk2 = store['mk-two'];
 console.log('  游標線位置:', mk2 && mk2.getAttribute('x1'), '| 透明度:', mk2 && mk2.getAttribute('opacity'));
 if (!mk2 || mk2.getAttribute('opacity') !== '1') bugs.push('游標線沒有顯示');
 
+console.log('前面有空值的線,點下去放大的要是同一天的點(以前照圓點順序對,錯開到別天)');
+{
+  const html = A.lineChart('gap', ['a','b','c','d'], [
+    { name:'市值', color:'red', values:[1, 2, 3, 4] },
+    { name:'損益', color:'blue', values:[null, null, 5, 6] }]);
+  nodes.length = 0;
+  [...html.matchAll(/<circle class="(pt-gap-\d)" data-i="(\d+)"/g)].forEach(m => {
+    const n = el('c'); n.sel = '.' + m[1]; n.setAttribute('data-i', m[2]); nodes.push(n);
+  });
+  A.pickChartPoint('gap', 2);
+  const big = nodes.filter(n => n.getAttribute('r') === '4').map(n => n.sel + '@' + n.getAttribute('data-i'));
+  console.log('  放大的點:', big.join(', '));
+  if (big.join() !== '.pt-gap-0@2,.pt-gap-1@2') bugs.push('點第 3 天,放大的點不對:' + big.join());
+}
+
 console.log();
 console.log(bugs.length ? '發現問題:\n' + bugs.map((b,i)=>'  '+(i+1)+'. '+b).join('\n') : '沒有發現問題');
 if (bugs.length) process.exitCode = 1;
