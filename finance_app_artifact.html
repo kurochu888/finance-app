@@ -680,8 +680,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-08 · 7b1a3f3d06';
-const BUILD_HASH = '7b1a3f3d06';
+const BUILD_VERSION = '2026-10-08 · abecc73f96';
+const BUILD_HASH = 'abecc73f96';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4473,7 +4473,8 @@ function renderExposurePlanCard(){
   const sellAllLev2 = () => `正2 全部賣掉 約 NT$ ${fmt(lev2Value())}${sellSplit(lev2Value())}`
     + (hasOther ? '(其他標的也算在曝險裡,正2 賣光還到不了目標;其他標的照它自己的訊號)' : '(賣光也到不了目標)');
   // 還款/借款的上限:借款餘額、剩下的額度。R = 目標比例,raw = 曝險差額(負 = 要減)
-  const loan = computeRisk().loan, room = Math.max(0, state.leverage.creditLimit - loan);
+  // 剩下的額度要先扣預定動用(已經講好要轉出、還沒到那天的),不然會叫你借到超過額度
+  const loan = computeRisk().loan, room = Math.max(0, state.leverage.creditLimit - loan - plannedDrawAmount());
   const R = p.targetRatio / 100, raw = p.deltaLoan * 2;
   const sellCash = p.deltaCash == null ? null : Math.abs(p.deltaCash);
   // 賣 x、還 min(x, 借款):借款夠還 → x = |raw|/2;不夠 → 先還清、剩下留現金:x = (−raw − R×借款)/(2 − R)
@@ -5336,8 +5337,10 @@ function renderLeverage(){
       </div>`).join('')}` : ''}
       <div class="muted" style="margin-top:6px;">銀行調利率時直接改「目前年利率」就好:已經借出去的錢,今天以前的利息照舊利率算,今天起照新利率。
         生效日不是今天的話,改上面那段的日期。</div>
-      <div class="row"><span class="label">剩餘可動用</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>
+      <div class="row"><span class="label">剩餘可動用${plannedDrawAmount() ? '(已扣預定動用)' : ''}</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount - plannedDrawAmount()))}</span></div>
+      ${plannedDrawAmount() ? `<div class="row sub"><span class="label">網路銀行現在顯示(預定的 ${fmt(plannedDrawAmount())} 還沒轉出)</span><span class="val">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>` : ''}
       <div class="row"><span class="label" id="out-nextInterestLabel">${nextLevInterest().label}</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(nextLevInterest().amount)}</span></div>
+      ${nextLevInterest().bank !== nextLevInterest().amount ? `<div class="row sub"><span class="label">網路銀行現在顯示(不含還沒轉出的預定動用)</span><span class="val">NT$ ${fmt(nextLevInterest().bank)}</span></div>` : ''}
       ${(() => { const mp = leverageMonthPrincipal(); return `
       <div class="row"><span class="label">本月最低還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
@@ -5396,7 +5399,7 @@ function refreshLeverage(){
   set('out-usedAmount', 'NT$ ' + fmt(r.usedAmount));
   const bar = document.getElementById('out-usedBar');
   if (bar) bar.style.width = (L.creditLimit ? Math.min(100, r.usedAmount / L.creditLimit * 100) : 0).toFixed(1) + '%';
-  set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount)));
+  set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount - plannedDrawAmount())));
   set('out-monthlyInterest', 'NT$ ' + fmt(nextLevInterest().amount));
   set('out-nextInterestLabel', nextLevInterest().label);
   { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))); }
@@ -5492,12 +5495,18 @@ function levPeriodFrom(m){
    2026-10 以前是「餘額 × 年利率 ÷ 12」,跟總覽的逐日計息對不起來(758 vs 919) */
 function nextLevInterest(){
   const m0 = thisMonth(), m = levDueDate(m0) > todayISO() ? m0 : shiftMonth(m0, 1), due = levDueDate(m);
-  return { amount: Math.round(levPeriodInterest(m)), label: `下一期利息(${due.slice(5).replace('-', '/')} 扣,照目前餘額估)` };
+  // bank:網路銀行現在看到的(只算已經轉出的;預定動用還沒發生)。2026-10 使用者對過:銀行 1,260、app 1,532,差的就是 10/12 那兩筆預定
+  return { amount: Math.round(levPeriodInterest(m)), bank: Math.round(levPeriodInterest(m, true)), label: `下一期利息(${due.slice(5).replace('-', '/')} 扣)` };
 }
-function levPeriodInterest(m){
-  const L = state.leverage, due = levDueDate(m);
+/* 預定動用(動用日在今天之後)還沒轉出的金額。剩餘可動用要先扣掉:那筆錢已經講好要用了,網路銀行要到那天才看得到 */
+function plannedDrawAmount(){
+  const today = todayISO();
+  return sum(state.leverage.draws.filter(d => d.useDate && d.useDate > today && d.amount > 0), d => d.amount);
+}
+function levPeriodInterest(m, onlyDrawn = false){
+  const L = state.leverage, due = levDueDate(m), today = todayISO();
   const from = levPeriodFrom(m);
-  return sum(L.draws, d => Math.max(0, accrue(d, L, due) - accrue(d, L, from)));
+  return sum(L.draws.filter(d => !onlyDrawn || (d.useDate && d.useDate <= today)), d => Math.max(0, accrue(d, L, due) - accrue(d, L, from)));
 }
 /* 本月理財型要繳多少本金(最低還本),每筆動用照 maybeAutoRepay 的規則:
    - 本月已經自動記了 → 那筆的金額
