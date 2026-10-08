@@ -703,8 +703,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · 7a8d7daa4e';
-const BUILD_HASH = '7a8d7daa4e';
+const BUILD_VERSION = '2026-10-08 · caa3147ab2';
+const BUILD_HASH = 'caa3147ab2';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3198,7 +3198,7 @@ function renderHelp(){
     <div class="card doc">
       <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
-        <li><strong>概況</strong> — 每天看這頁就好:整體損益、年化報酬、曝險,以及兩張走勢圖</li>
+        <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用),點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
         <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完</li>
         <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
         <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
@@ -3318,9 +3318,9 @@ function renderHelp(){
     <div class="sect">借款與還款</div>
     <div class="card doc">
       <div class="formula">借款餘額 = 各筆動用記錄的金額 − 已還款
-每月利息 = 借款餘額 × 年利率 ÷ 12</div>
+每天利息 = 當天借款餘額 × 年利率 ÷ 365</div>
       <p>看到買進訊號、實際動用房貸買進之後,到<strong>「紀錄」分頁的「房貸動用記錄」</strong>
-      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。
+      填動用日期與金額(可以順便記下買了什麼)——填了才會計入借款餘額、利息(填未來的日期就等到那天才計入)。在「記一筆買賣」用房貸買進時,預設會順便新增一筆動用:金額 = 用房貸的那部分(含手續費),動用日 = T+2 交割日(只跳週末,不認得國定假日);已經先記過動用的話,點「同時新增房貸動用」那顆按鈕關掉。銀行實際撥款日不一樣,到「紀錄」分頁改。
       減碼還錢之後<strong>要記一筆還款</strong>,否則餘額不會減、利息會一直累積、曝險也會失真。
       還款一樣記在「紀錄」分頁:選哪一筆動用記錄、填日期與金額,下面會列出所有還款,
       可以修改或刪除,每筆的動用/已還/尚欠也一併顯示。</p>
@@ -3384,6 +3384,18 @@ function renderHelp(){
       </ul>
       <p>資產分頁的每一筆是<strong>現況</strong>,改了就覆蓋,不會保留舊值;
       歷史只有「每月一筆」的快照這個層級。</p>
+    </div>
+
+    <div class="sect">其他小功能</div>
+    <div class="card doc">
+      <ul>
+        <li><strong>固定收支</strong>(記帳頁)— 月薪、保險這類每月一樣的,存成範本,每月按「記到 X月」記一筆到正在看的月份,
+        一個月只會記一次。刻意不自動記:按了才算數,金額不一樣當月改那筆就好。點範本可以改金額/類別/說明,只影響之後記的。</li>
+        <li><strong>隱藏金額</strong>(頁首 👁)— 所有金額換成 ••••、輸入框模糊,在外面打開時用。每台裝置各自記。</li>
+        <li><strong>年度總結</strong>(總覽)— 一年的收支、淨資產變化(去年 12 月的快照到今年最新)、投資進出、房貸利息與還本。</li>
+        <li><strong>收盤後自動檢查</strong> — 每個交易日收盤後,GitHub Actions 用<em>預設</em>標的與<em>預設</em>訊號參數算一次均線訊號,
+        狀態改變、或續抱中離出場線不到 5% 時開 GitHub issue 通知。在這裡改過訊號參數的話,以 app 為準。</li>
+      </ul>
     </div>
 
     <div class="sect">畫面上的提醒</div>
@@ -6110,8 +6122,7 @@ function onClick(el){
         }
       }
       tradeError = '';
-      // 「房貸借款」只是標記資金來源,不會自動記動用:借款餘額、利息、曝險比例都靠「紀錄」分頁的動用紀錄,
-      // 忘了記的話曝險比例被低估,曝險卡片會叫你再多借多買
+      // 借款餘額、利息、曝險比例都靠「紀錄」分頁的動用紀錄;忘了記的話曝險比例被低估,曝險卡片會叫你再多借多買
       const last = state.trades[state.trades.length - 1];
       const loanAmt = Math.round(last.shares * last.price + last.fee);
       if (last.source === 'loan' && d0.autoDraw !== false){
