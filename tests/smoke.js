@@ -808,6 +808,17 @@ pass('after-clear');
     throw new Error('還原後的內容對不上');
   }
   console.log('  還原成功 ✓');
+  // 還原前先把當時的資料存一份(按錯日期還找得回來):清單裡要有「還原前」那份,內容是還原前的(資產、交易都清空的那個狀態)
+  {
+    const all = await api.list(), safe = all.find(id => id.includes('還原前'));
+    if (!safe) throw new Error('還原前沒有先把原本的資料存成備份:' + all.join(','));
+    A.state.assets.push({ id:'after', name:'還原後新增', amount:1 });
+    await A.restoreBackup(safe);
+    if (A.state.assets.length !== 0 || A.state.transactions.length !== 0) throw new Error('「還原前」那份的內容不是還原前的資料');
+    if (!(await api.list()).some(id => id !== safe && id.includes('還原前'))) throw new Error('第二次還原前也要再存一份');
+    console.log('  還原前先存一份、按錯了還原得回來 ✓');
+    for (const id of await api.list()) if (id.includes('還原前')) await api.del(id);   // 下面數份數的測試不要被影響
+  }
 
   // 只保留 30 天
   for (let i = 1; i <= 35; i++){
