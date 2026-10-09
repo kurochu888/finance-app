@@ -467,6 +467,9 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
     **只補雲端那邊的、不補本機那邊的**:剛更新時還沒有任何紀錄,舊本機資料裡別台早刪掉的東西會被救回來。
     值是負的 = 重新出現(還原舊備份、匯入),兩台比時間晚的算數。保留 180 天、最多 4000 筆(localStorage `financeTombstones`)。
     價格歷史、每日快照這類照日期的不記(會自動修剪、重抓)。`tests/twodevice.js`(隨機)、`tests/tombs.js`(固定情境)。
+  - **整份蓋掉前先備份(2026-10)**:匯入、還原備份、載入範例、清空全部之前 `safetyBackup(原因, 目前資料的複本)` 先存一份
+    (id「日期 HHMMSS 原因前」,同一秒重複就加序號——同一個 id 會讓第二份蓋掉存著原本資料的第一份,`tests/smoke.js` 抓到過)。
+    以前每天只在第一次打開時備份,蓋錯了那天之後改的全沒了,雲端同步還會把另一台也蓋掉。
   - **雲端斷線重連(2026-10)**:`syncFirstTime()` 的 `cloud.get()` 失敗(開 app 時剛好沒網路)或 `onChange` 的監聽出錯
     (Firestore 出錯會停掉那個監聽),以前都被吞掉:整個 session 只存本機、別台的改動收不到,要重開 app。現在 `scheduleCloudRetry()`
     記進診斷紀錄,`CLOUD_RETRY_MS` 後或回到前景(`onForeground`)時 `retryCloud()` 重抓一次、重新監聽。`onChange(cb, onErr)` 兩個後端
