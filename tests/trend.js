@@ -653,6 +653,21 @@ console.log('接刀只用自有資金(2026-10):出場時記下自有資金、各
     A.state = setup(ex.n, 6000000);
     A.renderAll();
   }
+  // 1d) 出場前用房貸買進、交割日(動用日)在出場那天以後:那筆借款還沒撥款,但股票已經在市值裡,也要扣
+  {
+    const s = setup(ex.n, 0);
+    s.trades = [
+      { id:'b1', date:'2000-01-01', symbol:'00631L', action:'buy', source:'cash', shares:3000000, price:1, amount:0, fee:0, note:'' },
+      { id:'b2', date:'2000-01-01', symbol:'00675L', action:'buy', source:'loan', shares:1000000, price:1, amount:0, fee:0, note:'' },
+    ];
+    s.leverage.draws = [{ id:'d1', label:'', amount:1000000, useDate: exitDate, note:'', repayments:[] }];
+    A.state = s;
+    A.renderAll();
+    ob = A.state.leverage.ownBase;
+    must(ob.exit === exitDate && ob.amount === 3000000, `出場後才撥款的房貸買進也要扣(400 − 100 = 300 萬),得到 ${JSON.stringify(ob)}`);
+    A.state = setup(ex.n, 6000000);
+    A.renderAll();
+  }
   // 2) 賣光之後接到第 1 層:這一層用 50% = 300 萬,只用自己的錢
   A.state.instruments.forEach(it => { it.shares = 0; it.priceHistory = mkHist(prices.slice(0, l1.n)); });
   A.renderAll();

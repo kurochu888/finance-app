@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v} };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -219,6 +219,41 @@ console.log('年度總結(手算對照)');
   must(A.renderYearCard().includes('2025 年總結'), '最早一年不能再往前');
   A.state = A.normalize(A.emptyState());
   must(A.renderYearCard().includes('沒有紀錄'), '空資料說沒有紀錄');
+}
+
+console.log('已經買進、還沒撥款的預定動用要算進借款(使用者 2026-10-09 的真實數字:曝險卡自己的錢多算 77 萬)');
+{
+  // 已撥款 182 萬(之前的房貸買進用掉了),10/8 房貸買進 77 萬,動用日是交割日 10/12(兩筆 41 萬 + 36 萬)
+  const s = A.normalize(A.emptyState());
+  s.leverage.creditLimit = 8000000;
+  s.trades = [
+    { id:'p1', date:'2026-09-01', symbol:'00631L', action:'buy', source:'loan', shares:50000, price:36.4, amount:0, fee:0, note:'' },
+    { id:'p2', date:'2026-10-08', symbol:'00631L', action:'buy', source:'loan', shares:10000, price:41, amount:0, fee:0, note:'' },
+    { id:'p3', date:'2026-10-08', symbol:'00675L', action:'buy', source:'loan', shares:1000, price:360, amount:0, fee:0, note:'' },
+  ];
+  s.leverage.draws = [
+    { id:'d0', label:'', amount:1820000, useDate:'2026-09-03', note:'', repayments:[] },
+    { id:'d1', label:'', amount:410000, useDate:'2026-10-12', note:'', repayments:[] },
+    { id:'d2', label:'', amount:360000, useDate:'2026-10-12', note:'', repayments:[] },
+  ];
+  s.instruments.forEach(it => { it.price = it.id === '00631L' ? 41 : 360; });
+  A.state = s;
+  const k = A.computeRisk();
+  must(Math.abs(k.pendingLoan - 770000) < 1 && Math.abs(k.loan - 2590000) < 1, `借款要含已經買進的 77 萬:pending ${k.pendingLoan}、loan ${k.loan}`);
+  must(Math.abs(k.equity - (k.pv - 2590000)) < 1, '自己的錢 = 部位市值 − 259 萬');
+  must(A.computeLeverage().usedAmount === 1820000, '已撥款餘額(銀行現在看到的)還是 182 萬');
+  // 剩下的額度:800 − 182 − 77 = 541 萬,不能再扣一次 77 萬
+  const lev = A.computeLeverage();
+  must(8000000 - lev.usedAmount - A.plannedDrawAmount() === 5410000, '剩餘額度 541 萬');
+  // 單純先記下、還沒買的預定動用不算借款
+  A.state.trades = A.state.trades.filter(t => t.date < '2026-10-08');
+  must(A.computeRisk().pendingLoan === 0 && A.computeRisk().loan === 1820000, '還沒拿去買的預定動用不算借款:' + A.computeRisk().loan);
+  // 只買了一部分(買 41 萬,預定 77 萬):只算 41 萬
+  A.state.trades.push({ id:'p2', date:'2026-10-08', symbol:'00631L', action:'buy', source:'loan', shares:10000, price:41, amount:0, fee:0, note:'' });
+  must(Math.abs(A.computeRisk().pendingLoan - 410000) < 1, '買了 41 萬只算 41 萬:' + A.computeRisk().pendingLoan);
+  // 之前多借沒用完(已撥款 > 房貸買進):先用那筆,不算預定的
+  A.state.leverage.draws[0].amount = 2300000;
+  must(A.computeRisk().pendingLoan === 0, '之前多借的夠付,預定動用不算:' + A.computeRisk().pendingLoan);
 }
 
 if (bugs.length){
