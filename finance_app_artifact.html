@@ -378,6 +378,12 @@ function diag(kind, msg){
     localStorage.setItem(DIAG_KEY, JSON.stringify(list));
   }catch(e){}
 }
+/* 打開 app 每天、每個版本只記一次:每次都記的話,一天開幾次就把 400 筆的空間吃掉,真正的問題幾週就被擠出去 */
+function diagStartup(){
+  const msg = '打開 app,版本 ' + BUILD_VERSION.split(' · ').pop(), today = todayISO();
+  if (diagLoad().some(x => x.k === '啟動' && x.m === msg && x.t.slice(0, 10) === today)) return;
+  diag('啟動', msg);
+}
 function diagClear(){ diagCache = []; try{ localStorage.removeItem(DIAG_KEY); }catch(e){} }
 /* 合法的 YYYY-MM-DD 才收(2 月 30 日這種不存在的日期也擋),不合法就回傳 fallback。手機的日期選擇器本身
    打不出亂碼,但匯入的備份檔、雲端同步來的資料可能帶進任何字串;壞掉的日期會讓記帳的月份分組、
@@ -720,8 +726,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-09 · 3b0736012c';
-const BUILD_HASH = '3b0736012c';
+const BUILD_VERSION = '2026-10-09 · 7006ebfd9a';
+const BUILD_HASH = '7006ebfd9a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1044,7 +1050,8 @@ function applyRemote(raw, first = false){
   lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
   if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
-  diag('同步', (first ? '打開時從雲端載入' : '收到別台裝置的改動') + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
+  // 打開時載入雲端那份是每次都有的,只有合併了本機修改、或補回舊版丟掉的欄位才值得記
+  if (!first || kept || restored) diag('同步', (first ? '打開時從雲端載入' : '收到別台裝置的改動') + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
   renderAll();
 }
 /* 收到別台裝置的改動時,本機可能有還沒推上去的修改:打字中收到的會先擱著、離開欄位才套用(那時剛打的字
@@ -6953,7 +6960,7 @@ function init(){
     window.addEventListener('error', e => diag('錯誤', `${e && e.message || e}${e && e.lineno ? ` @${e.lineno}:${e.colno || 0}` : ''}(分頁 ${currentTab}、最後操作 ${diagLastAct || '無'})`));
     window.addEventListener('unhandledrejection', e => diag('錯誤', `非同步:${e && e.reason && (e.reason.message || e.reason) || '?'}(分頁 ${currentTab}、最後操作 ${diagLastAct || '無'})`));
   }
-  diag('啟動', '打開 app,版本 ' + BUILD_VERSION.split(' · ').pop());
+  diagStartup();
 
   const local = readLocal();
   if (local) state = normalize(local);
