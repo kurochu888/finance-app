@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -242,6 +242,13 @@ console.log('已經買進、還沒撥款的預定動用要算進借款(使用者
   must(Math.abs(k.pendingLoan - 770000) < 1 && Math.abs(k.loan - 2590000) < 1, `借款要含已經買進的 77 萬:pending ${k.pendingLoan}、loan ${k.loan}`);
   must(Math.abs(k.equity - (k.pv - 2590000)) < 1, '自己的錢 = 部位市值 − 259 萬');
   must(A.computeLeverage().usedAmount === 1820000, '已撥款餘額(銀行現在看到的)還是 182 萬');
+  // 每月、每日快照也要記含 77 萬的借款:月底買、下個月才撥款,這個月的快照固定下來就永遠少記
+  A.state.netWorthHistory = []; A.state.dailyHistory = [];
+  A.maybeSnapshot(); A.maybeDailySnapshot();
+  const ms = A.state.netWorthHistory.find(h => h.m === '2026-10'), ds = A.state.dailyHistory[A.state.dailyHistory.length - 1];
+  must(ms && ms.loan === 2590000, '每月快照的借款要含已經買進的預定動用:' + (ms && ms.loan));
+  must(ds && ds.loan === 2590000, '每日快照的借款要含已經買進的預定動用:' + (ds && ds.loan));
+  must(A.computeLeverage().pendingLoan === 770000, '自己的錢走勢(equityValue)也要扣這 77 萬');
   // 剩下的額度:800 − 182 − 77 = 541 萬,不能再扣一次 77 萬
   const lev = A.computeLeverage();
   must(8000000 - lev.usedAmount - A.plannedDrawAmount() === 5410000, '剩餘額度 541 萬');
