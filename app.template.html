@@ -367,12 +367,14 @@ function diagLoad(){
   catch(e){ diagCache = []; }
   return diagCache;
 }
-function diag(kind, msg){
+// replace:同一類的最後一筆直接換掉(一個字一個字打的欄位,不然打 1820000 會記 7 筆「1」「18」「182」…)
+function diag(kind, msg, replace = false){
   try{
     const list = diagLoad(), d = new Date(), m = String(msg).slice(0, 600);
     const t = todayISO() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
     const last = list[list.length - 1];
-    if (last && last.k === kind && last.m === m){ last.c = (last.c || 1) + 1; last.t = t; }
+    if (replace && last && last.k === kind){ last.m = m; last.t = t; delete last.c; }
+    else if (last && last.k === kind && last.m === m){ last.c = (last.c || 1) + 1; last.t = t; }
     else list.push({ t, k: kind, m });
     if (list.length > DIAG_MAX) list.splice(0, list.length - DIAG_MAX);
     localStorage.setItem(DIAG_KEY, JSON.stringify(list));
@@ -6295,7 +6297,7 @@ function onField(key, el){
     B.date = todayISO();
     B.appInterest = nextLevInterest().bank;
     diag('對帳', `網路銀行:借款 ${B.balance == null ? '—' : $n(B.balance)}、下一期利息 ${B.interest == null ? '—' : $n(B.interest)}`
-      + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`);
+      + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`, true);
   }
   else if (kind === 'ownbase'){                  // 曝險卡的「接刀用的自有資金」:使用者自己改的,記在這一輪出場上
     if (String(el.value).trim() === '') return;
