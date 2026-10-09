@@ -24,7 +24,7 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick, renderAll,
-  diag, diagLoad, diagReport, healthCheck, diagMask, $n, DIAG_KEY, DIAG_MAX, togglePrivacy, get privacy(){return privacy},
+  diag, diagLoad, diagReport, diagStartup, healthCheck, diagMask, $n, DIAG_KEY, DIAG_MAX, togglePrivacy, get privacy(){return privacy},
   maybeAutoRepay, set tradeDraft(v){tradeDraft=v}, set currentTab(v){currentTab=v}, get diagText(){return diagText}, get dataMsg(){return dataMsg},
   computeLeverage };`);
 
@@ -37,6 +37,11 @@ const logText = () => A.diagLoad().map(x => x.m).join('\n');
   console.log('啟動就記一筆、紀錄不進 state(不同步)');
   must(A.diagLoad().some(x => x.k === '啟動'), '打開 app 要記一筆啟動');
   must(!JSON.stringify(A.state).includes('⟦'), '紀錄不能出現在 state 裡');
+  A.diagStartup(); A.diagStartup();
+  must(A.diagLoad().filter(x => x.k === '啟動').length === 1, '同一天同一版打開好幾次只記一次');
+  simNow += 86400000; A.diagStartup(); simNow -= 86400000;
+  const st = A.diagLoad().filter(x => x.k === '啟動');
+  must(st.length === 1 && st[0].c === 2 && st[0].t.startsWith('2026-10-10'), '隔天打開要再記(連續同一句合併成 ×2、時間更新):' + JSON.stringify(st));
   console.log('  ok');
 
   console.log('同一件事連續發生只加次數,最多留 DIAG_MAX 筆');
