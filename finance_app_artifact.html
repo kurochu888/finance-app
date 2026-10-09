@@ -693,8 +693,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-09 · a4bd2e1a66';
-const BUILD_HASH = 'a4bd2e1a66';
+const BUILD_VERSION = '2026-10-09 · 5ff5579eb7';
+const BUILD_HASH = '5ff5579eb7';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2319,7 +2319,9 @@ function computeRisk(){
   const p = computePosition();
   const r = computeLeverage();
   const pv = p.hasData ? p.marketValue : r.totalValue;
-  const loan = r.usedAmount;
+  // 借款 = 已撥款的餘額 + 已經拿去買股票、還沒撥款的預定動用(股票已經在部位市值裡,借款也要算進來才對得上)
+  const pendingLoan = pendingLoanFunding();
+  const loan = r.usedAmount + pendingLoan;
   const equity = pv - loan;
   const nw = netWorth();
   // 實質曝險:每檔各自乘上自己的槓桿倍數(正2 = 2,一般股票 = 1)
@@ -2328,7 +2330,7 @@ function computeRisk(){
   // 否則已動用的部分會同時被算進部位與額度裡,比例失真偏樂觀。
   const capacity = equity + state.leverage.creditLimit;
   return {
-    pv, loan, equity, nw, exposure, capacity,
+    pv, loan, pendingLoan, equity, nw, exposure, capacity,
     creditLimit: state.leverage.creditLimit,
     invested: p.invested, pnl: p.total, hasTrades: p.hasData,
     leverage: equity > 0 ? pv / equity : 0,
@@ -3305,6 +3307,9 @@ function renderHelp(){
       <p>分母用<strong>部位淨值</strong>而不是部位市值:已借出的錢同時存在於部位與額度中,
       用市值會把它算兩次,比例看起來比實際安全。額度用得越多,分母越接近自有資金,
       比例會誠實地升高。</p>
+      <p><strong>借款餘額含「已經買進、還沒撥款」的預定動用</strong>:用房貸買進記在成交日,股票當天就算進部位市值,
+      動用日卻是交割日(T+2),那兩天銀行還沒撥款。只算已撥款的話,自己的錢會多算那筆、曝險比例偏低,
+      所以房貸買進超過已撥款動用的部分,先用預定動用補上算進借款。單純先記下、還沒拿去買的預定動用不算。</p>
     </div>
 
     <div class="sect">槓桿頁怎麼逛</div>
@@ -3898,7 +3903,7 @@ function captureOwnBase(){
   const sold = sum(state.trades.filter(t => t.action === 'sell' && t.date >= exit && ids.has(t.symbol)), t => (sellQty[t.id] ?? t.shares) * t.price - t.fee);
   const loanBefore = sum(L.draws.filter(d => d.useDate && d.useDate < exit),
     d => Math.max(0, d.amount - sum((d.repayments || []).filter(r => r.date && r.date >= d.useDate && r.date < exit), r => r.amount)));
-  const cash = lev2Value + sold - loanBefore;
+  const cash = lev2Value + sold - loanBefore - pendingLoanFunding(exit, false);   // 出場前房貸買進、出場後才撥款的也是要還的
   const fresh = ownBoughtSince(exit, lev2) < 1 && lev2Value + sold > 0 && cash > 0;
   L.ownBase = { exit, amount: fresh ? Math.round(cash) : 0, auto: true };
   return true;
@@ -4071,6 +4076,7 @@ function renderRisk(){
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
       <div class="row" style="margin-top:12px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
+      ${k.pendingLoan > 0.5 ? `<div class="row sub"><span class="label">含預定動用(已經買進、還沒撥款)</span><span class="val">NT$ ${fmt(k.pendingLoan)}</span></div>` : ''}
       <div class="row total"><span class="label">自己的錢</span><span class="val ${k.equity < 0 ? 'neg' : ''}">${money(k.equity)}</span></div>
       ${k.capacity <= 0 ? `<div class="muted neg" style="margin-top:4px;">借款已經超過「部位市值 + 房貸額度」,曝險比例沒有意義(顯示 —):部位全部賣掉也還不清借款。</div>` : ''}
       <div class="row sub"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
@@ -4558,7 +4564,8 @@ function renderExposurePlanCard(){
     + (hasOther ? '(其他標的也算在曝險裡,正2 賣光還到不了目標;其他標的照它自己的訊號)' : '(賣光也到不了目標)');
   // 還款/借款的上限:借款餘額、剩下的額度。R = 目標比例,raw = 曝險差額(負 = 要減)
   // 剩下的額度要先扣預定動用(已經講好要轉出、還沒到那天的),不然會叫你借到超過額度
-  const loan = computeRisk().loan, room = Math.max(0, state.leverage.creditLimit - loan - plannedDrawAmount());
+  // 用已撥款的餘額 + 全部預定動用(risk.loan 已經含「買了還沒撥款」的那部分,再扣一次預定動用會重複)
+  const loan = computeLeverage().usedAmount, room = Math.max(0, state.leverage.creditLimit - loan - plannedDrawAmount());
   const R = p.targetRatio / 100, raw = p.deltaLoan * 2;
   const sellCash = p.deltaCash == null ? null : Math.abs(p.deltaCash);
   // 賣 x、還 min(x, 借款):借款夠還 → x = |raw|/2;不夠 → 先還清、剩下留現金:x = (−raw − R×借款)/(2 − R)
@@ -5299,7 +5306,7 @@ function todoItems(){
       (days === 0 ? '今天' : days + ' 天後') + ',帳戶記得留錢', state.liabilities.some(l => l.name === d.name) ? '' : 'setup');
   });
   state.leverage.draws.filter(d => d.useDate > today && daysBetweenISO(today, d.useDate) <= 7)
-    .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '到那天才算借款', 'log'));
+    .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '銀行到那天才撥款;已經用它買進的,曝險先算進借款', 'log'));
   return out;
 }
 function renderTodo(){
@@ -5627,6 +5634,19 @@ function nextLevInterest(){
 function plannedDrawAmount(){
   const today = todayISO();
   return sum(state.leverage.draws.filter(d => d.useDate && d.useDate > today && d.amount > 0), d => d.amount);
+}
+/* 已經拿去買股票、還沒撥款的預定動用:房貸買進記在成交日,股票當天就算進部位市值,動用日卻是交割日(T+2),
+   中間這兩天借款餘額沒有它,「自己的錢」被高估、曝險比例被低估(2026-10 使用者回報:10/12 兩筆預定 77 萬)。
+   只算「房貸買進合計 − 已撥款的動用合計」不夠的那部分,上限是預定動用合計;單純先記下來、還沒買的預定動用不算
+   (錢還沒借也還沒花)。cut 那天以前(incl = 含那天)為準:今天(曝險)、或出場日前一刻(接刀自有資金) */
+function pendingLoanFunding(cut = todayISO(), incl = true){
+  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0);
+  const past = d => incl ? d.useDate <= cut : d.useDate < cut;
+  const later = sum(ds.filter(d => !past(d)), d => d.amount);
+  if (!(later > 0)) return 0;
+  const drawn = sum(ds.filter(past), d => d.amount);
+  const spent = sum(state.trades.filter(t => t.action === 'buy' && t.source === 'loan' && (incl ? t.date <= cut : t.date < cut)), t => t.shares * t.price + t.fee);
+  return Math.max(0, Math.min(later, spent - drawn));
 }
 function levPeriodInterest(m, onlyDrawn = false){
   const L = state.leverage, due = levDueDate(m), today = todayISO();

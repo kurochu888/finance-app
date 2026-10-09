@@ -388,6 +388,10 @@ id 沿用舊值以確保重複呼叫不會飄動。
 - 設定頁「下一期利息」(`nextLevInterest()`)跟總覽「房貸要繳」同一套逐日計息;`computeLeverage().monthlyInterest`(餘額 × 年利率 ÷ 12)畫面上已經不用了。
 - **預定動用**(動用日在今天之後,`plannedDrawAmount()`):剩餘可動用跟曝險卡「還能借多少」都先扣掉;設定頁另列「網路銀行現在顯示」的
   額度跟利息(`levPeriodInterest(m, true)` 只算已轉出的)。使用者對過:銀行 1,260 = app 1,532 − 10/12 兩筆預定的 272。
+  **已經拿去買股票的預定動用要算進借款**(`pendingLoanFunding()`,2026-10-09 使用者回報):房貸買進記在成交日、股票當天進部位市值,
+  動用日卻是交割日 T+2,以前那兩天 `computeRisk().loan` 沒有它,自己的錢多算 77 萬、曝險比例偏低。現在 loan = 已撥款餘額 +
+  min(預定動用合計, 房貸買進合計 − 已撥款動用合計);單純先記下、還沒買的預定動用不算。曝險卡「還能借多少」改用
+  `computeLeverage().usedAmount` − 預定動用(不能再用 risk.loan,會重複扣);`captureOwnBase()` 的出場前借款也加上它。
 
 ## 曝險比例公式(`computeRisk()`)
 
