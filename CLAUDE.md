@@ -467,6 +467,10 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
     **只補雲端那邊的、不補本機那邊的**:剛更新時還沒有任何紀錄,舊本機資料裡別台早刪掉的東西會被救回來。
     值是負的 = 重新出現(還原舊備份、匯入),兩台比時間晚的算數。保留 180 天、最多 4000 筆(localStorage `financeTombstones`)。
     價格歷史、每日快照這類照日期的不記(會自動修剪、重抓)。`tests/twodevice.js`(隨機)、`tests/tombs.js`(固定情境)。
+  - **雲端斷線重連(2026-10)**:`syncFirstTime()` 的 `cloud.get()` 失敗(開 app 時剛好沒網路)或 `onChange` 的監聽出錯
+    (Firestore 出錯會停掉那個監聽),以前都被吞掉:整個 session 只存本機、別台的改動收不到,要重開 app。現在 `scheduleCloudRetry()`
+    記進診斷紀錄,`CLOUD_RETRY_MS` 後或回到前景(`onForeground`)時 `retryCloud()` 重抓一次、重新監聽。`onChange(cb, onErr)` 兩個後端
+    都回傳取消監聽的函式,`stopCloudListen()` 在重新監聽、登出前先停掉舊的(不然換帳號時舊帳號的監聽還會送資料來合併)。`tests/cloud.js` 12、13。
   - 本機有還沒推上去的修改時,`syncBase` 會存進 localStorage(`financeSyncBase`,推成功就刪),下次打開第一次同步
     拿它當合併基準。網頁版 Firestore 沒開離線持久化,離線時的寫入關掉 app 就沒了;以前第一次同步是雲端整份蓋掉本機,
     離線記的帳就不見了(`tests/offline.js`)。空間不夠時它是最後才被清掉的(主資料優先)。

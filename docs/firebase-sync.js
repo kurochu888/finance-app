@@ -64,7 +64,8 @@ if (!firebaseConfig || !firebaseConfig.apiKey){
         return {
           get: async () => { const s = await getDoc(ref); return s.exists() ? s.data() : null; },
           set: d => setDoc(ref, d),
-          onChange: cb => onSnapshot(ref, s => { if (s.exists()) cb(s.data()); }, () => {}),
+          // 回傳取消監聽的函式;出錯時(權限、配額、斷線太久)Firestore 會停掉這個監聽,要通知 app 重連,不能吞掉
+          onChange: (cb, onErr) => onSnapshot(ref, s => { if (s.exists()) cb(s.data()); }, e => { if (onErr) onErr(e); }),
           backups: {
             list: async () => (await getDocs(backupCol)).docs.map(d => d.id).sort().reverse(),
             get: async id => { const s = await getDoc(doc(backupCol, id)); return s.exists() ? s.data() : null; },

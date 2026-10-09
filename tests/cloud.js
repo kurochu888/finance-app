@@ -13,9 +13,10 @@ global.fetch = async () => { throw new Error('offline'); };
 
 // ---- 假雲端 ----
 const cloudDocs = {};
-let snapCb = null, writeLog = [], failNextWrite = false;
+let snapCb = null, snapErr = null, subs = 0, unsubs = 0, failGet = 0, writeLog = [], failNextWrite = false;
 const mkDoc = (path) => ({
-  async get(){ return { exists: cloudDocs[path] !== undefined,
+  async get(){ if (path === 'state/finance' && failGet > 0){ failGet--; throw { code:'unavailable', message:'client is offline' }; }
+              return { exists: cloudDocs[path] !== undefined,
                         data: () => JSON.parse(JSON.stringify(cloudDocs[path])) }; },
   async set(d){
     if (failNextWrite){ failNextWrite = false; throw { code:'unavailable', message:'寫入失敗' }; }
@@ -23,7 +24,7 @@ const mkDoc = (path) => ({
     writeLog.push(path);
   },
   async delete(){ delete cloudDocs[path]; },
-  onSnapshot(cb){ if (path === 'state/finance') snapCb = cb; return () => {}; }
+  onSnapshot(cb, err){ if (path === 'state/finance'){ snapCb = cb; snapErr = err; subs++; } return () => { unsubs++; }; }
 });
 const db = {
   doc: mkDoc,
@@ -43,7 +44,8 @@ globalThis.A = {
   get storageMode(){return storageMode}, get lastPushed(){return lastPushed},
   get pendingRemote(){return pendingRemote},
   connectCloud, save, onRemote, applyRemote, scheduleSave, maybeBackup, emptyState, sampleData, normalize, renderAll,
-  importJSON, todayISO, shiftMonth, maybePostInterest, thisMonth
+  importJSON, todayISO, shiftMonth, maybePostInterest, thisMonth, diagLoad, onForeground,
+  get cloud(){return cloud}, set CLOUD_RETRY_MS(v){CLOUD_RETRY_MS=v}, get cloudRetryApi(){return cloudRetryApi}, syncFirstTime
 };`);
 
 const bugs = [];
@@ -236,6 +238,37 @@ const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); 
     console.log('11. 舊版分頁寫回來:過去利率', rh.length, '段 | 資產', A.state.assets[0].name);
     if (!rh.length || rh[0].rate !== 2.1) bugs.push('舊版分頁寫回來,過去各段利率不見了(過去的利息會照目前利率重算)');
     if (A.state.assets[0].name !== '舊版分頁改的') bugs.push('舊版分頁改的其他東西沒套用');
+  }
+
+  // 12) 雲端監聽出錯(權限、配額、斷線太久,Firestore 會停掉監聽):以前錯誤被吞掉,別台的改動之後都收不到。
+  //     要記進診斷紀錄、停掉舊的監聽,過一陣子重新連線(重抓一次 + 重新監聽),期間別台改的要補進來
+  {
+    A.CLOUD_RETRY_MS = 30;
+    const s0 = subs, u0 = unsubs;
+    snapErr({ code:'permission-denied' });
+    if (!A.diagLoad().some(x => x.k === '同步' && x.m.includes('雲端監聽中斷(permission-denied)'))) bugs.push('監聽中斷沒有記進診斷紀錄');
+    cloudDocs['state/finance'].transactions.push({ id:'offline1', date:'2026-10-01', cat:'其他', desc:'斷線期間別台記的', amount:-1 });
+    asOther(cloudDocs['state/finance']);
+    await wait(80);
+    const got = A.state.transactions.some(t => t.id === 'offline1');
+    console.log('12. 監聽中斷後:重新監聽', subs - s0, '次,舊的取消', unsubs - u0, '次 | 補上斷線期間別台記的', got);
+    if (subs - s0 !== 1) bugs.push('監聽中斷後沒有重新監聽(別台的改動要重開 app 才收得到)');
+    if (unsubs - u0 < 1) bugs.push('重新監聽前沒有停掉舊的監聽');
+    if (!got) bugs.push('重新連線後沒有補上斷線期間別台的改動');
+  }
+  // 13) 打開時剛好沒網路:以前 cloud.get() 失敗就整個 session 只存本機、不再試。要排重試,回到前景就重連
+  {
+    A.CLOUD_RETRY_MS = 60000;   // 這次靠回到前景,不等計時器
+    failGet = 1;
+    await A.syncFirstTime();
+    const offline = A.storageMode;
+    if (offline !== 'local' || A.cloud) bugs.push('連不上雲端時要先改成只存本機');
+    if (!A.cloudRetryApi) bugs.push('連不上雲端時沒有排重試');
+    if (!A.diagLoad().some(x => x.m.includes('連不上雲端(unavailable)'))) bugs.push('連不上雲端沒有記進診斷紀錄');
+    A.onForeground();
+    await wait(30);
+    console.log('13. 打開時沒網路:', offline, '→ 回到前景後', A.storageMode);
+    if (A.storageMode !== 'cloud' || !A.cloud) bugs.push('回到前景沒有重新連上雲端');
   }
 
   // 7) 跨年的月份運算

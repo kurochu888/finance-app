@@ -744,8 +744,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · 7006ebfd9a';
-const BUILD_HASH = '7006ebfd9a';
+const BUILD_VERSION = '2026-10-09 · 10c32781fb';
+const BUILD_HASH = '10c32781fb';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -754,6 +754,28 @@ const LEGACY_KEY = 'financeAppLeverageData_v1';
 
 let storageMode = 'local';   // 'cloud' | 'local' | 'none'
 let cloud = null;            // { get, set, onChange } — 已連上的雲端
+/* 雲端連線斷掉時重試(2026-10):以前開 app 時剛好沒網路,cloud.get() 失敗就整個 session 改成只存本機、再也不試;
+   監聽(onSnapshot)出錯也被吞掉,之後別台的改動都收不到,要重開 app 才恢復。現在記進診斷紀錄,過一陣子(或回到前景)重連。 */
+let cloudUnsub = null, cloudRetryApi = null, cloudRetryTimer = null, CLOUD_RETRY_MS = 60000;
+function scheduleCloudRetry(api, why){
+  cloudRetryApi = api;
+  diag('同步', why + `,${Math.round(CLOUD_RETRY_MS / 1000)} 秒後或回到前景時重新連線`);
+  clearTimeout(cloudRetryTimer);
+  cloudRetryTimer = setTimeout(retryCloud, CLOUD_RETRY_MS);
+  if (cloudRetryTimer && cloudRetryTimer.unref) cloudRetryTimer.unref();
+}
+function retryCloud(){
+  const api = cloudRetryApi;
+  if (!api || (cloud && cloud !== api)) return;   // 已經登出或換帳號了
+  cloudRetryApi = null;
+  clearTimeout(cloudRetryTimer);
+  cloud = api;
+  syncFirstTime();
+}
+function stopCloudListen(){
+  if (typeof cloudUnsub === 'function') try{ cloudUnsub(); }catch(e){}
+  cloudUnsub = null;
+}
 let cloudBacktestDoc = null; // { get, set } — 回測完整歷史的獨立雲端文件,跟主資料 cloud 分開存
 let cloudKind = 'none';      // 'claude' | 'firebase' | 'none'
 let authUser = null;         // Firebase 已登入的帳號
@@ -1250,15 +1272,24 @@ async function syncFirstTime(){
     }else{
       await save();
     }
-    cloud.onChange(onRemote);
+    // 先停掉上一個監聽(重新連線、換帳號):不然舊的那個還會送資料來,換帳號時會把上個帳號的資料合併進來
+    stopCloudListen();
+    const api = cloud;
+    cloudUnsub = cloud.onChange(onRemote, e => {
+      if (cloud !== api) return;
+      stopCloudListen();
+      scheduleCloudRetry(api, '雲端監聽中斷(' + (e && (e.code || e.message) || e) + '),別台的改動暫時收不到');
+    });
     updateStorageStatus();
     maybeDailySnapshot();
     if (maybePostInterest() || maybeSnapshot()) renderAll();
     maybeBackup();
   }catch(e){
+    const api = cloud;
     cloud = null;
     storageMode = 'local';
     updateStorageStatus();
+    if (api) scheduleCloudRetry(api, '連不上雲端(' + (e && (e.code || e.message) || e) + '),先存本機');
   }
   pullBacktestHistoryFromCloud();   // 跟主資料同步失敗與否無關,單獨試,失敗就算了
 }
@@ -1311,7 +1342,7 @@ async function connectCloud(){
             return null;
           },
           set: d => ref.set(d),
-          onChange: cb => ref.onSnapshot(s => { if (s.exists) cb(s.data()); }, () => {}),
+          onChange: (cb, onErr) => ref.onSnapshot(s => { if (s.exists) cb(s.data()); }, e => { if (onErr) onErr(e); }),
           backups: {
             list: async () => {
               const snap = await db.collection('backups').get();
@@ -1354,6 +1385,8 @@ async function connectCloud(){
           cloudBacktestDoc = fb.namedDoc('backtestHistory');
           syncFirstTime();
         }else{
+          stopCloudListen();
+          cloudRetryApi = null;
           cloud = null;
           cloudBacktestDoc = null;
           storageMode = 'local';
@@ -6952,6 +6985,7 @@ function showTodayDate(){
   if (el) el.textContent = (d.getMonth()+1) + '/' + d.getDate();
 }
 function onForeground(fromTimer = false){
+  if (cloudRetryApi) retryCloud();   // 雲端斷線中:回到前景(多半網路也回來了)就馬上重連,不等計時器
   const today = todayISO();
   if (today !== foregroundDay){
     const prev = foregroundDay;
