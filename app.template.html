@@ -6286,7 +6286,7 @@ function onField(key, el){
     if (what === 'balance') B.balance = v; else if (what === 'payment') B.payment = v; else return;
     B.date = todayISO();
     const nx = nextLoanPayment(l.loan);
-    B.appPayment = nx ? Math.round(nx.payment) : null;
+    B.appPayment = nx ? num(Math.round(nx.payment)) : null;   // num():夾 ±1 兆,存檔再讀回來才一樣(fuzz 抓到)
     diag('對帳', `${l.name || '房貸'}:銀行剩餘本金 ${B.balance == null ? '—' : $n(B.balance)}、本期應繳 ${B.payment == null ? '—' : $n(B.payment)}`
       + `(app:剩餘本金 ${$n(amortize(l.loan).balance)}、月付 ${B.appPayment == null ? '—' : $n(B.appPayment)})`, true);
   }
@@ -6387,7 +6387,7 @@ function onField(key, el){
     const v = raw === '' ? null : Math.max(0, num(raw));
     if (rest === 'balance') B.balance = v; else if (rest === 'interest') B.interest = v; else return;
     B.date = todayISO();
-    B.appInterest = nextLevInterest().bank;
+    B.appInterest = num(nextLevInterest().bank);   // num():同上
     diag('對帳', `網路銀行:借款 ${B.balance == null ? '—' : $n(B.balance)}、下一期利息 ${B.interest == null ? '—' : $n(B.interest)}`
       + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`, true);
   }
