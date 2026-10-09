@@ -7,9 +7,8 @@ fail=0
 
 echo "=== 功能測試(三個版本) ==="
 for f in ../finance_app.html ../finance_app_artifact.html ../docs/index.html; do
-  sed -i "s#const src = fs.readFileSync('[^']*'#const src = fs.readFileSync('$(cd .. && pwd)/${f#../}'#" smoke.js
   printf '%-28s ' "${f#../}"
-  if node smoke.js >/dev/null 2>&1; then echo OK; else echo FAIL; fail=1; node smoke.js 2>&1 | grep -E '^Error' | head -1; fi
+  if SMOKE_FILE="$f" node smoke.js >/dev/null 2>&1; then echo OK; else echo FAIL; fail=1; SMOKE_FILE="$f" node smoke.js 2>&1 | grep -E '^Error' | head -1; fi
 done
 
 echo

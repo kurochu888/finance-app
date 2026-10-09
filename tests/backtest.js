@@ -19,7 +19,7 @@ global.localStorage = { _d:{}, get length(){return Object.keys(this._d).length;}
 global.localStorage.setItem('financeTwseCooldownUntil', String(Date.now() + 3600000));
 
 const fs = require('fs');
-const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
+const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, runBacktest, monthEndSample, defaultFee, findHistoryGap, completeHistoryMonths,

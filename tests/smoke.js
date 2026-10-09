@@ -24,7 +24,7 @@ global.localStorage = {
 };
 
 const fs = require('fs');
-const src = fs.readFileSync('/ssd1/finance/docs/index.html','utf8');
+const src = fs.readFileSync(process.env.SMOKE_FILE || (__dirname + '/../docs/index.html'), 'utf8');   // run.sh 用 SMOKE_FILE 換版本跑三次
 // 取最長的那段 <script>,也就是 app 本體(頁面另有 bootstrap 與 sw 註冊)
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const js = blocks.sort((a, b) => b.length - a.length)[0];

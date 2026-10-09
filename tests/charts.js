@@ -13,7 +13,7 @@ global.localStorage = { _d:{}, get length(){return Object.keys(this._d).length;}
   key(i){const k=Object.keys(this._d);return i<k.length?k[i]:null;},
   getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=String(v);}, removeItem(k){delete this._d[k];} };
 const fs = require('fs');
-const src = fs.readFileSync('/ssd1/finance/docs/index.html','utf8');
+const src = fs.readFileSync(__dirname + '/../docs/index.html','utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = { lineChart, chartCaption, pickChartPoint, get chartData(){return chartData}, onClick };`);
