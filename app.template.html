@@ -6515,7 +6515,7 @@ function onClick(el){
         const { mult } = splitMultiple(sp.ratio);
         state.trades.forEach(t => {
           if (!splitPending(t, it, d)) return;
-          t.shares = Math.round(t.shares * mult);
+          t.shares = num(Math.round(t.shares * mult));   // num():夾在 ±1 兆,跟存檔再讀回來一樣(跟其他自動改的數字同一條規矩)
           t.price = Math.round(t.price / mult * 10000) / 10000;   // 成本(股數 × 價格)不變
           t.note = (t.note ? t.note + ' ' : '') + splitTag(d);
         });
