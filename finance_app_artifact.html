@@ -726,8 +726,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-09 · 61a6041399';
-const BUILD_HASH = '61a6041399';
+const BUILD_VERSION = '2026-10-09 · 9291c83324';
+const BUILD_HASH = '9291c83324';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6429,10 +6429,13 @@ function stateCSV(){
   out += csvTable('# 持股', ['代號', '名稱', '槓桿倍數', '股數', '股價', '市值'],
     r.holdings.map(h => [h.id, h.name, h.leverage, h.shares, h.price, Math.round(h.value)]));
 
+  // 狀態欄:預定動用(動用日在未來)餘額是 0、已還也是 0,沒有這欄看起來像已經還清(2026-10)
+  const today = todayISO();
   out += csvTable('# 房貸動用',
-    ['項目', '動用日期', '動用金額', '已還', '餘額', '備註'],
+    ['項目', '動用日期', '狀態', '動用金額', '已還', '餘額', '備註'],
     r.draws.filter(t => t.useDate)
-      .map(t => [t.label, t.useDate, t.amount, t.repaid, t.balance, t.note]));
+      .map(t => [t.label, t.useDate, t.useDate > today ? '預定(還沒撥款)' : t.balance > 0 ? '借款中' : '已還清',
+                 t.amount, t.repaid, t.balance, t.note]));
 
   const repays = [];
   L.draws.forEach(t => {
