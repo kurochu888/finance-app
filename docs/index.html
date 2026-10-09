@@ -447,7 +447,7 @@ const DEFAULT_LEVERAGE = {
      例如 [50, 100] = 第一層用一半、第二層用完;續抱照舊用 hold(曝險比例)。自有資金的金額記在 ownBase。 */
   exposureTargets: { byLayer:[65, 130], hold:130, mode:'exposure', ownByLayer:[50, 100] },
   /* 接刀用的自有資金(exposureTargets.mode = 'own' 時用):app 不知道帳戶裡的現金,所以出場時記下當下的部位淨值
-     (正2 等持股市值 − 借款 = 賣光、還完房貸之後手上的錢),exit = 這輪出場日(換一輪出場就重記),auto = 是不是 app 自動記的。
+     (正2 市值 − 借款 = 賣光、還完房貸之後手上的錢;0050 這類 1 倍標的不算,正2 出場時不一定賣),exit = 這輪出場日(換一輪出場就重記),auto = 是不是 app 自動記的。
      使用者可以改(例如加上存款),見 captureOwnBase()。 */
   ownBase: { exit:'', amount:0, auto:false }
 };
@@ -727,8 +727,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-08 · e7210db7d2';
-const BUILD_HASH = 'e7210db7d2';
+const BUILD_VERSION = '2026-10-09 · 33ef7fecec';
+const BUILD_HASH = '33ef7fecec';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3457,7 +3457,7 @@ function renderHelp(){
       <p><strong>接刀只用自有資金(可選):</strong>「設定」分頁的「接刀各層怎麼算」選「只用自有資金」時,接刀各層不看曝險比例,
       改成「出場後買進正2 的錢」對照「接刀用的自有資金 × 這一層的 %」(例如 50、100:第一層用一半、第二層用完),只用自己的錢、不動用房貸;
       轉回續抱時才照「兩檔都 HOLD」的曝險比例動用房貸。app 不知道帳戶裡的現金,所以出場那一刻記下當時的部位淨值
-      (持股市值 − 借款,就是賣光、還完房貸後手上的錢)當作接刀用的自有資金;已經賣光或接刀途中才打開時記不到,卡片會請你自己填,
+      (正2 市值 − 借款,就是賣光、還完房貸後手上的錢;0050 這類 1 倍標的照自己的訊號,不算進來)當作接刀用的自有資金;已經賣光或接刀途中才打開時記不到,卡片會請你自己填,
       要加上存款也可以直接改。曝險比例的分母含房貸額度,用固定 % 設「不借錢」,自有資金變多之後就不準了,這個模式就是為了這個。</p>
       <p><strong>什麼時候會跳 🔔 提醒:</strong>跌破出場線(續抱 → 接刀中)、接刀中加碼到下一層、轉回續抱,這三種都會跳,
       總覽頁跟訊號分頁都看得到;照著做完按「知道了」。價格歷史中間缺了一段(例如一個多月沒打開 app)時,均線會算錯,
@@ -3909,7 +3909,8 @@ function ownBoughtSince(exitDate, lev2){
   const ids = new Set(lev2.map(it => it.id));
   return sum(state.trades.filter(t => t.action === 'buy' && t.date >= exitDate && ids.has(t.symbol)), t => t.shares * t.price + t.fee);
 }
-/* 出場時記下接刀用的自有資金:app 不知道帳戶裡的現金,出場當下的部位淨值(持股市值 − 借款)就是賣光、還完房貸之後手上的錢。
+/* 出場時記下接刀用的自有資金:app 不知道帳戶裡的現金,出場當下的「正2 市值 − 借款」就是賣光、還完房貸之後手上的錢。
+   只算正2:0050 這類 1 倍標的照自己的訊號,正2 出場時不一定賣,算進來會把沒賣的股票當成接刀的現金(買太多、不知不覺借到錢)。
    只在「這一輪還沒記過、出場後還沒買過正2、手上還有持股」時自動記;已經賣光或接刀途中才打開,
    部位淨值不是出場時的錢,記 0 讓卡片請使用者自己填。換一輪出場就重記。回傳有沒有改。 */
 function captureOwnBase(){
@@ -3921,9 +3922,11 @@ function captureOwnBase(){
   if (trends.some(t => t.barsAvailable < t.barsNeeded) || lev2.some(it => trendHistoryGap(it))) return false;
   const exit = ownCycleExit(trends);
   if (!exit || L.ownBase.exit === exit) return false;
-  const r = computeRisk();
-  const fresh = ownBoughtSince(exit, lev2) < 1 && r.pv > 0 && r.equity > 0;
-  L.ownBase = { exit, amount: fresh ? Math.round(r.equity) : 0, auto: true };
+  const keys = new Set(lev2.map(it => it.key)), lev = computeLeverage();
+  const lev2Value = sum(lev.holdings.filter(h => keys.has(h.key)), h => h.value);
+  const cash = lev2Value - lev.usedAmount;
+  const fresh = ownBoughtSince(exit, lev2) < 1 && lev2Value > 0 && cash > 0;
+  L.ownBase = { exit, amount: fresh ? Math.round(cash) : 0, auto: true };
   return true;
 }
 /* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
@@ -5449,7 +5452,7 @@ function renderLeverage(){
             <input type="number" inputmode="decimal" data-k="expo-own-${i}" value="${v}"></div>
         `).join('')}
         <div class="muted" style="margin-bottom:10px; font-size:12px;">例如 50、100:第一層用一半、第二層用完,接刀期間不動用房貸。接刀用的自有資金是出場時 app 自動記下的部位淨值
-          (持股市值 − 借款,也就是賣光、還完房貸後手上的錢),可以在「訊號」分頁的曝險卡改。轉回續抱才照下面的 % 動用房貸。</div>
+          (正2 市值 − 借款,也就是賣光、還完房貸後手上的錢;不含 0050 這類 1 倍標的),可以在「訊號」分頁的曝險卡改。轉回續抱才照下面的 % 動用房貸。</div>
       ` : Array.from({ length: expoLayerCount() }, (_, i) => layerTarget(L.exposureTargets, i + 1)).map((v, i) => `
         <div class="field"><label>加碼第 ${i+1} 層的目標曝險(%)</label>
           <input type="number" inputmode="decimal" data-k="expo-layer-${i}" value="${v}"></div>

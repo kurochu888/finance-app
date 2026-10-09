@@ -14,7 +14,7 @@ global.localStorage = { _d:{}, get length(){return Object.keys(this._d).length;}
   getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=String(v);}, removeItem(k){delete this._d[k];} };
 
 const fs = require('fs');
-const src = fs.readFileSync('/ssd1/finance/docs/index.html', 'utf8');
+const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
@@ -622,6 +622,22 @@ console.log('接刀只用自有資金(2026-10):出場時記下自有資金、各
   must(p.progress === 0 && p.targetRatio === 0 && p.own && p.own.base === 6000000, '出場時目標 0%(照舊叫你賣光),own 要帶記下的金額');
   let card = A.renderExposurePlanCard();
   must(card.includes('data-k="ownbase-amt"') && card.includes('6000000'), '出場卡片要顯示記下的自有資金、可以改');
+  // 1b) 另外持有 0050 200 萬、借款 100 萬:只算正2 市值 − 借款 = 500 萬。0050 照自己的訊號、正2 出場時不一定賣,
+  //     以前拿整個部位淨值(700 萬)當接刀的現金,會叫你多買 0050 那部分(等於不知不覺借錢)
+  {
+    const s = setup(ex.n, 6000000);
+    const one = JSON.parse(JSON.stringify(s.instruments.find(it => it.leverage === 2)));
+    Object.assign(one, { key:'k0050', id:'0050', name:'元大台灣50', leverage:1, price:1, shares:2000000, priceHistory:[], splits:[] });
+    one.trend = Object.assign({}, trend, { lastSeenStatus:'', lastSeenDate:'' });
+    s.instruments.push(one);
+    s.leverage.draws = [{ id:'d1', label:'', amount:1000000, useDate:'2000-01-03', note:'', repayments:[] }];
+    A.state = s;
+    A.renderAll();
+    ob = A.state.leverage.ownBase;
+    must(ob.exit === exitDate && ob.amount === 5000000, `有 0050 時只算正2 市值 − 借款(500 萬),得到 ${JSON.stringify(ob)}`);
+    A.state = setup(ex.n, 6000000);
+    A.renderAll();
+  }
   // 2) 賣光之後接到第 1 層:這一層用 50% = 300 萬,只用自己的錢
   A.state.instruments.forEach(it => { it.shares = 0; it.priceHistory = mkHist(prices.slice(0, l1.n)); });
   A.renderAll();

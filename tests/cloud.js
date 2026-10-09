@@ -35,7 +35,7 @@ const db = {
 global.window = { claude: { use: async (n) => (n === 'db' ? db : null) } };
 
 const fs = require('fs');
-const src = fs.readFileSync('/ssd1/finance/finance_app_artifact.html','utf8');
+const src = fs.readFileSync(__dirname + '/../finance_app_artifact.html','utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
