@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -249,6 +249,9 @@ console.log('已經買進、還沒撥款的預定動用要算進借款(使用者
   must(ms && ms.loan === 2590000, '每月快照的借款要含已經買進的預定動用:' + (ms && ms.loan));
   must(ds && ds.loan === 2590000, '每日快照的借款要含已經買進的預定動用:' + (ds && ds.loan));
   must(A.computeLeverage().pendingLoan === 770000, '自己的錢走勢(equityValue)也要扣這 77 萬');
+  const csvDraws = A.stateCSV().split('# 房貸動用')[1].split('\n\n')[0];
+  must(/,2026-10-12,預定\(還沒撥款\),410000,0,0,/.test(csvDraws) && /,2026-09-03,借款中,1820000,/.test(csvDraws),
+    'CSV 的房貸動用要標出預定(餘額 0、已還 0 看起來像還清了):' + csvDraws);
   // 剩下的額度:800 − 182 − 77 = 541 萬,不能再扣一次 77 萬
   const lev = A.computeLeverage();
   must(8000000 - lev.usedAmount - A.plannedDrawAmount() === 5410000, '剩餘額度 541 萬');
