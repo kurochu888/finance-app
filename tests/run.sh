@@ -42,6 +42,9 @@ echo
 echo "=== 房貸買進自動記動用、隱藏金額、年度總結 ==="
 node extras.js || fail=1
 echo
+echo "=== 診斷報告(紀錄、金額遮罩、健康檢查) ==="
+node diag.js || fail=1
+echo
 echo "=== 證交所休市日(交割日、收盤價是不是舊的) ==="
 node holidays.js || fail=1
 echo
