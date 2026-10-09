@@ -456,6 +456,9 @@ const DEFAULT_LEVERAGE = {
   // 房貸買進自動新增動用時金額往上湊整到幾元(0 = 不湊、1000、10000)。自己先轉整數到交割戶的人用(2026-10 使用者要的),
   // 多借的那一點下次房貸買進先扣(unusedLoanCash)
   drawRound:0,
+  // 跟網路銀行對帳(2026-10 使用者要的):使用者填網路銀行顯示的借款餘額/下一期利息,date = 填的那天,
+  // appInterest = 填的當下 app 算的下一期利息(只算已撥款的),之後再看還是跟那天比。見 bankRecon()
+  bankCheck: { date:'', balance:null, interest:null, appInterest:null },
   draws:[],
   /* 正2(槓桿2倍)曝險目標:byLayer[i] = 加碼第 i+1 層的目標曝險比例(%),
      hold = 兩檔都確認 HOLD 時的目標,跟最後一層的目標可以一樣也可以不一樣。
@@ -674,6 +677,11 @@ function normalize(raw){
   base.autoRepay = L.autoRepay !== false;
   base.repayPermille = L.repayPermille === undefined ? DEFAULT_LEVERAGE.repayPermille : Math.min(1000, Math.max(0, num(L.repayPermille)));
   base.drawRound = [1000, 10000].includes(Number(L.drawRound)) ? Number(L.drawRound) : 0;
+  {
+    const BC = L.bankCheck && typeof L.bankCheck === 'object' ? L.bankCheck : {};
+    const opt = v => v === null || v === undefined || v === '' ? null : Math.max(0, num(v));
+    base.bankCheck = { date: isoDate(BC.date, ''), balance: opt(BC.balance), interest: opt(BC.interest), appInterest: opt(BC.appInterest) };
+  }
   base.payDay = L.payDay === undefined ? DEFAULT_LEVERAGE.payDay : Math.min(31, Math.max(1, Math.round(num(L.payDay)) || 1));
   // 改繳款日那個月的利息從哪天算起(見 applyPayDay);{m:'YYYY-MM', d:'YYYY-MM-DD'} 或 null
   base.payDayFrom = L.payDayFrom && typeof L.payDayFrom === 'object' && isoDate(str(L.payDayFrom.m) + '-01', '') && isoDate(L.payDayFrom.d, '')
@@ -744,8 +752,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · 181e71ac7d';
-const BUILD_HASH = '181e71ac7d';
+const BUILD_VERSION = '2026-10-09 · 0375d5e3c1';
+const BUILD_HASH = '0375d5e3c1';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1229,6 +1237,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   }
   if (rawL && !('ownBase' in rawL) && prev.leverage && prev.leverage.ownBase && (prev.leverage.ownBase.amount || prev.leverage.ownBase.exit)){
     next.leverage.ownBase = JSON.parse(JSON.stringify(prev.leverage.ownBase));
+    restored = true;
+  }
+  // 跟銀行對帳(2026-10 加):舊版分頁寫回來沒有 bankCheck
+  if (rawL && !('bankCheck' in rawL) && prev.leverage && prev.leverage.bankCheck && prev.leverage.bankCheck.date){
+    next.leverage.bankCheck = JSON.parse(JSON.stringify(prev.leverage.bankCheck));
     restored = true;
   }
   // 動用湊整(2026-10 加):舊版分頁寫回來沒有 drawRound 這個 key
@@ -3614,6 +3627,9 @@ function renderHelp(){
         整體損益),當月之內每次開啟或改資產/負債都會更新,過了月份就固定。總覽的淨資產可以手動改,
         本月改過就不再自動更新,旁邊會出現「改回自動」。總覽的淨資產走勢用這個畫;每日紀錄還不夠兩筆時,槓桿頁的圖也會退回用它。
         沒開過 app 的月份會留空,間隔才不會失真。</li>
+        <li><strong>跟網路銀行對帳</strong>:「設定」分頁「借款與利息」卡的「跟網路銀行對帳」,填網路銀行顯示的借款餘額、下一期利息,
+          app 跟同一天自己算的比;差額剛好是某一筆動用(例如預定動用其實已經撥款)或還款(例如自動還本銀行還沒扣)會直接指出來,
+          利息對不上會推算銀行實際用的年利率。有借款、超過 40 天沒對,「今天要做什麼」會提醒一次。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照,可在總覽的「資料」卡還原。匯入備份、還原備份、載入範例、清空全部之前,也會先把當時的資料存成一份(名稱是「日期 時間 還原前」這類),按錯了可以再還原回來。
         雲端留 30 份;本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
         因為手機瀏覽器的空間有限,備份佔太多會讓主資料存不進去。空間用超過 75% 時會提醒你。</li>
@@ -5438,6 +5454,10 @@ function todoItems(){
   });
   state.leverage.draws.filter(d => d.useDate > today && daysBetweenISO(today, d.useDate) <= 7)
     .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '銀行到那天才撥款;已經用它買進的,曝險先算進借款', 'log'));
+  // 有借款、很久沒跟網路銀行對帳:提醒一次(對不上的由下面的 🩺 列)
+  const rc = bankRecon();
+  if (computeLeverage().usedAmount > 0 && (!rc || rc.days > BANK_RECON_DAYS))
+    go('🧾', rc ? `跟網路銀行對一下借款(上次 ${rc.days} 天前)` : '跟網路銀行對一下借款', '填網路銀行顯示的借款餘額跟下一期利息,app 幫你比', 'bankchk');
   const hw = healthWarnings();
   if (hw.length) go('🩺', `健康檢查有 ${hw.length} 項要注意`, diagMask(hw[0].t) + (hw.length > 1 ? ` 等 ${hw.length} 項` : '') + ',可以複製診斷報告貼給 Claude', 'diag');
   return out;
@@ -5452,6 +5472,7 @@ function renderTodo(){
           <span class="label"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
             <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
           ${x.tab === 'diag' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="diag-open">看診斷 →</button>`
+            : x.tab === 'bankchk' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="bankchk-open">去對帳 →</button>`
             : x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
         </div>`).join('')
       : `<div class="muted">✓ 今天不用動。${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>`}
@@ -5607,6 +5628,8 @@ function renderLeverage(){
       ${plannedDrawAmount() ? `<div class="row sub"><span class="label">網路銀行現在顯示(預定的 ${fmt(plannedDrawAmount())} 還沒轉出)</span><span class="val">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount))}</span></div>` : ''}
       <div class="row"><span class="label" id="out-nextInterestLabel">${nextLevInterest().label}</span><span class="val" id="out-monthlyInterest">NT$ ${fmt(nextLevInterest().amount)}</span></div>
       ${nextLevInterest().bank !== nextLevInterest().amount ? `<div class="row sub"><span class="label">網路銀行現在顯示(不含還沒轉出的預定動用)</span><span class="val">NT$ ${fmt(nextLevInterest().bank)}</span></div>` : ''}
+      ${(() => { const rc = bankRecon(); return fold('bankchk', '跟網路銀行對帳', renderBankRecon,
+        { sub: !rc ? '還沒對過' : rc.ok ? `✓ ${rc.date} 對得上` : `⚠ ${rc.date} 對不上`, force: !!(rc && !rc.ok) }); })()}
       ${(() => { const mp = leverageMonthPrincipal(); return `
       <div class="row"><span class="label">本月最低還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
       <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
@@ -5961,6 +5984,74 @@ function postLeverageInterest(){
   return changed;
 }
 
+/* ===================== 跟網路銀行對帳 ===================== */
+/* 使用者填網路銀行顯示的借款餘額、下一期利息(2026-10 使用者要的:以前要自己拿兩邊數字比,銀行 1,260 vs app 1,532 那次查了半天)。
+   餘額跟「填的那天」app 的已撥款餘額比(balanceAt,之後再看也是比那天,不會因為過了幾天、多還了一期就變成對不上);
+   利息跟填的當下 app 算的下一期利息(只算已撥款的,nextLevInterest().bank)比。對不上時找差額剛好等於哪一筆動用/還款,
+   利息另外用比例推算銀行實際用的年利率。 */
+function bankRecon(){
+  const L = state.leverage, B = L.bankCheck;
+  if (!B || !B.date || (B.balance == null && B.interest == null)) return null;
+  const out = { date: B.date, days: daysBetweenISO(B.date, todayISO()), ok: true };
+  if (B.balance != null){
+    const app = Math.round(sum(L.draws, d => balanceAt(d, B.date)));
+    const diff = Math.round(B.balance - app);
+    out.balance = { bank: B.balance, app, diff, hints: Math.abs(diff) <= 1 ? [] : bankBalanceHints(diff, B.date) };
+    if (Math.abs(diff) > 1) out.ok = false;
+  }
+  if (B.interest != null && B.appInterest != null){
+    const diff = Math.round(B.interest - B.appInterest);
+    const tol = Math.max(1, L.draws.length);   // 銀行每筆動用各自四捨五入,差幾塊是正常的
+    const hints = [];
+    if (Math.abs(diff) > tol){
+      if (B.appInterest > 0 && L.annualRate > 0){
+        const implied = L.annualRate * B.interest / B.appInterest;
+        if (Math.abs(implied - L.annualRate) >= 0.01) hints.push(`照銀行的數字推算,年利率約 ${implied.toFixed(2)}%(app 用 ${L.annualRate}%):銀行調過利率的話,到上面改「目前年利率」`);
+      }
+      hints.push(diff > 0 ? `銀行比較多:繳款日(每月 ${L.payDay} 號)對嗎?預定動用是不是已經撥款了(動用日要改)?`
+                          : `銀行比較少:繳款日(每月 ${L.payDay} 號)對嗎?是不是有還款銀行已經扣了、app 記的日期比較晚?`);
+      out.ok = false;
+    }
+    out.interest = { bank: B.interest, app: B.appInterest, diff, hints };
+  }
+  return out;
+}
+/* 餘額差額(銀行 − app)剛好等於哪一筆動用/還款,就點名那一筆 */
+function bankBalanceHints(diff, date){
+  const L = state.leverage, near = (a, b) => Math.abs(a - b) <= 1, out = [];
+  L.draws.filter(d => d.amount > 0 && d.useDate).forEach(d => {
+    const name = `「${d.label || '動用'}」${$n(d.amount)}`;
+    if (d.useDate > date && near(diff, d.amount)) out.push(`${name} app 記的動用日是 ${d.useDate},銀行好像已經撥款了:動用日改成實際撥款那天`);
+    if (d.useDate <= date && near(diff, -d.amount)) out.push(`${name}(動用日 ${d.useDate})銀行好像還沒撥款:動用日是不是記早了?`);
+    (d.repayments || []).forEach(r => {
+      if (r.date && r.date <= date && near(diff, r.amount)) out.push(`${r.date} 還 ${$n(r.amount)}(${d.label || '動用'})銀行好像還沒扣:日期是不是記早了?自動還本要到繳款日才扣`);
+      if (r.date && r.date > date && near(diff, -r.amount)) out.push(`${r.date} 還 ${$n(r.amount)}(${d.label || '動用'})銀行好像已經扣了:日期改成實際扣款那天`);
+    });
+  });
+  const planned = sum(L.draws.filter(d => d.useDate > date && d.amount > 0), d => d.amount);
+  if (!out.length && planned > 0 && near(diff, planned)) out.push(`差額剛好是預定動用合計 ${$n(planned)}:銀行已經撥款了,動用日改成實際撥款那天`);
+  if (!out.length) out.push(diff > 0 ? `銀行多 ${$n(diff)}:app 可能少記了一筆動用,或記了一筆銀行還沒扣的還款`
+                                     : `銀行少 ${$n(-diff)}:app 可能少記了一筆還款(自己多還的),或有動用銀行還沒撥款`);
+  return out;
+}
+function renderBankRecon(){
+  const B = state.leverage.bankCheck || {}, rc = bankRecon();
+  const rows = (label, x) => !x ? '' : `
+      <div class="row sub"><span class="label">${label}:銀行 ${fmt(x.bank)} · app ${fmt(x.app)}</span>
+        <span class="val ${Math.abs(x.diff) <= 1 || !x.hints.length ? 'pos' : 'neg'}">${!x.hints.length ? '✓ 對得上' : (x.diff > 0 ? '銀行多 ' : '銀行少 ') + fmt(Math.abs(x.diff))}</span></div>
+      ${x.hints.map(h => `<div class="muted neg" style="font-size:12px; margin:2px 0 4px;">· ${esc(diagMask(h))}</div>`).join('')}`;
+  return `
+    <div class="muted" style="font-size:12px; margin-bottom:6px;">打開網路銀行,把看到的數字填進來就好,app 會跟同一天自己算的比。差額剛好是某一筆動用或還款的話會直接指出來。</div>
+    <div class="grid2">
+      <div class="field"><label>網路銀行顯示的借款餘額</label><input type="number" inputmode="decimal" data-k="bankchk-balance" value="${B.balance ?? ''}"></div>
+      <div class="field"><label>網路銀行顯示的下一期利息</label><input type="number" inputmode="decimal" data-k="bankchk-interest" value="${B.interest ?? ''}"></div>
+    </div>
+    ${rc ? `
+      <div class="muted" style="font-size:12px;">對帳日 ${esc(rc.date)}${rc.days > 0 ? `(${rc.days} 天前,要再對一次就重新填)` : ''}</div>
+      ${rows('借款餘額', rc.balance)}${rows('下一期利息', rc.interest)}` : ''}`;
+}
+const BANK_RECON_DAYS = 40;   // 有借款、超過這麼多天沒對帳,「今天要做什麼」提醒一次
+
 /* ===================== 診斷報告:健康檢查 ===================== */
 /* 用這台裝置上的真實資料檢查幾件測試碰不到的事(假資料測不出「時間差」這類問題,2026-10 使用者貼畫面才抓到預定動用的 bug)。
    每項 { lv: 'ok' | 'warn' | 'info', t: 文字 },金額用 $n()。只讀不改。新增檢查時,抓到的問題修好後也要加進自動測試。 */
@@ -6047,6 +6138,11 @@ function healthCheck(){
     const now = hist.find(h => h.m === cur);
     if (now && now.auto && Math.abs(now.v - Math.round(netWorth())) > 1) warn(`本月快照淨資產 ${$n(now.v)} 跟目前 ${$n(netWorth())} 不一樣`);
   }
+  // 跟網路銀行對帳
+  const rc = bankRecon();
+  if (rc && !rc.ok) warn(`跟網路銀行對帳對不上(${rc.date}):` + [rc.balance && rc.balance.hints.length ? `借款銀行 ${$n(rc.balance.bank)} vs app ${$n(rc.balance.app)}` : '',
+    rc.interest && rc.interest.hints.length ? `利息銀行 ${$n(rc.interest.bank)} vs app ${$n(rc.interest.app)}` : ''].filter(Boolean).join('、'));
+  else if (rc) ok(`跟網路銀行對帳 ${rc.date} 對得上`);
   // id 重複(normalize 會修,出現代表修的地方漏了)
   const dup = (list, label) => { const seen = new Set(); (list || []).forEach(x => { if (seen.has(x.id)) warn(`${label}有重複的 id ${x.id}`); seen.add(x.id); }); };
   dup(state.transactions, '記帳'); dup(state.trades, '買賣'); dup(state.leverage.draws, '動用');
@@ -6209,6 +6305,15 @@ function onField(key, el){
       else if (what === 'pyramidLevels') it.trend[what] = Math.min(MAX_PYRAMID_LEVELS, Math.max(1, Math.round(v)));
       else if (['exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap'].includes(what)) it.trend[what] = v > 0 ? v : it.trend[what];
     }
+  }
+  else if (kind === 'bankchk'){                  // 跟網路銀行對帳:填的那天跟那時 app 算的下一期利息一起記
+    const B = state.leverage.bankCheck, raw = String(el.value).trim();
+    const v = raw === '' ? null : Math.max(0, num(raw));
+    if (rest === 'balance') B.balance = v; else if (rest === 'interest') B.interest = v; else return;
+    B.date = todayISO();
+    B.appInterest = nextLevInterest().bank;
+    diag('對帳', `網路銀行:借款 ${B.balance == null ? '—' : $n(B.balance)}、下一期利息 ${B.interest == null ? '—' : $n(B.interest)}`
+      + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`);
   }
   else if (kind === 'ownbase'){                  // 曝險卡的「接刀用的自有資金」:使用者自己改的,記在這一輪出場上
     if (String(el.value).trim() === '') return;
@@ -6790,6 +6895,7 @@ function onClick(el){
       break;
     case 'chart': pickChartPoint(el.dataset.key, Number(el.dataset.i)); return;
     case 'range': chartRange = Number(el.dataset.v); break;
+    case 'bankchk-open': openFolds.add('bankchk'); levTab = 'setup'; document.getElementById('content').scrollTop = 0; break;   // 今天要做什麼的 🧾
     case 'lev-tab':
       levTab = el.dataset.v;
       document.getElementById('content').scrollTop = 0;
