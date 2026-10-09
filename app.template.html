@@ -6450,7 +6450,8 @@ function onClick(el){
         // 房貸買進順便記動用,不用兩邊各打一次(以前只提醒,忘了記就是「兩邊對不起來」)。動用日預設交割日(T+2),
         // 動用日到之前不算借款、不算利息;銀行實際撥款日不一樣的話到「紀錄」分頁改。之前借了沒用完的先扣掉
         const useDate = settleDate(last.date), unused = unusedLoanCash(last.id), short = loanAmt - unused;
-        const unit = state.leverage.drawRound, need = unit && short > 0 ? Math.ceil(short / unit) * unit : short;
+        // num():夾在 ±1 兆,跟存檔再讀回來一樣(股數 × 價格可以大到超過上限,fuzz 抓到 52 兆存檔後變 1 兆)
+        const unit = state.leverage.drawRound, need = num(unit && short > 0 ? Math.ceil(short / unit) * unit : short);
         if (need > 0){
           state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: need, useDate,
             note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, repayments: [] });

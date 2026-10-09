@@ -50,6 +50,8 @@ python3 build.py && bash tests/run.sh
   新增欄位但 `sampleData()` 沒帶,詳見 `tests/README.md`。
 - `fuzz.js` 是隨機操作壓力測試(2026-09 加),抓到過:1e309 存成 Infinity、壞日期讓月份變 NaN、快線比慢線長
   讓訊號分頁壞掉。改了輸入處理或 normalize 之後可以手動跑更多步:`node tests/fuzz.js 3000 <種子>`。
+  種子是 4 的倍數時從「接刀中 + 接刀只用自有資金」開始(`ownModeState()`):曝險卡的自有資金欄位只在接刀期間出現,
+  從續抱開始的資料幾乎點不到。改曝險卡或 `captureOwnBase()` 之後多跑幾個 4 的倍數。
 
 ## 資料模型(`state`)重點
 

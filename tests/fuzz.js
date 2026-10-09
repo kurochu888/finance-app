@@ -2,7 +2,8 @@
    連續幾千步。每一步都檢查不變量:不能丟例外、畫面文字不能出現 NaN/undefined/Infinity、
    state 裡的數字都要是有限值、淨資產 = 資產 − 負債、normalize 重跑一次結果不變、
    當下的 state 跟存檔再載入後一模一樣。
-   用法:node tests/fuzz.js [步數=2500] [亂數種子=1..3] */
+   種子是 4 的倍數時從「接刀中 + 接刀只用自有資金」開始(曝險卡的自有資金欄位只在接刀期間出現,從續抱開始幾乎點不到)。
+   用法:node tests/fuzz.js [步數=2500] [亂數種子=1..4] */
 const RealDate = Date;
 let simNow = new RealDate('2026-09-20T09:00:00').getTime();
 class FakeDate extends RealDate {
@@ -30,10 +31,10 @@ const src = fs.readFileSync(process.env.FUZZ_FILE || (__dirname + '/../docs/inde
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, normalize, onClick, onField, renderAll,
   switchTab, netWorth, totalAssets, totalLiab, computePosition, computeRisk, sampleData, emptyState,
-  maybePostInterest, applyPayDay, applyLoanRate };`);
+  maybePostInterest, applyPayDay, applyLoanRate, computeTrend, computeExposurePlan };`);
 
 const STEPS = Number(process.argv[2]) || 2500;
-const SEEDS = process.argv[3] ? [Number(process.argv[3])] : [1, 2, 3];
+const SEEDS = process.argv[3] ? [Number(process.argv[3])] : [1, 2, 3, 4];
 let seed = 1;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const pick = a => a[Math.floor(rnd() * a.length)];
@@ -92,11 +93,36 @@ function checkInvariants(where){
   return probs.map(x => `[${where}] ${x}`);
 }
 
+/* 接刀中 + 接刀只用自有資金:範例資料的兩檔正2 換成「緩漲 300 天後一路跌」的價格歷史(到模擬的今天為止),
+   跌破出場線、再跌一層,兩檔都在接刀第 1 層以上、還沒確認,曝險卡會出現自有資金欄位跟「這一層要買」 */
+function ownModeState(){
+  const st = A.sampleData();
+  const days = [];
+  for (const d = new RealDate('2026-09-18T00:00:00'); days.length < 340; d.setDate(d.getDate() - 1)){
+    if (d.getDay() !== 0 && d.getDay() !== 6) days.unshift(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+  }
+  let px = 10;
+  const hist = days.map((d, i) => { px *= i < 300 ? 1.003 : 0.982; return { d, c: Math.round(px * 1000) / 1000 }; });
+  st.leverage.exposureTargets.mode = 'own';
+  st.instruments.filter(it => it.leverage === 2).forEach(it => {
+    it.priceHistory = hist.map(h => ({ ...h })); it.splits = []; it.price = hist[hist.length - 1].c;
+    it.trend.lastSeenStatus = 'HOLD'; it.trend.lastSeenLayers = 0;   // 上次看到的是續抱:這一層還沒確認
+  });
+  return st;
+}
+
 const failures = [];
 for (const s of SEEDS){
   seed = s * 7919;
   simNow = new RealDate('2026-09-20T09:00:00').getTime();
-  A.state = s % 2 ? A.sampleData() : A.emptyState();
+  A.state = s % 4 === 0 ? ownModeState() : s % 2 ? A.sampleData() : A.emptyState();
+  if (s % 4 === 0){
+    A.state = A.normalize(JSON.parse(JSON.stringify(A.state)));
+    A.renderAll();
+    const p = A.computeExposurePlan();
+    if (!(p && p.own && p.progress >= 1 && p.layerAdjustPending))
+      failures.push(`seed ${s}:自有資金情境沒有落在接刀中(${p ? `progress ${p.progress}、own ${JSON.stringify(p.own)}` : '沒有正2'}),測試資料要調`);
+  }
   A.switchTab('overview');
   const trail = [];
   for (let step = 0; step < STEPS && failures.length < 10; step++){
