@@ -60,7 +60,7 @@ echo
 echo "=== 瀏覽器空間快滿 ==="
 node storage.js || fail=1
 echo
-echo "=== 隨機操作壓力測試(3 組 × 800 步) ==="
+echo "=== 隨機操作壓力測試(4 組 × 800 步,第 4 組從接刀中 + 自有資金模式開始) ==="
 node fuzz.js 800 || fail=1
 echo
 echo "=== 邊界情況 ==="
