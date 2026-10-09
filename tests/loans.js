@@ -27,7 +27,8 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
   applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, nextLevInterest, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
-  renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; } };`);
+  renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; },
+  loanBankRecon, loanPay, todoItems, healthCheck, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -534,6 +535,50 @@ console.log('\n代號重複的那列不再列一次投資金額');
   const html = A.renderLeverage();
   must((html.match(/投資金額/g) || []).length === 1, '投資金額應該只出現一次,得到 ' + (html.match(/投資金額/g) || []).length);
   must(html.includes('NT$ 10,020') && html.includes('NT$ 0 / 10,020'), '投資金額 10,020,全部是房貸');
+}
+
+console.log('一般型房貸跟銀行對帳(剩餘本金、本期應繳)');
+{
+  setNow('2026-10-05');
+  const st = A.normalize(A.emptyState());
+  st.liabilities = [{ id:'ak', name:'安康房貸', amount:0, loan: A.normalizeLoan({ principal:8000000, start:'2020-03-15', years:30, annualRate:2.1 }) }];
+  A.state = st; A.syncLoanLiabilities();
+  const l = A.state.liabilities[0], fill = (k, v) => A.onField('lbc-' + k + '-ak', { value: String(v) });
+  must(A.todoItems().some(x => x.icon === '🧾' && /安康房貸/.test(x.text) && x.tab === 'loanchk:ak'), '一般型房貸還沒對過帳要提醒');
+  const appBal = Math.round(A.amortize(l.loan).balance);
+  fill('balance', appBal);
+  must(A.loanBankRecon(l).ok, '剩餘本金一樣要對得上');
+  must(!A.todoItems().some(x => x.icon === '🧾'), '剛對過不再提醒');
+  const rows = A.amortize(l.loan, '9999-12-31').rows, last = rows.filter(r => r.date <= '2026-10-05').pop(), next = rows.find(r => r.date > '2026-10-05');
+  fill('balance', appBal + Math.round(last.principal));
+  let h = A.loanBankRecon(l).balance.hints.join(' | ');
+  must(/2026-09-15 那期的本金.*銀行還沒扣/.test(h), '差一期本金(銀行還沒扣)要指出來:' + h);
+  must(/安康房貸/.test(A.renderAssets()) && /跟銀行對帳/.test(A.renderAssets()), '對不上時房貸設定要自動展開、顯示對帳');
+  must(A.healthCheck().some(x => x.lv === 'warn' && /「安康房貸」跟銀行對帳對不上/.test(x.t)), '對不上要進健康檢查');
+  fill('balance', appBal - Math.round(next.principal));
+  h = A.loanBankRecon(l).balance.hints.join(' | ');
+  must(/2026-10-15 那期的本金.*銀行已經扣了/.test(h), '銀行先扣了下一期要指出來:' + h);
+  fill('balance', appBal);
+  // 月付:銀行照 2.3% 算
+  const nx = A.nextLoanPayment(l.loan), n = nx.N - nx.k + 1;
+  fill('payment', Math.round(A.loanPay(nx.balance, n, 2.3 / 1200)));
+  h = A.loanBankRecon(l).payment.hints.join(' | ');
+  must(/年利率約 2\.30%/.test(h), '月付對不上要推算銀行的年利率:' + h);
+  fill('payment', Math.round(nx.payment) + 1);
+  must(A.loanBankRecon(l).ok, '月付差一兩塊不算對不上');
+  // 存檔往返、舊版分頁(認得 loan、不認得 bankCheck)寫回來
+  const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  must(back.liabilities[0].loan.bankCheck.balance === appBal, '存檔往返要保留對帳');
+  const raw = JSON.parse(JSON.stringify(A.state)); delete raw.liabilities[0].loan.bankCheck;
+  const nxt = A.normalize(raw);
+  must(A.keepFieldsOldVersionsDrop(back, raw, nxt) && nxt.liabilities[0].loan.bankCheck.balance === appBal, '舊版分頁寫回來要補回對帳');
+  // 今天要做什麼的「去對帳」:到資產頁、打開那筆房貸設定
+  setNow('2026-11-20');
+  const item = A.todoItems().find(x => x.icon === '🧾' && /安康房貸/.test(x.text));
+  must(item && /46 天前/.test(item.text), '超過 40 天要再提醒:' + JSON.stringify(item));
+  A.onClick({ dataset:{ act:'loanchk-open', id:'ak' } });
+  must(A.loanOpen === 'ak' && A.currentTab === 'assets', '「去對帳」要到資產頁、打開那筆房貸設定');
+  setNow('2026-10-05');
 }
 
 if (bugs.length){
