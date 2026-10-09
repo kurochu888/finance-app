@@ -635,6 +635,21 @@ console.log('接刀只用自有資金(2026-10):出場時記下自有資金、各
     A.renderAll();
     ob = A.state.leverage.ownBase;
     must(ob.exit === exitDate && ob.amount === 5000000, `有 0050 時只算正2 市值 − 借款(500 萬),得到 ${JSON.stringify(ob)}`);
+  }
+  // 1c) 打開 app 之前已經記了賣出(00631L 賣光、拿 100 萬還房貸):還是要記到出場那一刻的「正2 市值 − 借款」= 600 − 100 = 500 萬。
+  //     以前只看現在的市值(00675L 300 萬)− 現在的借款(0),記成 300 萬
+  {
+    const s = setup(ex.n, 0);
+    s.trades = [
+      { id:'b1', date:'2000-01-01', symbol:'00631L', action:'buy', source:'cash', shares:3000000, price:1, amount:0, fee:0, note:'' },
+      { id:'b2', date:'2000-01-01', symbol:'00675L', action:'buy', source:'cash', shares:3000000, price:1, amount:0, fee:0, note:'' },
+      { id:'s1', date: exitDate, symbol:'00631L', action:'sell', source:'cash', shares:3000000, price:1, amount:0, fee:0, note:'' },
+    ];
+    s.leverage.draws = [{ id:'d1', label:'', amount:1000000, useDate:'2000-01-03', note:'', repayments:[{ id:'r1', date: exitDate, amount:1000000 }] }];
+    A.state = s;
+    A.renderAll();
+    ob = A.state.leverage.ownBase;
+    must(ob.exit === exitDate && ob.amount === 5000000, `打開前已經賣掉、還了房貸:要記出場那一刻的 500 萬,得到 ${JSON.stringify(ob)}`);
     A.state = setup(ex.n, 6000000);
     A.renderAll();
   }
@@ -703,6 +718,27 @@ console.log('接刀只用自有資金(2026-10):出場時記下自有資金、各
   must(A.state.leverage.exposureTargets.ownByLayer[0] === 40, '第 1 層的 % 要改得到');
   A.onField('expo-own-0', { value: '0' });
   must(A.state.leverage.exposureTargets.ownByLayer[0] === 40, '填 0 不算(跟曝險比例一樣)');
+})();
+
+console.log('接刀只用自有資金:歷史從空頭開始、沒經過出場就從觀望直接加碼,已買的也要扣掉');
+(function testOwnFromWatch(){
+  const ps = Array(16).fill(10).concat([8.8]);      // 平盤(不會轉續抱)後單日跌 12%(> 間距 10%)→ 觀望直接加碼第 1 層
+  const t = A.computeTrend({ key:'t', id:'T', leverage:2, trend, priceHistory: mkHist(ps) });
+  must(t.status === 'WAIT_RECOVER' && t.pyramidCount === 1, `測試路徑要從觀望直接加碼,得到 ${t.status}/${t.pyramidCount}`);
+  must(t.exitDate === t.lastDate, `這一輪的起點要是第一次加碼那天(${t.lastDate}),得到 '${t.exitDate}'`);
+  const s = A.emptyState();
+  s.leverage.exposureTargets = { byLayer:[75, 150], hold:140, mode:'own', ownByLayer:[50, 100] };
+  s.instruments.filter(it => it.leverage === 2).forEach(it => {
+    it.trend = Object.assign({}, trend, { lastSeenStatus:'', lastSeenDate:'' });
+    it.priceHistory = mkHist(ps); it.price = 8.8;
+  });
+  s.trades = [{ id:'w1', date: t.lastDate, symbol:'00631L', action:'buy', source:'cash', shares:100000, price:8.8, amount:0, fee:0, note:'' }];
+  A.state = s;
+  A.renderAll();
+  A.onField('ownbase-amt', { value: '3000000' });
+  const p = A.computeExposurePlan();
+  must(p.own && p.own.exitDate === t.lastDate && Math.abs(p.own.bought - 880000) < 1 && Math.abs(p.own.need - 620000) < 1,
+    `第 1 層 150 萬扣掉已買 88 萬要剩 62 萬,得到 ${JSON.stringify(p.own)}`);
 })();
 console.log('  ok');
 
