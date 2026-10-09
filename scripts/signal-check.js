@@ -128,9 +128,12 @@ async function notify(a){
   if (!repo || !token) throw new Error('沒有 GITHUB_REPOSITORY / GITHUB_TOKEN(本機試跑請加 --dry)');
   const api = (p, opt = {}) => fetch('https://api.github.com/repos/' + repo + p, { ...opt, headers: {
     Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' } });
-  // 同一個標題(含日期)開過就不再開:連假期間每天跑、一天跑兩次都不會重複通知
-  const res = await api('/issues?state=all&per_page=100&creator=' + encodeURIComponent('app/github-actions'));
-  const seen = res.ok ? (await res.json()).map(x => x.title) : [];
+  // 同一個標題(含日期)開過就不再開:連假期間每天跑、一天跑兩次都不會重複通知。
+  // 不用 creator 篩選:機器人帳號在 REST 參數裡怎麼寫沒驗證過,寫錯會查到空清單、每次都重開;標題帶日期跟 emoji,不會撞到自己開的。
+  // 查不到就報錯不開(排程失敗 GitHub 會寄通知),不能當成「沒開過」
+  const res = await api('/issues?state=all&per_page=100&sort=created&direction=desc');
+  if (!res.ok) throw new Error('查詢已開的 issue 失敗:HTTP ' + res.status + ' ' + await res.text());
+  const seen = (await res.json()).map(x => x.title);
   if (seen.includes(a.title)){ console.log('(已經通知過,略過)'); return; }
   const owner = repo.split('/')[0];
   const r = await api('/issues', { method: 'POST', body: JSON.stringify({ title: a.title, body: a.body + `\n\n@${owner}` }) });
@@ -139,4 +142,4 @@ async function notify(a){
 }
 
 if (require.main === module) main().catch(e => { console.error('✗ ' + (e && e.message || e)); process.exitCode = 1; });
-else module.exports = { evaluate, A, WARN_PCT };
+else module.exports = { evaluate, notify, A, WARN_PCT };
