@@ -693,8 +693,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-09 · 4f326e7449';
-const BUILD_HASH = '4f326e7449';
+const BUILD_VERSION = '2026-10-09 · a4bd2e1a66';
+const BUILD_HASH = 'a4bd2e1a66';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6515,7 +6515,7 @@ function onClick(el){
         const { mult } = splitMultiple(sp.ratio);
         state.trades.forEach(t => {
           if (!splitPending(t, it, d)) return;
-          t.shares = Math.round(t.shares * mult);
+          t.shares = num(Math.round(t.shares * mult));   // num():夾在 ±1 兆,跟存檔再讀回來一樣(跟其他自動改的數字同一條規矩)
           t.price = Math.round(t.price / mult * 10000) / 10000;   // 成本(股數 × 價格)不變
           t.note = (t.note ? t.note + ' ' : '') + splitTag(d);
         });
