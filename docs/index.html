@@ -552,8 +552,14 @@ function normalizeLoan(v){
     annualRate: Math.max(0, num(v.annualRate)),
     rateHistory: normalizeRateHistory(v.rateHistory),
     autoInterest: v.autoInterest !== false,
-    interestPosted: (Array.isArray(v.interestPosted) ? v.interestPosted : []).filter(m => typeof m === 'string' && isoDate(m + '-01', ''))
+    interestPosted: (Array.isArray(v.interestPosted) ? v.interestPosted : []).filter(m => typeof m === 'string' && isoDate(m + '-01', '')),
+    bankCheck: normalizeLoanBankCheck(v.bankCheck)
   };
+}
+/* 一般型房貸跟銀行對帳(2026-10):銀行顯示的剩餘本金、本期應繳;appPayment = 填的當下 app 算的下一期月付。見 loanBankRecon() */
+function normalizeLoanBankCheck(v){
+  const B = v && typeof v === 'object' ? v : {}, opt = x => x === null || x === undefined || x === '' ? null : Math.max(0, num(x));
+  return { date: isoDate(B.date, ''), balance: opt(B.balance), payment: opt(B.payment), appPayment: opt(B.appPayment) };
 }
 function normalize(raw){
   const s = emptyState();
@@ -770,8 +776,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · bd7cdb787b';
-const BUILD_HASH = 'bd7cdb787b';
+const BUILD_VERSION = '2026-10-09 · d982524b71';
+const BUILD_HASH = 'd982524b71';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1277,6 +1283,10 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   next.liabilities.forEach(l => {
     const r = rawLiab.get(l.id), p = (prev.liabilities || []).find(x => x.id === l.id);
     if (r && !('loan' in r) && p && p.loan){ l.loan = JSON.parse(JSON.stringify(p.loan)); restored = true; }
+    // 對帳(2026-10 加):認得 loan、不認得 bankCheck 的版本寫回來會丟掉
+    else if (r && r.loan && typeof r.loan === 'object' && !('bankCheck' in r.loan) && l.loan && p && p.loan && p.loan.bankCheck && p.loan.bankCheck.date){
+      l.loan.bankCheck = JSON.parse(JSON.stringify(p.loan.bankCheck)); restored = true;
+    }
   });
   const rawInst = new Map((Array.isArray(raw.instruments) ? raw.instruments : []).filter(x => x).map(x => [String(x.key || ''), x]));
   next.instruments.forEach(it => {
@@ -3104,7 +3114,8 @@ function loanSummaryText(l){
 }
 function renderLoanBox(l){
   if (!l.loan) return '';   // 「本利攤還 ▸」放在 itemRowExtras 那一行
-  const lo = l.loan, open = loanOpen === l.id, offArmed = pendingConfirm === 'loan-off:' + l.id;
+  const rc0 = loanBankRecon(l);   // 跟銀行對不上就展開,不能藏起來
+  const lo = l.loan, open = loanOpen === l.id || !!(rc0 && !rc0.ok), offArmed = pendingConfirm === 'loan-off:' + l.id;
   return `
     <div class="row" style="align-items:flex-start;"><span class="muted" style="font-size:12px;" id="lo-sum-${l.id}">本利攤還 · ${esc(loanSummaryText(l))}</span>
       <button class="linkish muted" data-act="loan-open" data-id="${l.id}" style="padding:0; flex:0 0 auto; margin-left:8px;">${open ? '收起 ▾' : '房貸設定 ▸'}</button></div>
@@ -3127,6 +3138,7 @@ function renderLoanBox(l){
     </div>`).join('')}` : ''}
     <div class="muted" style="margin-top:6px;">銀行調利率時改「目前年利率」(改完離開欄位才生效):今天以前照舊利率,之後每期月付用剩餘本金、剩餘期數、新利率重算。
       生效日不是今天的話,改上面那段的日期。</div>
+    ${loanReady(l) ? renderLoanBankRecon(l) : ''}
     <button class="btn quiet" data-act="toggle-loan-interest" data-id="${l.id}">${lo.autoInterest ? '✓ 每期利息自動記入支出' : '利息不自動記帳(點此開啟)'}</button>
     <button class="btn quiet${offArmed ? ' danger' : ''}" data-act="loan-off" data-id="${l.id}">${offArmed ? '⚠️ 再按一次:改回自己填金額' : '不用本利攤還,改回自己填金額'}</button>
     ` : ''}`;
@@ -3647,7 +3659,7 @@ function renderHelp(){
         沒開過 app 的月份會留空,間隔才不會失真。</li>
         <li><strong>跟網路銀行對帳</strong>:「設定」分頁「借款與利息」卡的「跟網路銀行對帳」,填網路銀行顯示的借款餘額、下一期利息,
           app 跟同一天自己算的比;差額剛好是某一筆動用(例如預定動用其實已經撥款)或還款(例如自動還本銀行還沒扣)會直接指出來,
-          利息對不上會推算銀行實際用的年利率。有借款、超過 40 天沒對,「今天要做什麼」會提醒一次。</li>
+          利息對不上會推算銀行實際用的年利率。有借款、超過 40 天沒對,「今天要做什麼」會提醒一次。一般型房貸(資產頁負債的「房貸設定」)也可以對:填銀行顯示的剩餘本金跟本期應繳,差一期本金、月付推算出來的利率不一樣都會指出來。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照,可在總覽的「資料」卡還原。匯入備份、還原備份、載入範例、清空全部之前,也會先把當時的資料存成一份(名稱是「日期 時間 還原前」這類),按錯了可以再還原回來。
         雲端留 30 份;本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
         因為手機瀏覽器的空間有限,備份佔太多會讓主資料存不進去。空間用超過 75% 時會提醒你。</li>
@@ -5476,6 +5488,11 @@ function todoItems(){
   const rc = bankRecon();
   if (computeLeverage().usedAmount > 0 && (!rc || rc.days > BANK_RECON_DAYS))
     go('🧾', rc ? `跟網路銀行對一下借款(上次 ${rc.days} 天前)` : '跟網路銀行對一下借款', '填網路銀行顯示的借款餘額跟下一期利息,app 幫你比', 'bankchk');
+  state.liabilities.forEach(l => {
+    if (!loanReady(l) || !(l.amount > 0)) return;
+    const lr = loanBankRecon(l);
+    if (!lr || lr.days > BANK_RECON_DAYS) go('🧾', `跟銀行對一下「${l.name || '房貸'}」` + (lr ? `(上次 ${lr.days} 天前)` : ''), '填銀行顯示的剩餘本金跟本期應繳,app 幫你比', 'loanchk:' + l.id);
+  });
   const hw = healthWarnings();
   if (hw.length) go('🩺', `健康檢查有 ${hw.length} 項要注意`, diagMask(hw[0].t) + (hw.length > 1 ? ` 等 ${hw.length} 項` : '') + ',可以複製診斷報告貼給 Claude', 'diag');
   return out;
@@ -5491,6 +5508,7 @@ function renderTodo(){
             <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
           ${x.tab === 'diag' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="diag-open">看診斷 →</button>`
             : x.tab === 'bankchk' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="bankchk-open">去對帳 →</button>`
+            : String(x.tab).startsWith('loanchk:') ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="loanchk-open" data-id="${esc(x.tab.slice(8))}">去對帳 →</button>`
             : x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
         </div>`).join('')
       : `<div class="muted">✓ 今天不用動。${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>`}
@@ -6070,6 +6088,62 @@ function renderBankRecon(){
 }
 const BANK_RECON_DAYS = 40;   // 有借款、超過這麼多天沒對帳,「今天要做什麼」提醒一次
 
+/* 一般型房貸(liabilities[].loan)跟銀行對帳:剩餘本金跟「填的那天」的攤還表比,本期應繳跟填的當下 app 算的月付比。
+   本金差額剛好是一期的本金 = 銀行跟 app 差一期(扣款日跟撥款日不同天、或還沒扣);月付對不上用二分法推算銀行的年利率 */
+function loanPay(B, n, r){ return r > 0 ? B * r / (1 - Math.pow(1 + r, -n)) : B / n; }
+function loanBankRecon(l){
+  const lo = l && l.loan, B = lo && lo.bankCheck;
+  if (!B || !B.date || (B.balance == null && B.payment == null) || !loanReady(l)) return null;
+  const out = { date: B.date, days: daysBetweenISO(B.date, todayISO()), ok: true };
+  if (B.balance != null){
+    const app = Math.round(lo.start > B.date ? lo.principal : amortize(lo, B.date).balance);
+    const diff = Math.round(B.balance - app), hints = [];
+    if (Math.abs(diff) > 1){
+      const rows = amortize(lo, '9999-12-31').rows, near = (a, b) => Math.abs(a - b) <= Math.max(2, Math.abs(b) * 0.002);
+      const last = rows.filter(r => r.date <= B.date).pop(), next = rows.find(r => r.date > B.date);
+      if (last && near(diff, last.principal)) hints.push(`差額剛好是 ${last.date} 那期的本金 ${$n(last.principal)}:銀行還沒扣那期,扣款日可能比撥款日(${lo.start.slice(8)} 號)晚幾天,過幾天再對一次`);
+      else if (next && near(-diff, next.principal)) hints.push(`差額剛好是 ${next.date} 那期的本金 ${$n(next.principal)}:銀行已經扣了,扣款日比撥款日早,把撥款日改成扣款那天`);
+      else hints.push(diff > 0 ? `銀行多 ${$n(diff)}:撥款日、年限、利率(過去各段)跟銀行一樣嗎?有沒有寬限期(只繳息)?`
+                               : `銀行少 ${$n(-diff)}:有提前還款嗎?app 不會記提前還款,改「原始貸款金額」或撥款日讓剩餘本金對上`);
+      out.ok = false;
+    }
+    out.balance = { bank: B.balance, app, diff, hints };
+  }
+  if (B.payment != null && B.appPayment != null){
+    const diff = Math.round(B.payment - B.appPayment), hints = [];
+    if (Math.abs(diff) > 2){
+      const nx = nextLoanPayment(lo);
+      if (nx && nx.balance > 0){
+        const n = nx.N - nx.k + 1;
+        let lo2 = 0, hi = 0.05;   // 月利率 0~5%
+        for (let i = 0; i < 60; i++){ const mid = (lo2 + hi) / 2; if (loanPay(nx.balance, n, mid) < B.payment) lo2 = mid; else hi = mid; }
+        const implied = lo2 * 1200;
+        if (implied > 0.01 && implied < 59 && Math.abs(implied - rateAt(lo, B.date)) >= 0.01)
+          hints.push(`照銀行的月付推算年利率約 ${implied.toFixed(2)}%(app 用 ${rateAt(lo, B.date)}%):銀行調過利率的話,改「目前年利率」;利率一樣的話,看年限(剩 ${n} 期)對不對`);
+      }
+      if (!hints.length) hints.push('月付對不上:利率、年限跟銀行一樣嗎?');
+      out.ok = false;
+    }
+    out.payment = { bank: B.payment, app: B.appPayment, diff, hints };
+  }
+  return out;
+}
+function renderLoanBankRecon(l){
+  const B = l.loan.bankCheck || {}, rc = loanBankRecon(l);
+  const rows = (label, x) => !x ? '' : `
+      <div class="row sub"><span class="label">${label}:銀行 ${fmt(x.bank)} · app ${fmt(x.app)}</span>
+        <span class="val ${!x.hints.length ? 'pos' : 'neg'}">${!x.hints.length ? '✓ 對得上' : (x.diff > 0 ? '銀行多 ' : '銀行少 ') + fmt(Math.abs(x.diff))}</span></div>
+      ${x.hints.map(h => `<div class="muted neg" style="font-size:12px; margin:2px 0 4px;">· ${esc(diagMask(h))}</div>`).join('')}`;
+  return `
+    <div style="font-weight:700; margin-top:10px;">跟銀行對帳</div>
+    <div class="grid2">
+      <div class="field"><label>銀行顯示的剩餘本金</label><input type="number" inputmode="decimal" data-k="lbc-balance-${l.id}" value="${B.balance ?? ''}"></div>
+      <div class="field"><label>銀行顯示的本期應繳(本金 + 利息)</label><input type="number" inputmode="decimal" data-k="lbc-payment-${l.id}" value="${B.payment ?? ''}"></div>
+    </div>
+    ${rc ? `<div class="muted" style="font-size:12px;">對帳日 ${esc(rc.date)}${rc.days > 0 ? `(${rc.days} 天前,要再對一次就重新填)` : ''}</div>
+      ${rows('剩餘本金', rc.balance)}${rows('本期應繳', rc.payment)}` : ''}`;
+}
+
 /* ===================== 診斷報告:健康檢查 ===================== */
 /* 用這台裝置上的真實資料檢查幾件測試碰不到的事(假資料測不出「時間差」這類問題,2026-10 使用者貼畫面才抓到預定動用的 bug)。
    每項 { lv: 'ok' | 'warn' | 'info', t: 文字 },金額用 $n()。只讀不改。新增檢查時,抓到的問題修好後也要加進自動測試。 */
@@ -6161,6 +6235,12 @@ function healthCheck(){
   if (rc && !rc.ok) warn(`跟網路銀行對帳對不上(${rc.date}):` + [rc.balance && rc.balance.hints.length ? `借款銀行 ${$n(rc.balance.bank)} vs app ${$n(rc.balance.app)}` : '',
     rc.interest && rc.interest.hints.length ? `利息銀行 ${$n(rc.interest.bank)} vs app ${$n(rc.interest.app)}` : ''].filter(Boolean).join('、'));
   else if (rc) ok(`跟網路銀行對帳 ${rc.date} 對得上`);
+  state.liabilities.forEach(l => {
+    const lr = loanBankRecon(l);
+    if (lr && !lr.ok) warn(`「${l.name}」跟銀行對帳對不上(${lr.date}):` + [lr.balance && lr.balance.hints.length ? `剩餘本金銀行 ${$n(lr.balance.bank)} vs app ${$n(lr.balance.app)}` : '',
+      lr.payment && lr.payment.hints.length ? `月付銀行 ${$n(lr.payment.bank)} vs app ${$n(lr.payment.app)}` : ''].filter(Boolean).join('、'));
+    else if (lr) ok(`「${l.name}」跟銀行對帳 ${lr.date} 對得上`);
+  });
   // id 重複(normalize 會修,出現代表修的地方漏了)
   const dup = (list, label) => { const seen = new Set(); (list || []).forEach(x => { if (seen.has(x.id)) warn(`${label}有重複的 id ${x.id}`); seen.add(x.id); }); };
   dup(state.transactions, '記帳'); dup(state.trades, '買賣'); dup(state.leverage.draws, '動用');
@@ -6231,6 +6311,18 @@ function onField(key, el){
     else if (what === 'years') l.loan.years = Math.min(50, Math.max(0, num(el.value)));
     else if (what === 'principal') l.loan.principal = Math.max(0, num(el.value));
     syncLoanLiabilities();
+  }
+  else if (kind === 'lbc'){                       // 一般型房貸跟銀行對帳:lbc-balance|payment-<負債 id>
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), l = findById(state.liabilities, rest.slice(cut + 1));
+    if (!l || !l.loan) return;
+    const B = l.loan.bankCheck || (l.loan.bankCheck = normalizeLoanBankCheck(null)), raw = String(el.value).trim();
+    const v = raw === '' ? null : Math.max(0, num(raw));
+    if (what === 'balance') B.balance = v; else if (what === 'payment') B.payment = v; else return;
+    B.date = todayISO();
+    const nx = nextLoanPayment(l.loan);
+    B.appPayment = nx ? Math.round(nx.payment) : null;
+    diag('對帳', `${l.name || '房貸'}:銀行剩餘本金 ${B.balance == null ? '—' : $n(B.balance)}、本期應繳 ${B.payment == null ? '—' : $n(B.payment)}`
+      + `(app:剩餘本金 ${$n(amortize(l.loan).balance)}、月付 ${B.appPayment == null ? '—' : $n(B.appPayment)})`, true);
   }
   else if (kind === 'lr'){                        // 一般型房貸過去各段利率:lr-until|val-<負債 id>.<段 id>
     const cut = rest.indexOf('-'), what = rest.slice(0, cut), ids = rest.slice(cut + 1), dot = ids.indexOf('.');
@@ -6913,6 +7005,7 @@ function onClick(el){
       break;
     case 'chart': pickChartPoint(el.dataset.key, Number(el.dataset.i)); return;
     case 'range': chartRange = Number(el.dataset.v); break;
+    case 'loanchk-open': loanOpen = id; switchTab('assets'); return;   // 今天要做什麼的 🧾(一般型房貸):到資產頁、打開那筆的房貸設定
     case 'bankchk-open': openFolds.add('bankchk'); levTab = 'setup'; document.getElementById('content').scrollTop = 0; break;   // 今天要做什麼的 🧾
     case 'lev-tab':
       levTab = el.dataset.v;
@@ -7198,7 +7291,7 @@ function init(){
     if (dk.startsWith('lo-rate-')){ applyLoanRate(dk.slice(8), e.target.value); renderAll(); return; }
     // 繳款日:打「1 → 15」途中的「1」不能先把本月的自動還本搬到 1 號,離開欄位才算數
     if (dk === 'lev-payDay'){ applyPayDay(e.target.value); renderAll(); return; }
-    if ((dk.startsWith('lo-') || dk.startsWith('lr-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
+    if ((dk.startsWith('lo-') || dk.startsWith('lr-') || dk.startsWith('lbc-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
     if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){
       renderAll();

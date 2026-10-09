@@ -406,6 +406,10 @@ id 沿用舊值以確保重複呼叫不會飄動。
 對不上時 `bankBalanceHints()` 找差額剛好等於哪一筆動用/還款/預定動用合計,利息用比例推算銀行的年利率。
 對不上進健康檢查(🩺),有借款且超過 `BANK_RECON_DAYS`(40)天沒對,「今天要做什麼」列 🧾(`bankchk-open` 打開那個收合區塊)。
 有進 `keepFieldsOldVersionsDrop()`。測試 `tests/extras.js`「跟網路銀行對帳」(用使用者 10/8 的真實數字)。
+一般型房貸:`liabilities[].loan.bankCheck {date, balance, payment, appPayment}`(`lbc-balance|payment-<負債 id>`,`normalizeLoanBankCheck()`),
+`loanBankRecon()` 剩餘本金跟「那天」的 `amortize()` 比,差額剛好是上一期/下一期本金就說差一期(扣款日跟撥款日不同天);
+本期應繳跟填的當下 `nextLoanPayment()` 比,對不上用二分法推算銀行的年利率。對不上時 `renderLoanBox()` 自動展開;
+todo 的 🧾 `loanchk:<id>` → `loanchk-open`(到資產頁、`loanOpen`)。舊版(認得 loan 不認得 bankCheck)寫回來會補。測試 `tests/loans.js`。
 
 ## 診斷報告(2026-10,使用者要的)
 
