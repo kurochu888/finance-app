@@ -346,7 +346,7 @@ id 沿用舊值以確保重複呼叫不會飄動。
      結論:原本的 MA 出場規則最穩。以後有人提換出場線,先看這段跟第 11、12 點。
 
 14. **收盤後自動檢查訊號(2026-10,使用者要的)**——app 的 🔔 只在打開 app 時算,`scripts/signal-check.js` 由
-   `.github/workflows/signal-check.yml` 每個交易日台灣時間 15:30、19:30 跑:eval `docs/index.html` 的 app 程式(跟測試同一招),
+   `.github/workflows/signal-check.yml` 每個交易日台灣時間 15:47、19:47、22:13 跑(避開整點半點,GitHub 那時最塞、2026-10 實測晚了 7 小時):eval `docs/index.html` 的 app 程式(跟測試同一招),
    用 `twseJson`/`mergeHistory` 抓 14 個月、`computeTrend` 算「到最後一天」跟「到前一天」,不一樣就開 GitHub issue(@ 擁有者,GitHub 寄通知)。
    不存狀態(跟 computeTrend 無狀態重算同一個想法);issue 標題帶日期,同標題開過不再開。**只用預設標的與預設訊號參數**
    (使用者資料不在 repo 裡),app 裡改過參數就會不一致。本機試跑 `node scripts/signal-check.js --dry [--fake]`。
@@ -410,6 +410,8 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
 - **健康檢查** `healthCheck()`:用真實資料檢查測試碰不到的事(兩套部位市值、借款組成、動用與買進對帳、還款早於動用日、
   自動記帳月份有洞或重複、賣超、價格歷史缺口、收盤價太舊、分割未處理、接刀自有資金沒填、快照缺月、重複 id)。
   資料卡收著時只數紀錄(每次重畫都跑健康檢查會讓總覽慢四五成),展開或複製時才跑。
+  「今天要做什麼」也列健康檢查的 ⚠(🩺,`healthWarnings()` 5 秒內用上次結果);那張卡本來就會列的(收盤價太舊、分割、
+  動用對不起來)跟抓報價會自動補的(價格歷史不夠/有缺口)在 `healthCheck()` 裡標 `inTodo`,不重複列。「看診斷」= `diag-open`。
 - 使用者貼報告來時:⚠ 的逐條查;查到 bug 修好後,同一個情境要加進自動測試(不能只靠健康檢查)。測試 `tests/diag.js`。
 
 ## 曝險比例公式(`computeRisk()`)

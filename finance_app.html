@@ -744,8 +744,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · 9291c83324';
-const BUILD_HASH = '9291c83324';
+const BUILD_VERSION = '2026-10-09 · 181e71ac7d';
+const BUILD_HASH = '181e71ac7d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3432,7 +3432,7 @@ function renderHelp(){
     <div class="card doc">
       <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
-        <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用),點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
+        <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用、健康檢查有要注意的地方),點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
         <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完;最下面「回測與研究」(策略回測、加權指數模擬 2000/2008、指定期間)平常收著,點了才展開</li>
         <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
         <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
@@ -5411,6 +5411,13 @@ function exposureTodo(){
   if (p.holdAdjustPending || p.layerAdjustPending) return { text: '曝險已經在目標附近', sub: '到「正2 曝險目標」卡按「已調整完成」', tab: 'signal' };
   return null;
 }
+/* 健康檢查有 ⚠ 就列進「今天要做什麼」(2026-10 使用者要的:不用記得去按複製診斷報告)。
+   健康檢查資料多時要十幾毫秒,槓桿頁每次重畫都跑太浪費:5 秒內重畫用上次的結果 */
+let healthCache = { at: 0, warns: [] };
+function healthWarnings(){
+  if (Date.now() - healthCache.at > 5000) healthCache = { at: Date.now(), warns: healthCheck().filter(x => x.lv === 'warn' && !x.inTodo) };
+  return healthCache.warns;
+}
 function todoItems(){
   const out = [], today = todayISO();
   const go = (icon, text, sub, tab, html = false) => out.push({ icon, text, sub, tab, html });
@@ -5431,6 +5438,8 @@ function todoItems(){
   });
   state.leverage.draws.filter(d => d.useDate > today && daysBetweenISO(today, d.useDate) <= 7)
     .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '銀行到那天才撥款;已經用它買進的,曝險先算進借款', 'log'));
+  const hw = healthWarnings();
+  if (hw.length) go('🩺', `健康檢查有 ${hw.length} 項要注意`, diagMask(hw[0].t) + (hw.length > 1 ? ` 等 ${hw.length} 項` : '') + ',可以複製診斷報告貼給 Claude', 'diag');
   return out;
 }
 function renderTodo(){
@@ -5442,7 +5451,8 @@ function renderTodo(){
         <div class="row" style="align-items:flex-start;">
           <span class="label"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
             <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
-          ${x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
+          ${x.tab === 'diag' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="diag-open">看診斷 →</button>`
+            : x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
         </div>`).join('')
       : `<div class="muted">✓ 今天不用動。${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>`}
     </div>`;
@@ -5955,7 +5965,8 @@ function postLeverageInterest(){
 /* 用這台裝置上的真實資料檢查幾件測試碰不到的事(假資料測不出「時間差」這類問題,2026-10 使用者貼畫面才抓到預定動用的 bug)。
    每項 { lv: 'ok' | 'warn' | 'info', t: 文字 },金額用 $n()。只讀不改。新增檢查時,抓到的問題修好後也要加進自動測試。 */
 function healthCheck(){
-  const out = [], ok = t => out.push({ lv:'ok', t }), warn = t => out.push({ lv:'warn', t }), info = t => out.push({ lv:'info', t });
+  // inTodo:「今天要做什麼」本來就會列的(收盤價太舊、分割、動用對不起來),那張卡不再重複列
+  const out = [], ok = t => out.push({ lv:'ok', t }), warn = (t, inTodo = false) => out.push({ lv:'warn', t, inTodo }), info = t => out.push({ lv:'info', t });
   const L = state.leverage, today = todayISO(), cur = thisMonth();
   const p = computePosition(), r = computeLeverage(), k = computeRisk();
   // 部位市值:買賣紀錄回放(損益卡)跟持股 × 股價(曝險卡)兩套算法要一樣
@@ -5967,9 +5978,9 @@ function healthCheck(){
   info(`借款:銀行已撥款 ${$n(r.usedAmount)}、已買進還沒撥款 ${$n(r.pendingLoan)}、預定動用合計 ${$n(plannedDrawAmount())}、額度 ${$n(L.creditLimit)}`);
   info(`曝險 ${k.exposureRatio.toFixed(1)}% = 實質曝險 ${$n(k.exposure)} ÷(自己的錢 ${$n(k.equity)} + 額度 ${$n(L.creditLimit)})`);
   if (k.capacity <= 0) warn('分母(自己的錢 + 額度)≤ 0,曝險比例沒有意義');
-  if (loanLedgerMissing()) warn('有用房貸買進的紀錄,但一筆動用都沒有');
+  if (loanLedgerMissing()) warn('有用房貸買進的紀錄,但一筆動用都沒有', true);
   const mm = loanMismatch();
-  if (mm) warn(`動用合計跟房貸買進合計差 ${$n(mm.diff)}(動用 ${$n(mm.r.drawnAmount)}、房貸買進 ${$n(mm.p.buyLoan)})`);
+  if (mm) warn(`動用合計跟房貸買進合計差 ${$n(mm.diff)}(動用 ${$n(mm.r.drawnAmount)}、房貸買進 ${$n(mm.p.buyLoan)})`, true);
   const unused = unusedLoanCash();
   if (unused > 0) info(`借了還沒用完 ${$n(unused)}(下次房貸買進會先扣)`);
   // 動用紀錄本身
@@ -6013,13 +6024,14 @@ function healthCheck(){
   // 價格與訊號
   state.instruments.filter(it => it.auto && it.id).forEach(it => {
     const t = computeTrend(it), gap = trendHistoryGap(it);
-    if (t.barsAvailable < t.barsNeeded) warn(`${it.id} 價格歷史 ${t.barsAvailable} 筆,算均線要 ${t.barsNeeded} 筆`);
-    else if (gap) warn(`${it.id} 價格歷史中間缺一段(${gap.from || ''}~${gap.to || ''}),訊號不可信`);
+    // 歷史不夠、有缺口:抓報價時會自動回補,訊號分頁也會說不給訊號,今天要做什麼不另外列(剛開始用的人一定會碰到)
+    if (t.barsAvailable < t.barsNeeded) warn(`${it.id} 價格歷史 ${t.barsAvailable} 筆,算均線要 ${t.barsNeeded} 筆`, true);
+    else if (gap) warn(`${it.id} 價格歷史中間缺一段(${gap.from || ''}~${gap.to || ''}),訊號不可信`, true);
     else ok(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${t.status}${t.status === 'WAIT_RECOVER' ? ` 第 ${t.pyramidCount} 層` : ''}${t.cushionPct != null ? `,再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''}`);
   });
   const st = signalStaleness();
-  if (st) warn(`收盤價停在 ${st.date}(${staleLabel(st)})`);
-  splitTradeIssues().forEach(x => warn(`${x.it.id} ${x.sp.d} 分割前有 ${x.n} 筆買賣還沒選要不要換算`));
+  if (st) warn(`收盤價停在 ${st.date}(${staleLabel(st)})`, true);
+  splitTradeIssues().forEach(x => warn(`${x.it.id} ${x.sp.d} 分割前有 ${x.n} 筆買賣還沒選要不要換算`, true));
   // 接刀只用自有資金
   const plan = computeExposurePlan();
   if (plan && plan.own && plan.progress >= 1) {
@@ -6601,6 +6613,7 @@ function onClick(el){
     case 'cancel-confirm': break;   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
+    case 'diag-open': openFolds.add('diag'); switchTab('overview'); return;   // 今天要做什麼的 🩺:到總覽、診斷紀錄展開
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
     // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
     case 'del-asset': { const a = findById(state.assets, id); if (a && (a.name || a.amount) && needsConfirm('del-asset:' + id)) return;

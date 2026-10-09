@@ -20,7 +20,8 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData,
-  todoItems, renderTodo, renderLeverage, onClick, set levTab(v){ levTab = v; }, get levTab(){ return levTab; } };`);
+  todoItems, renderTodo, renderLeverage, onClick, set levTab(v){ levTab = v; }, get levTab(){ return levTab; },
+  get currentTab(){ return currentTab; }, openFolds, set healthCache(v){ healthCache = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -72,6 +73,23 @@ must(!A.todoItems().some(x => x.icon === '🏦'), '本月繳款日過了不用�
 console.log('按鈕帶到對的分頁');
 A.onClick({ dataset:{ act:'lev-tab', v:'log' } });
 must(A.levTab === 'log', '「去紀錄」要切到紀錄分頁');
+
+console.log('健康檢查有 ⚠ 就列進今天要做什麼(已經另外列的不重複)');
+{
+  const s = A.normalize(A.emptyState());
+  s.leverage.draws = [{ id:'d1', label:'九月', amount:500000, useDate:'2026-09-03', note:'', repayments:[{ id:'r1', date:'2026-09-01', amount:1000 }] }];
+  s.trades = [{ id:'b1', date:'2026-09-01', symbol:'00631L', action:'buy', source:'loan', shares:1000, price:40, amount:0, fee:0, note:'' }];
+  A.state = s; A.healthCache = { at: 0, warns: [] };
+  const items = A.todoItems(), hw = items.filter(x => x.icon === '🩺');
+  must(hw.length === 1 && /健康檢查有 1 項要注意/.test(hw[0].text) && /早於動用日/.test(hw[0].sub), '還款早於動用日要列進今天要做什麼:' + JSON.stringify(hw));
+  must(items.some(x => x.icon === '📒'), '動用對不起來照舊由 📒 列');
+  must(!/對不起來|合計差/.test(hw[0].sub), '📒 已經列的不能在 🩺 再算一次');
+  must(A.renderTodo().includes('data-act="diag-open"'), '要有「看診斷」按鈕');
+  A.onClick({ dataset:{ act:'diag-open' } });
+  must(A.currentTab === 'overview' && A.openFolds.has('diag'), '「看診斷」要到總覽、展開診斷紀錄');
+  A.state = A.normalize(A.emptyState()); A.healthCache = { at: 0, warns: [] };
+  must(!A.todoItems().some(x => x.icon === '🩺'), '沒有問題時不列');
+}
 
 if (bugs.length){
   console.log('\n發現 ' + bugs.length + ' 個問題:');
