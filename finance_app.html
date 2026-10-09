@@ -738,8 +738,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · ef97170e89';
-const BUILD_HASH = 'ef97170e89';
+const BUILD_VERSION = '2026-10-09 · 3b0736012c';
+const BUILD_HASH = '3b0736012c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1027,14 +1027,16 @@ function onRemote(data){
   const { clean, rev } = splitRev(data), c = canon(clean);
   // 自己的回音(包括晚到的舊回音)。有版本編號就認編號:別台推的內容剛好跟自己推過的一樣(例如兩邊都刪光)時,
   // 以前照內容當成回音忽略,那一版沒記下來,之後收到從那版改出來的就找不到共同基準,把本機新增的判成被刪掉(壓測抓到)
-  if (rev ? myRevs.includes(rev) : (c === lastPushed || recentPushed.includes(c))) return;
+  // 剛套用過的同一版也不再套用:啟動時 cloud.get() 拿到一次,接著訂閱的 onSnapshot 一開始又送同一版(Firestore 的行為),
+  // 以前每次打開都合併兩次(2026-10 使用者的診斷報告:「收到別台裝置的改動 ×2」,其實是同一份)
+  if (rev ? (myRevs.includes(rev) || rev === syncRev) : (c === lastPushed || recentPushed.includes(c))) return;
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){
     pendingRemote = data;
     return;
   }
   applyRemote(data);
 }
-function applyRemote(raw){
+function applyRemote(raw, first = false){
   clearPosMemo();
   const { clean: data, rev, parent, tomb } = splitRev(raw);
   const prev = state;
@@ -1060,7 +1062,7 @@ function applyRemote(raw){
   lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
   if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
-  diag('同步', '收到別台裝置的改動' + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
+  diag('同步', (first ? '打開時從雲端載入' : '收到別台裝置的改動') + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
   renderAll();
 }
 /* 收到別台裝置的改動時,本機可能有還沒推上去的修改:打字中收到的會先擱著、離開欄位才套用(那時剛打的字
@@ -1237,7 +1239,7 @@ async function syncFirstTime(){
     if (remote && !looksLikeState(remote)){
       await save();                              // 雲端那份不像本 app 的資料,用本機的覆蓋回去
     }else if (remote){
-      applyRemote(remote);
+      applyRemote(remote, true);
     }else{
       await save();
     }

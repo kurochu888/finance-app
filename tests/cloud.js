@@ -80,6 +80,13 @@ const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); 
   await wait(10);
   console.log('3. 別台的改動:', A.state.assets[0].name);
   if (A.state.assets[0].name !== '另一台改的') bugs.push('別台裝置的改動沒有套用');
+  // 3b) 同一版又送來一次(Firestore 訂閱一開始會送目前那版,啟動時 cloud.get() 已經套用過):不能再合併一次
+  {
+    const before = A.state;
+    snapCb({ exists:true, data: () => JSON.parse(JSON.stringify(cloudDocs['state/finance'])) });
+    await wait(10);
+    if (A.state !== before) bugs.push('剛套用過的同一版又被套用一次(啟動時每次都合併兩次)');
+  }
 
   // 4) 正在打字時,遠端改動要先擱著
   focused = { tagName:'INPUT' };

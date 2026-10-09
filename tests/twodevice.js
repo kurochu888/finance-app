@@ -35,7 +35,10 @@ async function runSeed(SEED){
         listeners.forEach(l => { const at = Math.max(l.next, Date.now() + Math.floor(rnd() * 300)); l.next = at;
           setTimeout(() => { log(l.who, '<- recv', snap.transactions.map(t => t.id.split('_').pop()).join(',')); l.cb({ exists: true, data: () => JSON.parse(JSON.stringify(snap)) }); }, at - Date.now()); }); },
       async delete(){},
-      onSnapshot(cb){ if (path === 'state/finance') listeners.push({ cb, next: 0, who }); return () => {}; }
+      // 真的 Firestore 訂閱時會先送一次目前那版(啟動時 cloud.get() 已經拿過同一版)
+      onSnapshot(cb){ if (path === 'state/finance'){ listeners.push({ cb, next: 0, who });
+        if (doc !== undefined){ const snap = JSON.parse(JSON.stringify(doc)); setTimeout(() => cb({ exists: true, data: () => JSON.parse(JSON.stringify(snap)) }), 0); } }
+        return () => {}; }
     }),
     collection: () => ({ async get(){ return { docs: [] }; } })
   });
