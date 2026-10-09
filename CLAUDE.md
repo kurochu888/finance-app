@@ -398,6 +398,15 @@ id 沿用舊值以確保重複呼叫不會飄動。
   撥款那天借款變成整筆、自己的錢少 51,012(app 不算現金)。考慮過把 `unusedLoanCash()` 加回自己的錢,使用者選不改:
   金額小、下次房貸買進就先用掉;加回去的話錢轉去別處 app 不知道,反而高估。以後有人提,先看這段。
 
+## 跟網路銀行對帳(2026-10,使用者要的)
+
+`leverage.bankCheck {date, balance, interest, appInterest}`:使用者填網路銀行顯示的借款餘額、下一期利息(`bankchk-*` 欄位),
+`date` = 填的那天、`appInterest` = 當下的 `nextLevInterest().bank`。`bankRecon()` 餘額跟「那天」的 `balanceAt()` 合計比
+(過幾天、扣了一期還本也不會變成對不上),利息跟 `appInterest` 比(差幾塊以內 = 動用筆數,銀行每筆各自四捨五入)。
+對不上時 `bankBalanceHints()` 找差額剛好等於哪一筆動用/還款/預定動用合計,利息用比例推算銀行的年利率。
+對不上進健康檢查(🩺),有借款且超過 `BANK_RECON_DAYS`(40)天沒對,「今天要做什麼」列 🧾(`bankchk-open` 打開那個收合區塊)。
+有進 `keepFieldsOldVersionsDrop()`。測試 `tests/extras.js`「跟網路銀行對帳」(用使用者 10/8 的真實數字)。
+
 ## 診斷報告(2026-10,使用者要的)
 
 Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用沒算進借款、快照少記借款)都是使用者貼畫面才抓到。

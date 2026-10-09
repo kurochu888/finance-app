@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV, onField, bankRecon, todoItems, healthCheck };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -264,6 +264,54 @@ console.log('已經買進、還沒撥款的預定動用要算進借款(使用者
   // 之前多借沒用完(已撥款 > 房貸買進):先用那筆,不算預定的
   A.state.leverage.draws[0].amount = 2300000;
   must(A.computeRisk().pendingLoan === 0, '之前多借的夠付,預定動用不算:' + A.computeRisk().pendingLoan);
+}
+
+console.log('跟網路銀行對帳(使用者 2026-10-08 的數字:已撥款 182 萬,10/12 預定 41 萬 + 36 萬)');
+{
+  const s = A.normalize(A.emptyState());
+  s.leverage.creditLimit = 8000000; s.leverage.annualRate = 2.6;
+  s.leverage.draws = [
+    { id:'d0', label:'九月', amount:1820000, useDate:'2026-09-03', note:'', repayments:[] },
+    { id:'d1', label:'00631L 買進', amount:410000, useDate:'2026-10-12', note:'', repayments:[] },
+    { id:'d2', label:'00675L 買進', amount:360000, useDate:'2026-10-12', note:'', repayments:[] },
+  ];
+  A.state = s;
+  const todo = () => A.todoItems().filter(x => x.icon === '🧾');
+  must(todo().length === 1 && !A.bankRecon(), '有借款、還沒對過帳要提醒');
+  const fill = (k, v) => A.onField('bankchk-' + k, { value: String(v) });
+  const hints = () => (A.bankRecon().balance.hints || []).join(' | ');
+  fill('balance', 1820000);
+  must(A.bankRecon().ok && A.bankRecon().balance.diff === 0, '銀行 182 萬要對得上(預定動用還沒撥款,銀行看不到)');
+  must(todo().length === 0, '剛對過帳不再提醒');
+  fill('balance', 2230000);
+  must(!A.bankRecon().ok && /「00631L 買進」⟦410,000⟧.*已經撥款/.test(hints()), '多 41 萬要指出是 10/12 那筆已經撥款:' + hints());
+  fill('balance', 2590000);
+  must(/預定動用合計 ⟦770,000⟧/.test(hints()), '多 77 萬要指出是預定動用合計:' + hints());
+  must(A.healthCheck().some(x => x.lv === 'warn' && /跟網路銀行對帳對不上/.test(x.t)), '對不上要進健康檢查(今天要做什麼的 🩺)');
+  s.leverage.draws[0].repayments = [{ id:'r1', date:'2026-10-01', amount:9100 }];
+  fill('balance', 1820000);
+  must(/2026-10-01 還 ⟦9,100⟧.*銀行好像還沒扣/.test(hints()), '還款銀行還沒扣要指出那一筆:' + hints());
+  s.leverage.draws[0].repayments = [];
+  fill('balance', 1820000);
+  // 利息:銀行照 2.7% 算,app 照 2.6%
+  const app = A.state.leverage.bankCheck.appInterest;
+  fill('interest', Math.round(app * 2.7 / 2.6));
+  const ih = A.bankRecon().interest.hints.join(' | ');
+  must(app > 0 && !A.bankRecon().ok && /年利率約 2\.70%/.test(ih), '利息對不上要推算銀行用的年利率:' + ih + ' app ' + app);
+  fill('interest', app + 2);
+  must(A.bankRecon().ok, '利息差幾塊(每筆各自四捨五入)不算對不上');
+  // 40 天後再提醒;對帳結果還是跟那天比,不會因為過了幾天就對不上
+  simNow += 41 * 86400000;
+  must(A.bankRecon().ok && todo().length === 1 && /41 天前/.test(todo()[0].text), '超過 40 天要再提醒:' + JSON.stringify(todo()));
+  simNow -= 41 * 86400000;
+  // 存檔往返、舊版分頁寫回來
+  const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  must(back.leverage.bankCheck.balance === 1820000 && back.leverage.bankCheck.date === '2026-10-08', '存檔往返要保留對帳');
+  const raw = JSON.parse(JSON.stringify(A.state)); delete raw.leverage.bankCheck;
+  const next = A.normalize(raw);
+  must(A.keepFieldsOldVersionsDrop(back, raw, next) && next.leverage.bankCheck.balance === 1820000, '舊版分頁寫回來要補回對帳');
+  fill('balance', ''); fill('interest', '');
+  must(!A.bankRecon(), '清空就沒有對帳結果');
 }
 
 if (bugs.length){
