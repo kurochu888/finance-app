@@ -352,6 +352,33 @@ const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad2 = n => String(n).padStart(2, '0');
 function todayISO(){ const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
+/* 診斷紀錄(2026-10 使用者要的):Claude 看不到手機上的真實資料,以前出錯、同步失敗、抓不到報價都只在畫面上閃一下。
+   錯誤、同步、證交所、自動記帳這幾類事件記在這台裝置(localStorage DIAG_KEY,不進 state、不同步、不上傳),
+   「資料」卡按「複製診斷報告」連同健康檢查(healthCheck)貼給 Claude 查。
+   金額一律用 $n() 包成 ⟦…⟧ 存原值,複製那一刻才照 👁 決定要不要換成 ••••(隱藏時記的,之後打開金額再複製也看得到)。
+   同一件事連續發生只加次數(×N),最多留 DIAG_MAX 筆。寫入失敗(空間滿)就算了,不能影響正常使用。 */
+const DIAG_KEY = 'financeDiagLog_v1', DIAG_MAX = 400;
+const $n = v => '⟦' + fmtRaw(v) + '⟧';
+const diagMask = s => String(s).replace(/⟦([^⟧]*)⟧/g, (_, x) => privacy ? '••••' : x);
+let diagCache = null, diagLastAct = '';
+function diagLoad(){
+  if (diagCache) return diagCache;
+  try{ const a = JSON.parse(localStorage.getItem(DIAG_KEY) || '[]'); diagCache = Array.isArray(a) ? a.filter(x => x && typeof x.m === 'string') : []; }
+  catch(e){ diagCache = []; }
+  return diagCache;
+}
+function diag(kind, msg){
+  try{
+    const list = diagLoad(), d = new Date(), m = String(msg).slice(0, 600);
+    const t = todayISO() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    const last = list[list.length - 1];
+    if (last && last.k === kind && last.m === m){ last.c = (last.c || 1) + 1; last.t = t; }
+    else list.push({ t, k: kind, m });
+    if (list.length > DIAG_MAX) list.splice(0, list.length - DIAG_MAX);
+    localStorage.setItem(DIAG_KEY, JSON.stringify(list));
+  }catch(e){}
+}
+function diagClear(){ diagCache = []; try{ localStorage.removeItem(DIAG_KEY); }catch(e){} }
 /* 合法的 YYYY-MM-DD 才收(2 月 30 日這種不存在的日期也擋),不合法就回傳 fallback。手機的日期選擇器本身
    打不出亂碼,但匯入的備份檔、雲端同步來的資料可能帶進任何字串;壞掉的日期會讓記帳的月份分組、
    利息天數算出 NaN(隨機壓測抓到「<b>x</b>年NaN月」),所以所有寫入日期的地方都先過這一關。 */
@@ -693,8 +720,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-09 · 028fb64235';
-const BUILD_HASH = '028fb64235';
+const BUILD_VERSION = '2026-10-09 · ef97170e89';
+const BUILD_HASH = 'ef97170e89';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -880,6 +907,7 @@ function writeLocal(data){
     try{
       localStorage.removeItem(BACKTEST_HIST_KEY);
       localStorage.removeItem(INDEX_SIM_KEY);   // 加權指數模擬的快取也可以重抓(可拆)
+      localStorage.removeItem(DIAG_KEY); diagCache = null;   // 診斷紀錄也比主資料不重要
       localStorage.setItem(STORAGE_KEY, json);
       return true;
     }catch(eBt){ /* 還是不夠,繼續刪備份 */ }
@@ -899,6 +927,7 @@ function writeLocal(data){
       localStorage.setItem(STORAGE_KEY, json);
       return true;
     }catch(e3){ /* 連清都清不了 */ }
+    diag('儲存', '存不進這台裝置(瀏覽器空間滿了),清掉快取跟備份也不夠');
     return false;
   }
 }
@@ -926,7 +955,7 @@ async function save(){
       storageMode = 'cloud';
       updateStorageStatus();
       return;
-    }catch(e){ /* 雲端寫入失敗就靠本機,下次編輯會再試 */ }
+    }catch(e){ diag('同步', '推上雲端失敗(先存本機,下次編輯再試):' + (e && e.message || e)); }
   }
   storageMode = ok ? 'local' : 'none';
   updateStorageStatus();
@@ -1013,6 +1042,7 @@ function applyRemote(raw){
   lastPushed = kept ? lastPushed : remoteC;
   writeLocal(state);
   if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
+  diag('同步', '收到別台裝置的改動' + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
   renderAll();
 }
 /* 收到別台裝置的改動時,本機可能有還沒推上去的修改:打字中收到的會先擱著、離開欄位才套用(那時剛打的字
@@ -1558,6 +1588,7 @@ function twseJson(url){
       if (++twseFails >= TWSE_FAIL_LIMIT){
         twseFails = 0;
         try{ localStorage.setItem(TWSE_COOLDOWN_KEY, String(Date.now() + TWSE_COOLDOWN_MS)); }catch(_){}
+        diag('證交所', `連續失敗 ${TWSE_FAIL_LIMIT} 次,暫停 ${Math.round(TWSE_COOLDOWN_MS / 60000)} 分鐘(最後一次:${e && e.message || e})`);
         throw new TwseBlocked(twseCooldownMsg());
       }
       throw e;
@@ -1801,13 +1832,16 @@ async function fetchQuotes(manual){
       if (date) state.leverage.quoteDate = date;
       maybeDailySnapshot();          // 按更新報價就留下今天這一筆
       quoteMsg = missed.length ? '查不到:' + missed.join('、') + '(代號是否正確?)' : '';
+      if (missed.length) diag('報價', '查不到:' + missed.join('、'));
       try{ localStorage.setItem(QUOTE_TS_KEY, String(Date.now())); }catch(e){}
       scheduleSave();
     }else{
       quoteMsg = '抓不到報價,維持原本的數字';
+      diag('報價', '抓不到任何報價');
     }
   }catch(e){
     quoteMsg = '抓不到報價(可能沒有網路),維持原本的數字';
+    diag('報價', '抓報價失敗:' + (e && e.message || e));
   }
   quoteBusy = false;
   await refreshHolidays();   // 休市日一個月問一次(交割日、收盤價是不是舊的),失敗就照舊只看週末
@@ -2870,6 +2904,9 @@ function renderOverview(){
         <button class="btn quiet" data-act="copy-json">📋 複製成文字</button>
         <button class="btn quiet" data-act="load-sample">${pendingConfirm === 'load-sample' ? '⚠️ 再按一次覆蓋' : '載入範例'}</button>
       </div>
+      <button class="btn quiet" data-act="diag-copy">🩺 複製診斷報告(貼給 Claude 查問題)</button>
+      ${diagText ? `<textarea readonly style="width:100%; height:180px; font-size:11px; margin-top:6px;">${esc(diagText)}</textarea>` : ''}
+      ${fold('diag', '診斷紀錄', renderDiagPanel, { sub: diagSummary() })}
       <button class="btn quiet" data-act="show-backups">🕘 ${backupOpen ? '收起備份清單' : '還原備份'}</button>
       ${backupOpen ? (backupList === null
         ? `<div class="muted" style="text-align:center; padding:10px;">讀取中…</div>`
@@ -3501,6 +3538,9 @@ function renderHelp(){
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照,可在總覽的「資料」卡還原。
         雲端留 30 份;本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
         因為手機瀏覽器的空間有限,備份佔太多會讓主資料存不進去。空間用超過 75% 時會提醒你。</li>
+        <li><strong>複製診斷報告</strong>:錯誤、雲端同步、抓報價失敗、自動記帳(還本、利息、自動新增的動用)這些事件會記在這台裝置
+          (不同步、不上傳,最多約 400 筆),加上用你的真實資料跑的健康檢查(房貸動用跟買進對不對得上、自動記帳有沒有漏月、價格歷史有沒有缺口…),
+          一起複製成文字貼給 Claude 查問題。金額照 👁 開關:隱藏時報告裡也是 ••••,要對帳就先顯示金額再複製。</li>
         <li><strong>匯出備份</strong>:JSON,換裝置時用「匯入備份」讀回來。
         匯入前會先確認檔案是本 app 匯出的,不相干的 JSON 會被擋下來,
         匯入成功則會回報讀進了幾筆。</li>
@@ -3905,9 +3945,12 @@ function captureOwnBase(){
   const sold = sum(state.trades.filter(t => t.action === 'sell' && t.date >= exit && ids.has(t.symbol)), t => (sellQty[t.id] ?? t.shares) * t.price - t.fee);
   const loanBefore = sum(L.draws.filter(d => d.useDate && d.useDate < exit),
     d => Math.max(0, d.amount - sum((d.repayments || []).filter(r => r.date && r.date >= d.useDate && r.date < exit), r => r.amount)));
-  const cash = lev2Value + sold - loanBefore - pendingLoanFunding(exit, false);   // 出場前房貸買進、出場後才撥款的也是要還的
+  const owed = loanBefore + pendingLoanFunding(exit, false);   // 出場前房貸買進、出場後才撥款的也是要還的
+  const cash = lev2Value + sold - owed;
   const fresh = ownBoughtSince(exit, lev2) < 1 && lev2Value + sold > 0 && cash > 0;
   L.ownBase = { exit, amount: fresh ? Math.round(cash) : 0, auto: true };
+  diag('接刀自有資金', fresh ? `${exit} 出場,自動記下 ${$n(cash)}(正2 市值 ${$n(lev2Value)} + 出場後賣出 ${$n(sold)} − 出場前借款 ${$n(owed)})`
+    : `${exit} 出場,記不到(出場後已經買過正2 ${$n(ownBoughtSince(exit, lev2))}、或賣光了沒記賣出),請使用者自己填`);
   return true;
 }
 /* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
@@ -5610,6 +5653,7 @@ function maybeAutoRepay(){
       const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
       if (!(amt > 0)) return;
       d.repayments.push({ id: rid, date: day, amount: amt });
+      diag('自動記帳', `${m} 理財型最低還本 ${$n(amt)}(${d.label || d.id},餘額 ${$n(bal)} × 千分之 ${L.repayPermille})`);
       noteAutoPosted('draws/' + mergeKey(d) + '/repayments', { id: rid });
     });
     posted.push(m);
@@ -5759,7 +5803,8 @@ function postLoanInterest(){
       const id = ('li-' + l.id).slice(0, 50) + '-' + m.replace('-', '');
       if (row.interest >= 0.5 && !state.transactions.some(t => t.id === id)){
         noteAutoPosted('transactions', { id });
-        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: num(-Math.round(row.interest)) });   // num():夾在 ±1 兆,跟存檔再讀回來一樣
+        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: num(-Math.round(row.interest)) });
+        diag('自動記帳', `${m} ${l.name || '房貸'}(一般型)利息 ${$n(row.interest)}`);   // num():夾在 ±1 兆,跟存檔再讀回來一樣
       }
       posted.push(m);
       changed = true;
@@ -5819,11 +5864,136 @@ function postLeverageInterest(){
       desc: AUTO_INTEREST_DESC,
       amount: num(-Math.round(amt))   // num():夾在 ±1 兆,跟存檔再讀回來一樣
     });
+    diag('自動記帳', `${m} 理財型利息 ${$n(amt)}(${levPeriodFrom(m)}~${due} 逐日計息)`);
     posted.push(m);
     changed = true;
   }
   if (changed) scheduleSave();
   return changed;
+}
+
+/* ===================== 診斷報告:健康檢查 ===================== */
+/* 用這台裝置上的真實資料檢查幾件測試碰不到的事(假資料測不出「時間差」這類問題,2026-10 使用者貼畫面才抓到預定動用的 bug)。
+   每項 { lv: 'ok' | 'warn' | 'info', t: 文字 },金額用 $n()。只讀不改。新增檢查時,抓到的問題修好後也要加進自動測試。 */
+function healthCheck(){
+  const out = [], ok = t => out.push({ lv:'ok', t }), warn = t => out.push({ lv:'warn', t }), info = t => out.push({ lv:'info', t });
+  const L = state.leverage, today = todayISO(), cur = thisMonth();
+  const p = computePosition(), r = computeLeverage(), k = computeRisk();
+  // 部位市值:買賣紀錄回放(損益卡)跟持股 × 股價(曝險卡)兩套算法要一樣
+  if (p.hasData){
+    if (Math.abs(p.marketValue - r.totalValue) > 1) warn(`部位市值兩套算法不一致:損益 ${$n(p.marketValue)}、曝險 ${$n(r.totalValue)}`);
+    else ok(`部位市值 ${$n(k.pv)}(損益卡、曝險卡一致)`);
+  }
+  // 借款
+  info(`借款:銀行已撥款 ${$n(r.usedAmount)}、已買進還沒撥款 ${$n(r.pendingLoan)}、預定動用合計 ${$n(plannedDrawAmount())}、額度 ${$n(L.creditLimit)}`);
+  info(`曝險 ${k.exposureRatio.toFixed(1)}% = 實質曝險 ${$n(k.exposure)} ÷(自己的錢 ${$n(k.equity)} + 額度 ${$n(L.creditLimit)})`);
+  if (k.capacity <= 0) warn('分母(自己的錢 + 額度)≤ 0,曝險比例沒有意義');
+  if (loanLedgerMissing()) warn('有用房貸買進的紀錄,但一筆動用都沒有');
+  const mm = loanMismatch();
+  if (mm) warn(`動用合計跟房貸買進合計差 ${$n(mm.diff)}(動用 ${$n(mm.r.drawnAmount)}、房貸買進 ${$n(mm.p.buyLoan)})`);
+  const unused = unusedLoanCash();
+  if (unused > 0) info(`借了還沒用完 ${$n(unused)}(下次房貸買進會先扣)`);
+  // 動用紀錄本身
+  L.draws.forEach(d => {
+    const name = d.label || d.id;
+    if (d.amount > 0 && !d.useDate) warn(`動用「${name}」${$n(d.amount)} 沒填動用日,不算借款`);
+    (d.repayments || []).forEach(x => {
+      if (d.useDate && x.date && x.date < d.useDate) warn(`動用「${name}」有一筆還款(${x.date} ${$n(x.amount)})早於動用日 ${d.useDate},被忽略`);
+      if (x.date > today) info(`動用「${name}」有未來日期的還款 ${x.date} ${$n(x.amount)}(到那天才算)`);
+    });
+    const rep = sum(d.repayments || [], x => x.amount);
+    if (rep > d.amount + 0.5) warn(`動用「${name}」還款合計 ${$n(rep)} 超過動用 ${$n(d.amount)}`);
+  });
+  // 一般型房貸:負債金額要等於剩餘本金
+  state.liabilities.forEach(l => {
+    if (!loanReady(l)) return;
+    const v = Math.round(l.loan.start > today ? l.loan.principal : amortize(l.loan).balance);
+    if (Math.abs(l.amount - v) > 1) warn(`一般型房貸「${l.name}」負債金額 ${$n(l.amount)} 跟剩餘本金 ${$n(v)} 不一樣`);
+  });
+  // 自動記帳:處理過的月份中間不能有洞(有洞 = 那個月漏記,或被標成處理過卻沒記)
+  const holes = (list, label) => {
+    const ms = [...new Set(list || [])].sort();
+    if (!ms.length) return;
+    const miss = [];
+    for (let m = ms[0], g = 0; m < ms[ms.length - 1] && g < 600; m = shiftMonth(m, 1), g++) if (!ms.includes(m)) miss.push(m);
+    if (miss.length) warn(`${label}處理過的月份中間缺 ${miss.join('、')}`);
+    else ok(`${label}:${ms[0]} 起每個月都處理過(最近 ${ms[ms.length - 1]})`);
+  };
+  if (L.autoRepay) holes(L.repayPosted, '理財型自動還本');
+  if (L.autoInterest) holes(L.interestPosted, '理財型自動利息');
+  state.liabilities.forEach(l => { if (loanReady(l) && l.loan.autoInterest) holes(l.loan.interestPosted, `「${l.name}」自動利息`); });
+  const autoByMonth = {};
+  state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC).forEach(t => { const m = t.date.slice(0, 7); autoByMonth[m] = (autoByMonth[m] || 0) + 1; });
+  Object.keys(autoByMonth).filter(m => autoByMonth[m] > 1).forEach(m => warn(`${m} 理財型自動利息記了 ${autoByMonth[m]} 筆`));
+  // 買賣紀錄
+  const sq = soldQtyById();
+  state.trades.filter(t => t.action === 'sell' && sq[t.id] != null && sq[t.id] < t.shares - 1e-9)
+    .forEach(t => warn(`${t.date} 賣出 ${t.symbol} ${t.shares} 股,當時只持有 ${sq[t.id]} 股(賣超,只算得掉持有的)`));
+  const fut = state.trades.filter(t => t.date > today).length, futTx = state.transactions.filter(t => t.date > today).length;
+  if (fut || futTx) info(`未來日期:買賣 ${fut} 筆、記帳 ${futTx} 筆`);
+  // 價格與訊號
+  state.instruments.filter(it => it.auto && it.id).forEach(it => {
+    const t = computeTrend(it), gap = trendHistoryGap(it);
+    if (t.barsAvailable < t.barsNeeded) warn(`${it.id} 價格歷史 ${t.barsAvailable} 筆,算均線要 ${t.barsNeeded} 筆`);
+    else if (gap) warn(`${it.id} 價格歷史中間缺一段(${gap.from || ''}~${gap.to || ''}),訊號不可信`);
+    else ok(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${t.status}${t.status === 'WAIT_RECOVER' ? ` 第 ${t.pyramidCount} 層` : ''}${t.cushionPct != null ? `,再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''}`);
+  });
+  const st = signalStaleness();
+  if (st) warn(`收盤價停在 ${st.date}(${staleLabel(st)})`);
+  splitTradeIssues().forEach(x => warn(`${x.it.id} ${x.sp.d} 分割前有 ${x.n} 筆買賣還沒選要不要換算`));
+  // 接刀只用自有資金
+  const plan = computeExposurePlan();
+  if (plan && plan.own && plan.progress >= 1) {
+    if (!plan.own.base) warn(`接刀第 ${plan.progress} 層,還沒有接刀用的自有資金(出場 ${plan.own.exitDate || '?'})`);
+    else info(`接刀用自有資金 ${$n(plan.own.base)}(${plan.own.auto ? '自動記' : '自己填'}),出場後已買 ${$n(plan.own.bought)}`);
+  }
+  // 每月快照
+  const hist = state.netWorthHistory.slice().sort((a, b) => a.m < b.m ? -1 : 1);
+  if (hist.length){
+    const miss = [];
+    for (let m = hist[0].m, g = 0; m < cur && g < 600; m = shiftMonth(m, 1), g++) if (!hist.some(h => h.m === m)) miss.push(m);
+    if (miss.length) info(`每月快照缺 ${miss.length} 個月(沒打開 app 的月份):${miss.slice(-6).join('、')}`);
+    const now = hist.find(h => h.m === cur);
+    if (now && now.auto && Math.abs(now.v - Math.round(netWorth())) > 1) warn(`本月快照淨資產 ${$n(now.v)} 跟目前 ${$n(netWorth())} 不一樣`);
+  }
+  // id 重複(normalize 會修,出現代表修的地方漏了)
+  const dup = (list, label) => { const seen = new Set(); (list || []).forEach(x => { if (seen.has(x.id)) warn(`${label}有重複的 id ${x.id}`); seen.add(x.id); }); };
+  dup(state.transactions, '記帳'); dup(state.trades, '買賣'); dup(state.leverage.draws, '動用');
+  return out;
+}
+/* 資料卡上的摘要跟展開內容(畫面上的金額一樣照 👁 遮) */
+// 收著時只數紀錄(健康檢查每次總覽重畫都跑會拖慢 4~5 成,展開或複製時才跑)
+function diagSummary(){
+  const log = diagLoad(), errs = log.filter(x => x.k === '錯誤').length;
+  return `紀錄 ${log.length} 筆` + (errs ? ` · ⚠ 錯誤 ${errs} 筆` : '');
+}
+function renderDiagPanel(){
+  const h = healthCheck(), log = diagLoad().slice(-15).reverse();
+  const mark = { ok:'✓', warn:'⚠', info:'·' };
+  return `
+    <div class="muted" style="font-size:12px; margin-bottom:6px;">按上面「複製診斷報告」會連同完整紀錄一起複製。紀錄只存在這台裝置,不會上傳。</div>
+    ${h.map(x => `<div class="${x.lv === 'warn' ? 'neg' : 'muted'}" style="font-size:12px;">${mark[x.lv]} ${esc(diagMask(x.t))}</div>`).join('')}
+    <div style="font-weight:700; margin:10px 0 4px;">最近的紀錄</div>
+    ${log.length ? log.map(x => `<div class="muted" style="font-size:12px;">${esc(x.t.slice(5))} [${esc(x.k)}] ${esc(diagMask(x.m))}${x.c > 1 ? `(×${x.c})` : ''}</div>`).join('')
+      : '<div class="muted" style="font-size:12px;">還沒有紀錄</div>'}
+    ${diagLoad().length ? `<button class="btn quiet" data-act="diag-clear" style="margin-top:8px;">${pendingConfirm === 'diag-clear' ? '⚠️ 再按一次清除紀錄' : '清除紀錄'}</button>` : ''}`;
+}
+/* 複製出去的報告:版本、同步狀態、健康檢查、最近的紀錄(新到舊)。金額照 👁 開關遮或不遮 */
+function diagReport(){
+  const h = healthCheck(), log = diagLoad().slice().reverse();
+  const mark = { ok:'✓', warn:'⚠', info:'·' };
+  const lines = [
+    '財務 app 診斷報告',
+    `產生時間 ${todayISO()} ${new Date().toTimeString().slice(0, 5)} · 版本 ${BUILD_VERSION} · 金額${privacy ? '已隱藏' : '顯示'}`,
+    `存檔:${({ cloud:'雲端同步', local:'只存本機', none:'無法存檔' })[storageMode] || storageMode}${cloudKind && cloudKind !== 'none' ? '(' + cloudKind + ')' : ''} · 本機空間約 ${Math.round(localUsageRatio() * 100)}% · 資料:記帳 ${state.transactions.length}、買賣 ${state.trades.length}、動用 ${state.leverage.draws.length}、每月快照 ${state.netWorthHistory.length}`,
+    '',
+    `== 健康檢查(${h.filter(x => x.lv === 'warn').length} 項要注意) ==`,
+    ...h.map(x => mark[x.lv] + ' ' + x.t),
+    '',
+    `== 紀錄(最近 ${log.length} 筆,新到舊) ==`,
+    ...(log.length ? log.map(x => `${x.t} [${x.k}] ${x.m}${x.c > 1 ? `(×${x.c})` : ''}`) : ['(還沒有紀錄)'])
+  ];
+  return diagMask(lines.join('\n'));
 }
 
 /* ===================== 輸入處理 ===================== */
@@ -5838,6 +6008,7 @@ function applyLoanRate(lid, value){
   scheduleSave();
 }
 function onField(key, el){
+  diagLastAct = 'field ' + key;
   const dash = key.indexOf('-');
   const kind = key.slice(0, dash);
   const rest = key.slice(dash + 1);
@@ -6305,6 +6476,20 @@ function importJSON(file){
   reader.readAsText(file);
 }
 
+/* 複製診斷報告。複製失敗(iframe、舊瀏覽器)就把全文放進一個唯讀框,讓使用者自己長按全選複製 */
+let diagText = '';
+async function copyDiag(){
+  const text = diagReport();
+  try{
+    await navigator.clipboard.writeText(text);
+    diagText = '';
+    dataMsg = '已複製診斷報告,直接貼到跟 Claude 的對話就好' + (privacy ? '(金額已隱藏;要對帳的話先按 👁 顯示金額再複製)' : '');
+  }catch(e){
+    diagText = text;
+    dataMsg = '沒辦法直接複製,請在下面的框裡全選後複製';
+  }
+  renderAll();
+}
 async function copyJSON(){
   const text = stateJSON();
   try{
@@ -6316,15 +6501,17 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
+const CONFIRM_ACTS = ['diag-clear', 'del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
+  diagLastAct = 'click ' + (el && el.dataset && el.dataset.act || '?');
   const act = el.dataset.act;
   const id = el.dataset.id;
   let rerender = true;
   // 要按兩次確認的動作不能在這裡清掉「待確認」,不然第二次按又從頭開始、永遠刪不掉
   // (以前 del-draw 不在名單裡:有還款紀錄的動用紀錄怎麼按都刪不掉,壓測抓到)
   if (!CONFIRM_ACTS.includes(act)) pendingConfirm = null;
-  if (!['export', 'export-csv', 'import', 'copy-json'].includes(act)) dataMsg = '';
+  if (!['export', 'export-csv', 'import', 'copy-json', 'diag-copy'].includes(act)) dataMsg = '';
+  if (act !== 'diag-copy' && act !== 'fold') diagText = '';
 
   switch (act){
     case 'cancel-confirm': break;   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
@@ -6475,6 +6662,7 @@ function onClick(el){
         // num():夾在 ±1 兆,跟存檔再讀回來一樣(股數 × 價格可以大到超過上限,fuzz 抓到 52 兆存檔後變 1 兆)
         const unit = state.leverage.drawRound, need = num(unit && short > 0 ? Math.ceil(short / unit) * unit : short);
         if (need > 0){
+          diag('自動記帳', `房貸買進 ${last.symbol} ${$n(loanAmt)},自動新增動用 ${$n(need)}(動用日 ${useDate}${unused ? `,先用掉之前沒用完的 ${$n(unused)}` : ''})`);
           state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: need, useDate,
             note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, repayments: [] });
           tradeNote = mixNote + (unused
@@ -6694,6 +6882,11 @@ function onClick(el){
       maybeSnapshot();          // 範例裡本月那筆快照是寫死的數字,載入後跟實際算出來的對齊(不然走勢圖最後一點跟上面的總數不一樣)
       maybeDailySnapshot();
       break;
+    case 'diag-copy': copyDiag(); return;
+    case 'diag-clear':
+      if (needsConfirm('diag-clear')) return;
+      diagClear();
+      break;
     case 'clear-all':
       if (needsConfirm('clear-all')) return;
       state = emptyState();
@@ -6753,6 +6946,12 @@ function onForeground(fromTimer = false){
 
 function init(){
   showTodayDate();
+  // 沒接住的錯誤記進診斷紀錄,附上最後一個操作跟分頁(手機上出錯以前只會看到畫面不動)
+  if (typeof window.addEventListener === 'function'){
+    window.addEventListener('error', e => diag('錯誤', `${e && e.message || e}${e && e.lineno ? ` @${e.lineno}:${e.colno || 0}` : ''}(分頁 ${currentTab}、最後操作 ${diagLastAct || '無'})`));
+    window.addEventListener('unhandledrejection', e => diag('錯誤', `非同步:${e && e.reason && (e.reason.message || e.reason) || '?'}(分頁 ${currentTab}、最後操作 ${diagLastAct || '無'})`));
+  }
+  diag('啟動', '打開 app,版本 ' + BUILD_VERSION.split(' · ').pop());
 
   const local = readLocal();
   if (local) state = normalize(local);
