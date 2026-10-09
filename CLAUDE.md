@@ -392,6 +392,8 @@ id 沿用舊值以確保重複呼叫不會飄動。
   動用日卻是交割日 T+2,以前那兩天 `computeRisk().loan` 沒有它,自己的錢多算 77 萬、曝險比例偏低。現在 loan = 已撥款餘額 +
   min(預定動用合計, 房貸買進合計 − 已撥款動用合計);單純先記下、還沒買的預定動用不算。曝險卡「還能借多少」改用
   `computeLeverage().usedAmount` − 預定動用(不能再用 risk.loan,會重複扣);`captureOwnBase()` 的出場前借款也加上它。
+  `computeLeverage()` 回傳 `pendingLoan`(`usedAmount` 照舊是銀行已撥款的餘額),每月/每日快照的 `loan`、走勢用的 `equityValue` 都含它:
+  月底買、下個月才撥款的話,那個月的快照固定下來就永遠少記。
 
 ## 曝險比例公式(`computeRisk()`)
 

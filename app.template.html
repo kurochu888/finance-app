@@ -2320,7 +2320,7 @@ function computeRisk(){
   const r = computeLeverage();
   const pv = p.hasData ? p.marketValue : r.totalValue;
   // 借款 = 已撥款的餘額 + 已經拿去買股票、還沒撥款的預定動用(股票已經在部位市值裡,借款也要算進來才對得上)
-  const pendingLoan = pendingLoanFunding();
+  const pendingLoan = r.pendingLoan;
   const loan = r.usedAmount + pendingLoan;
   const equity = pv - loan;
   const nw = netWorth();
@@ -2392,7 +2392,7 @@ function maybeSnapshot(){
     v: finNum(Math.round(nw)),
     pv: finNum(Math.round(p.hasData ? p.marketValue : r.totalValue)),
     pnl: p.hasData ? finNum(Math.round(p.total)) : null,
-    loan: finNum(Math.round(r.usedAmount)),
+    loan: finNum(Math.round(r.usedAmount + r.pendingLoan)),   // 含已經買進、還沒撥款的(月底買、下個月才撥款,這個月的快照固定後就永遠少記)
     items: currentItems(),
     auto: true
   };
@@ -2447,7 +2447,7 @@ function maybeDailySnapshot(){
   const rec = {
     d: today,
     pv: finNum(Math.round(pv)),            // 同 maybeSnapshot:跟 normalize() 一樣夾範圍
-    loan: finNum(Math.round(r.usedAmount)),
+    loan: finNum(Math.round(r.usedAmount + r.pendingLoan)),   // 同每月快照:含已經買進、還沒撥款的
     eq: finNum(Math.round(r.equityValue)),
     pnl: p.hasData ? finNum(Math.round(p.total)) : null
   };
@@ -3590,12 +3590,14 @@ function computeLeverage(){
     });
   }
   const repaidTotal = sum(L.draws, t => repaidOf(t));
-  const equityValue = totalValue - usedAmount + cashBack - repaidTotal - ownAfter;
+  // 已經買進、還沒撥款的預定動用(pendingLoanFunding):股票已經在市值裡,借款也要扣,不然交割前兩天的快照自己的錢多算
+  const pendingLoan = pendingLoanFunding();
+  const equityValue = totalValue - usedAmount - pendingLoan + cashBack - repaidTotal - ownAfter;
 
   const positionDeclinePct = L.stressDeclinePct * 2;
   const lossAmount = totalValue * positionDeclinePct/100;
 
-  return { holdings, totalValue, draws, usedAmount, drawnAmount, monthlyInterest,
+  return { holdings, totalValue, draws, usedAmount, pendingLoan, drawnAmount, monthlyInterest,
            equityValue, cashBack, ownAfter, repaidTotal,
            positionDeclinePct, lossAmount,
            remainingNetWorth: netWorth() - lossAmount };
