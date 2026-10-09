@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV, onField, bankRecon, todoItems, healthCheck };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV, onField, bankRecon, todoItems, healthCheck, diagLoad, maybePostInterest };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -280,7 +280,9 @@ console.log('跟網路銀行對帳(使用者 2026-10-08 的數字:已撥款 182 
   must(todo().length === 1 && !A.bankRecon(), '有借款、還沒對過帳要提醒');
   const fill = (k, v) => A.onField('bankchk-' + k, { value: String(v) });
   const hints = () => (A.bankRecon().balance.hints || []).join(' | ');
-  fill('balance', 1820000);
+  const n0 = A.diagLoad().length;
+  ['1', '18', '182', '1820', '18200', '182000', '1820000'].forEach(v => fill('balance', v));   // 一個字一個字打
+  must(A.diagLoad().length === n0 + 1 && /借款 ⟦1,820,000⟧/.test(A.diagLoad().slice(-1)[0].m), '一個字一個字打只記最後一筆:' + (A.diagLoad().length - n0) + ' 筆');
   must(A.bankRecon().ok && A.bankRecon().balance.diff === 0, '銀行 182 萬要對得上(預定動用還沒撥款,銀行看不到)');
   must(todo().length === 0, '剛對過帳不再提醒');
   fill('balance', 2230000);

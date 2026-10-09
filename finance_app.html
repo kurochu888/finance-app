@@ -385,12 +385,14 @@ function diagLoad(){
   catch(e){ diagCache = []; }
   return diagCache;
 }
-function diag(kind, msg){
+// replace:同一類的最後一筆直接換掉(一個字一個字打的欄位,不然打 1820000 會記 7 筆「1」「18」「182」…)
+function diag(kind, msg, replace = false){
   try{
     const list = diagLoad(), d = new Date(), m = String(msg).slice(0, 600);
     const t = todayISO() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
     const last = list[list.length - 1];
-    if (last && last.k === kind && last.m === m){ last.c = (last.c || 1) + 1; last.t = t; }
+    if (replace && last && last.k === kind){ last.m = m; last.t = t; delete last.c; }
+    else if (last && last.k === kind && last.m === m){ last.c = (last.c || 1) + 1; last.t = t; }
     else list.push({ t, k: kind, m });
     if (list.length > DIAG_MAX) list.splice(0, list.length - DIAG_MAX);
     localStorage.setItem(DIAG_KEY, JSON.stringify(list));
@@ -752,8 +754,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-09 · 0375d5e3c1';
-const BUILD_HASH = '0375d5e3c1';
+const BUILD_VERSION = '2026-10-09 · bd7cdb787b';
+const BUILD_HASH = 'bd7cdb787b';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6313,7 +6315,7 @@ function onField(key, el){
     B.date = todayISO();
     B.appInterest = nextLevInterest().bank;
     diag('對帳', `網路銀行:借款 ${B.balance == null ? '—' : $n(B.balance)}、下一期利息 ${B.interest == null ? '—' : $n(B.interest)}`
-      + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`);
+      + `(app:借款 ${$n(computeLeverage().usedAmount)}、利息 ${$n(B.appInterest)})`, true);
   }
   else if (kind === 'ownbase'){                  // 曝險卡的「接刀用的自有資金」:使用者自己改的,記在這一輪出場上
     if (String(el.value).trim() === '') return;
