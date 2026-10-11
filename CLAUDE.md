@@ -365,6 +365,10 @@ id 沿用舊值以確保重複呼叫不會飄動。
   (`loanMismatch()`,設定頁的警告共用)、一週內扣款(`monthLoanDues()` 的 `date`)、一週內預定動用收成一張卡。
   **只列要做的事,不重算金額**,金額以各自的卡片為準;`exposureTodo()` 的「要不要調整」條件要跟 `renderExposurePlanCard()` 一致,
   改那張卡的判斷時兩邊一起改。測試 `tests/todo.js`。
+  **手動打勾(2026-10 使用者要的,「留今天要做的事供檢查」)**:`state.todoChecks {date, done:{key:{icon,text}}}`(同步、只算當天),
+  key = `todoKey(icon, 文字)`,文字用**隱藏金額關掉**的版本算(`todoItemsKeyed()` 暫時關 privacy 再算一次,不然 👁 一切換 key 就變);
+  勾過、條件也解決了的照樣列「今天處理完了」,沒勾就自己解決的照舊消失;存的文字是沒遮的,畫面上 `maskAmounts()` 照 👁 遮。
+  打勾/取消記進診斷紀錄。改 `todoItems()` 的文字會讓當天已勾的 key 對不上(只影響當天)。
 
 - **房貸買進順便記動用**:`add-trade` 存的是房貸那筆(含「兩者都有」拆出來的)時,`tradeDraft.autoDraw`(預設開)就新增一筆動用,
   金額 = 用房貸的那部分 − `unusedLoanCash()`(動用合計 − 房貸買進合計,不超過還欠的;借整數、買剩的下次先用),`leverage.drawRound`(0/1000/10000)往上湊整,動用日 = `settleDate()`(T+2,跳過週末跟休市日)。drawRound 有進 `keepFieldsOldVersionsDrop()`。已經先記過動用的人在草稿關掉。

@@ -21,7 +21,8 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData,
   todoItems, renderTodo, renderLeverage, onClick, set levTab(v){ levTab = v; }, get levTab(){ return levTab; },
-  get currentTab(){ return currentTab; }, openFolds, set healthCache(v){ healthCache = v; } };`);
+  get currentTab(){ return currentTab; }, openFolds, set healthCache(v){ healthCache = v; },
+  todoItemsKeyed, set privacy(v){ privacy = v; }, keepFieldsOldVersionsDrop, diagLoad };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -89,6 +90,48 @@ console.log('健康檢查有 ⚠ 就列進今天要做什麼(已經另外列的�
   must(A.currentTab === 'overview' && A.openFolds.has('diag'), '「看診斷」要到總覽、展開診斷紀錄');
   A.state = A.normalize(A.emptyState()); A.healthCache = { at: 0, warns: [] };
   must(!A.todoItems().some(x => x.icon === '🩺'), '沒有問題時不列');
+}
+
+console.log('手動打勾:勾了留著、條件解決了也留到當天結束、隔天清空、隱藏金額不影響');
+{
+  const s = A.normalize(A.emptyState());
+  s.leverage.creditLimit = 8000000;
+  s.leverage.draws = [
+    { id:'d0', label:'九月', amount:1820000, useDate:'2026-09-03', note:'', repayments:[] },
+    { id:'d1', label:'00631L 買進', amount:410000, useDate:'2026-10-12', note:'', repayments:[] },
+  ];
+  A.state = s; A.healthCache = { at: 0, warns: [] };
+  const items = A.todoItemsKeyed(), draw = items.find(x => x.icon === '💳');
+  must(draw && /410,000/.test(draw.plain), '要有預定動用那一項:' + JSON.stringify(items.map(x => x.text)));
+  A.onClick({ dataset:{ act:'todo-check', v: draw.key } });
+  let html = A.renderTodo();
+  must(A.state.todoChecks.date === '2026-10-08' && A.state.todoChecks.done[draw.key], '勾了要記在 state(同步)');
+  must(/已處理 1 \/ \d+/.test(html) && /☑/.test(html), '標題要有已處理幾項、那一項要打勾:' + html.slice(0, 200));
+  must(/勾選:💳 10\/12 預定動用 NT\$ ⟦410,000⟧/.test(A.diagLoad().slice(-1)[0].m), '打勾要記進診斷紀錄(金額可遮)');
+  // 隱藏金額:key 不能變,勾的還在
+  A.privacy = true;
+  must(A.todoItemsKeyed().find(x => x.icon === '💳').key === draw.key && /☑/.test(A.renderTodo()) && !/410,000/.test(A.renderTodo()), '隱藏金額時勾的還在、金額遮住');
+  A.privacy = false;
+  // 條件解決了(預定動用刪掉):勾過的照樣列著「今天處理完了」
+  A.state.leverage.draws = A.state.leverage.draws.slice(0, 1);
+  html = A.renderTodo();
+  must(/今天處理完了/.test(html) && /410,000/.test(html), '勾過的、條件解決了也要留到當天結束:' + html.slice(0, 300));
+  // 取消勾選
+  A.onClick({ dataset:{ act:'todo-check', v: draw.key } });
+  must(!A.state.todoChecks.done[draw.key] && !/今天處理完了/.test(A.renderTodo()), '再按一次取消勾選');
+  must(/取消勾選:💳/.test(A.diagLoad().slice(-1)[0].m), '取消也要記(不能是 undefined)');
+  // 隔天清空
+  A.onClick({ dataset:{ act:'todo-check', v: A.todoItemsKeyed()[0].key } });
+  simNow += 86400000;
+  must(!/☑/.test(A.renderTodo()), '隔天要清空');
+  simNow -= 86400000;
+  // 存檔往返、舊版分頁寫回來
+  const back = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  must(back.todoChecks.date === '2026-10-08' && Object.keys(back.todoChecks.done).length === 1, '存檔往返要保留打勾');
+  const raw = JSON.parse(JSON.stringify(A.state)); delete raw.todoChecks;
+  const nx = A.normalize(raw);
+  must(A.keepFieldsOldVersionsDrop(back, raw, nx) && Object.keys(nx.todoChecks.done).length === 1, '舊版分頁寫回來要補回打勾');
+  must(Object.keys(A.normalize({ todoChecks: { date:'2026-10-08', done: { '<x>': {}, kabc: { icon: 1, text: { a: 1 } } } } }).todoChecks.done).join() === 'kabc', '壞掉的 key 要擋掉');
 }
 
 if (bugs.length){

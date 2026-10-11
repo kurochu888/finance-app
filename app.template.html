@@ -488,6 +488,8 @@ function emptyState(){
     budgets: DEFAULT_CATEGORIES.map(n => ({ id:uid(), name:n, budget:0 })),   // 類別清單
     transactions:[], netWorthHistory:[],
     templates:[],   // 固定收支範本(月薪、保險…),記帳頁按一下記到那個月,見 renderTemplates
+    // 「今天要做什麼」手動打勾(2026-10 使用者要的):只留當天,done = { key: {icon, text} },見 renderTodo
+    todoChecks: { date:'', done:{} },
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
   };
 }
@@ -602,6 +604,15 @@ function normalize(raw){
     cat:str(t.cat) || '其他', desc:str(t.desc), amount:num(t.amount)
   }));
   // 固定收支範本:金額帶正負號(收入正、支出負),跟 transactions 一樣
+  {
+    const TC = raw.todoChecks && typeof raw.todoChecks === 'object' ? raw.todoChecks : {};
+    const dn = TC.done && typeof TC.done === 'object' && !Array.isArray(TC.done) ? TC.done : {};
+    s.todoChecks = { date: isoDate(TC.date, ''), done: {} };
+    Object.keys(dn).filter(k => /^k[0-9a-z]{1,12}$/.test(k)).slice(0, 60).forEach(k => {
+      const x = dn[k] && typeof dn[k] === 'object' ? dn[k] : {};
+      s.todoChecks.done[k] = { icon: str(x.icon).slice(0, 8), text: str(x.text).slice(0, 200) };
+    });
+  }
   s.templates = objs(raw.templates).map(t => ({ id: safeId(t.id), cat: str(t.cat) || '其他', desc: str(t.desc), amount: num(t.amount) }))
     .filter(t => t.amount);
   s.dailyHistory = objs(raw.dailyHistory)
@@ -1195,6 +1206,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
     }
   });
   // 固定收支範本(2026-10 加):舊版分頁寫回來沒有 templates 這個 key
+  // 今天要做什麼的打勾(2026-10 加):舊版分頁寫回來沒有 todoChecks
+  if (!('todoChecks' in raw) && prev.todoChecks && prev.todoChecks.date){
+    next.todoChecks = JSON.parse(JSON.stringify(prev.todoChecks));
+    restored = true;
+  }
   if (!Array.isArray(raw.templates) && (prev.templates || []).length){
     next.templates = JSON.parse(JSON.stringify(prev.templates));
     restored = true;
@@ -3441,7 +3457,7 @@ function renderHelp(){
     <div class="card doc">
       <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
-        <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用、健康檢查有要注意的地方),點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
+        <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用、健康檢查有要注意的地方);每一項前面可以打勾,勾了劃掉但留著、處理完也留到當天結束,隔天清空,點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
         <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完;最下面「回測與研究」(策略回測、加權指數模擬 2000/2008、指定期間)平常收著,點了才展開</li>
         <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
         <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
@@ -5463,21 +5479,64 @@ function todoItems(){
   if (hw.length) go('🩺', `健康檢查有 ${hw.length} 項要注意`, diagMask(hw[0].t) + (hw.length > 1 ? ` 等 ${hw.length} 項` : '') + ',可以複製診斷報告貼給 Claude', 'diag');
   return out;
 }
+/* 「今天要做什麼」手動打勾(2026-10 使用者要的:留今天要做的事供檢查)。
+   每一項的 key = 「icon + 文字」的雜湊,文字用隱藏金額關掉時的版本算(不然 👁 一切換 key 就變了、勾的就不見);
+   勾過的存在 state.todoChecks(同步、只留當天),條件解決了也照樣列在卡片上(✓ 已處理)供回頭檢查;沒勾就自己解決的照舊消失。 */
+const todoPlain = x => (x.html ? String(x.text).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"') : String(x.text));
+function todoKey(icon, plain){
+  let h = 5381; const s = icon + '|' + plain;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return 'k' + h.toString(36);
+}
+function todoItemsKeyed(){
+  const saved = privacy;
+  privacy = false;
+  let raw;
+  try{ raw = todoItems(); }finally{ privacy = saved; }
+  const shown = saved ? todoItems() : raw;
+  return shown.map((x, i) => ({ ...x, plain: todoPlain(raw[i] || x), key: todoKey(x.icon, todoPlain(raw[i] || x)) }));
+}
+const todoChecksToday = () => state.todoChecks && state.todoChecks.date === todayISO() ? state.todoChecks.done : {};
+// 存的是金額沒遮的文字,隱藏金額開著時畫面上把金額換成 ••••
+const maskAmounts = t => privacy ? String(t).replace(/\d{1,3}(?:,\d{3})+/g, '••••') : String(t);
+function toggleTodoCheck(key){
+  const today = todayISO();
+  if (!state.todoChecks || state.todoChecks.date !== today) state.todoChecks = { date: today, done: {} };
+  const done = state.todoChecks.done;
+  if (done[key]){ const was = done[key]; delete done[key]; diag('今天要做', `取消勾選:${was.icon} ` + was.text.replace(/\d{1,3}(?:,\d{3})+/g, m => '⟦' + m + '⟧')); return; }
+  const it = todoItemsKeyed().find(x => x.key === key);
+  if (!it) return;
+  done[key] = { icon: it.icon, text: it.plain.slice(0, 200) };
+  diag('今天要做', `勾選:${it.icon} ` + it.plain.replace(/\d{1,3}(?:,\d{3})+/g, m => '⟦' + m + '⟧'));
+}
 function renderTodo(){
-  const items = todoItems();
+  const items = todoItemsKeyed(), done = todoChecksToday();
+  const live = new Set(items.map(x => x.key));
+  const resolved = Object.keys(done).filter(k => !live.has(k)).map(k => ({ key: k, ...done[k] }));   // 勾過、條件也解決了的
+  const total = items.length + resolved.length, nDone = items.filter(x => done[x.key]).length + resolved.length;
+  const box = (key, on) => `<button class="linkish" data-act="todo-check" data-v="${key}" aria-label="${on ? '取消勾選' : '勾選已處理'}"
+      style="flex:0 0 auto; width:28px; padding:0; margin-right:4px; font-size:18px; line-height:1; color:${on ? 'var(--pos, #2e7d32)' : 'var(--muted, #888)'};">${on ? '☑' : '☐'}</button>`;
+  const link = x => x.tab === 'diag' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="diag-open">看診斷 →</button>`
+    : x.tab === 'bankchk' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="bankchk-open">去對帳 →</button>`
+    : String(x.tab).startsWith('loanchk:') ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="loanchk-open" data-id="${esc(x.tab.slice(8))}">去對帳 →</button>`
+    : x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : '';
   return `
     <div class="card">
-      <h3>今天要做什麼</h3>
-      ${items.length ? items.map(x => `
-        <div class="row" style="align-items:flex-start;">
-          <span class="label"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
+      <h3>今天要做什麼${total ? `<span class="muted" style="font-weight:400; font-size:13px; margin-left:6px;">已處理 ${nDone} / ${total}</span>` : ''}</h3>
+      ${items.map(x => { const on = !!done[x.key]; return `
+        <div class="row" style="align-items:flex-start;${on ? ' opacity:.55;' : ''}">
+          ${box(x.key, on)}
+          <span class="label" style="${on ? 'text-decoration:line-through;' : ''}"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
             <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
-          ${x.tab === 'diag' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="diag-open">看診斷 →</button>`
-            : x.tab === 'bankchk' ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="bankchk-open">去對帳 →</button>`
-            : String(x.tab).startsWith('loanchk:') ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="loanchk-open" data-id="${esc(x.tab.slice(8))}">去對帳 →</button>`
-            : x.tab ? `<button class="linkish" style="flex:0 0 auto; color:var(--accent);" data-act="lev-tab" data-v="${x.tab}">去${{ signal: '訊號', log: '紀錄', setup: '設定' }[x.tab]} →</button>` : ''}
-        </div>`).join('')
-      : `<div class="muted">✓ 今天不用動。${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>`}
+          ${on ? '' : link(x)}
+        </div>`; }).join('')}
+      ${resolved.map(x => `
+        <div class="row" style="align-items:flex-start; opacity:.55;">
+          ${box(x.key, true)}
+          <span class="label" style="text-decoration:line-through;"><span style="margin-right:6px;">${esc(x.icon)}</span>${esc(maskAmounts(x.text))}
+            <div class="muted" style="font-size:12px; margin-top:2px;">今天處理完了</div></span>
+        </div>`).join('')}
+      ${!items.length ? `<div class="muted">✓ ${resolved.length ? '今天的都處理完了。' : '今天不用動。'}${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>` : ''}
     </div>`;
 }
 function renderLeverage(){
@@ -6794,6 +6853,7 @@ function onClick(el){
     case 'cancel-confirm': break;   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
+    case 'todo-check': toggleTodoCheck(String(el.dataset.v || '')); break;   // 今天要做什麼的勾選框
     case 'diag-open': openFolds.add('diag'); switchTab('overview'); return;   // 今天要做什麼的 🩺:到總覽、診斷紀錄展開
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
     // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
