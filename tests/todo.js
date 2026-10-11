@@ -19,7 +19,7 @@ global.localStorage = { _d:{ financeTwseCooldownUntil: String(simNow + 3600000 *
 const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
-eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData,
+eval(appJs + `;globalThis.A = { todayISO, get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData,
   todoItems, renderTodo, renderLeverage, onClick, set levTab(v){ levTab = v; }, get levTab(){ return levTab; },
   get currentTab(){ return currentTab; }, openFolds, set healthCache(v){ healthCache = v; },
   todoItemsKeyed, set privacy(v){ privacy = v; }, keepFieldsOldVersionsDrop, diagLoad };`);
@@ -68,6 +68,11 @@ A.state = A.normalize(A.state);
 const it2 = A.todoItems();
 must(it2.some(x => x.icon === '🏦' && /10\/10/.test(x.text) && /2 天後/.test(x.sub)), '10/10 繳款日要提醒:' + JSON.stringify(it2));
 must(it2.filter(x => x.icon === '💳').length === 1 && it2.some(x => x.icon === '💳' && /10\/10/.test(x.text)), '一週內的預定動用才列:' + JSON.stringify(it2));
+// 動用日就是今天:撥款那天也要留在清單上(2026-10-12 使用者回報,以前當天就消失)
+A.state.leverage.draws.push({ id:'d4', label:'', amount:2590000, useDate:A.todayISO(), note:'', repayments:[] });
+const it3 = A.todoItems().filter(x => x.icon === '💳');
+must(it3.length === 2 && it3.some(x => x.text.includes('2,590,000') && /今天撥款/.test(x.sub)), '動用日當天要列、說今天撥款:' + JSON.stringify(it3));
+A.state.leverage.draws.pop();
 A.state.leverage.payDay = 1;
 must(!A.todoItems().some(x => x.icon === '🏦'), '本月繳款日過了不用提醒');
 
