@@ -771,8 +771,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-11 · e9816e3407';
-const BUILD_HASH = 'e9816e3407';
+const BUILD_VERSION = '2026-10-11 · 7b83ad7b53';
+const BUILD_HASH = '7b83ad7b53';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -5688,6 +5688,8 @@ function renderLeverage(){
         const pending = r.draws.filter(d => d.useDate && d.useDate > today);
         return `${r.repaidTotal > 0 ? `<div class="row"><span class="muted">累計動用 ${fmt(drawn)} · 已還 ${fmt(r.repaidTotal)}</span><span class="muted"></span></div>` : ''}${pending.length ? `<div class="row"><span class="muted">預定動用 ${fmt(sum(pending, d => d.amount))}(${pending.map(d => d.useDate.slice(5)).sort().join('、')},到那天才算借款)</span><span class="muted"></span></div>` : ''}`;
       })()}
+      ${(() => { const u = state.trades.some(t => t.action === 'buy' && t.source === 'loan') ? unusedLoanCash() : 0; return u > 0 ? `<div class="row sub"><span class="label">借了還沒用完(在交割戶)</span><span class="val" id="out-unusedLoanCash" style="white-space:nowrap;">NT$ ${fmt(u)}</span></div>
+      <div class="muted" style="font-size:12px; margin:-2px 0 6px;">下次房貸買進會先用這筆;不算進自己的錢</div>` : ''; })()}
       <div class="bar-track"><div class="bar-fill" id="out-usedBar" style="width:${usedPct.toFixed(1)}%"></div></div>
       <div class="grid2" style="margin-top:8px;">
         <div class="field"><label>房貸額度上限</label><input type="number" inputmode="decimal" data-k="lev-creditLimit" value="${L.creditLimit || ''}"></div>
