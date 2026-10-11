@@ -753,8 +753,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-11 · 64e045cfef';
-const BUILD_HASH = '64e045cfef';
+const BUILD_VERSION = '2026-10-11 · e9816e3407';
+const BUILD_HASH = 'e9816e3407';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -5464,8 +5464,10 @@ function todoItems(){
     if (d.date >= today && days <= 7) go('🏦', `${d.date.slice(5).replace('-', '/')} ${d.name}扣款 約 NT$ ${fmt(d.principal + d.interest)}`,
       (days === 0 ? '今天' : days + ' 天後') + ',帳戶記得留錢', state.liabilities.some(l => l.name === d.name) ? '' : 'setup');
   });
-  state.leverage.draws.filter(d => d.useDate > today && daysBetweenISO(today, d.useDate) <= 7)
-    .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`, '銀行到那天才撥款;已經用它買進的,曝險先算進借款', 'log'));
+  // 動用日當天也要列(2026-10-12 使用者回報:以前只列「之後」的,撥款那天反而從清單消失)
+  state.leverage.draws.filter(d => d.useDate >= today && daysBetweenISO(today, d.useDate) <= 7)
+    .forEach(d => go('💳', `${d.useDate.slice(5).replace('-', '/')} 預定動用 NT$ ${fmt(d.amount)}`,
+      d.useDate === today ? '今天撥款,確認銀行有撥進交割戶' : '銀行到那天才撥款;已經用它買進的,曝險先算進借款', 'log'));
   // 有借款、很久沒跟網路銀行對帳:提醒一次(對不上的由下面的 🩺 列)
   const rc = bankRecon();
   if (computeLeverage().usedAmount > 0 && (!rc || rc.days > BANK_RECON_DAYS))
@@ -5526,14 +5528,14 @@ function renderTodo(){
       ${items.map(x => { const on = !!done[x.key]; return `
         <div class="row" style="align-items:flex-start;${on ? ' opacity:.55;' : ''}">
           ${box(x.key, on)}
-          <span class="label" style="${on ? 'text-decoration:line-through;' : ''}"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
+          <span class="label" style="flex:1; min-width:0;${on ? ' text-decoration:line-through;' : ''}"><span style="margin-right:6px;">${x.icon}</span>${x.html ? x.text : esc(x.text)}
             <div class="muted" style="font-size:12px; margin-top:2px;">${esc(x.sub)}</div></span>
           ${on ? '' : link(x)}
         </div>`; }).join('')}
       ${resolved.map(x => `
         <div class="row" style="align-items:flex-start; opacity:.55;">
           ${box(x.key, true)}
-          <span class="label" style="text-decoration:line-through;"><span style="margin-right:6px;">${esc(x.icon)}</span>${esc(maskAmounts(x.text))}
+          <span class="label" style="flex:1; min-width:0; text-decoration:line-through;"><span style="margin-right:6px;">${esc(x.icon)}</span>${esc(maskAmounts(x.text))}
             <div class="muted" style="font-size:12px; margin-top:2px;">今天處理完了</div></span>
         </div>`).join('')}
       ${!items.length ? `<div class="muted">✓ ${resolved.length ? '今天的都處理完了。' : '今天不用動。'}${(() => { const t = computeAllTrends().find(t => t.lastDate); return t ? `訊號用的是 ${esc(t.lastDate)} 的收盤價。` : ''; })()}</div>` : ''}
