@@ -120,7 +120,7 @@ for (const s of SEEDS){
     A.state = A.normalize(JSON.parse(JSON.stringify(A.state)));
     A.renderAll();
     const p = A.computeExposurePlan();
-    if (!(p && p.own && p.progress >= 1 && p.layerAdjustPending))
+    if (!(p && p.own && p.own.items.some(x => x.layer >= 1 && x.pending)))
       failures.push(`seed ${s}:自有資金情境沒有落在接刀中(${p ? `progress ${p.progress}、own ${JSON.stringify(p.own)}` : '沒有正2'}),測試資料要調`);
   }
   A.switchTab('overview');
