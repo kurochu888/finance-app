@@ -42,7 +42,7 @@ console.log('  賣出加 0.1% 證交稅 ✓');
 
 // 快照與備份份數
 must(A.DAILY_KEEP_ === 1000 && doc.includes('1000 個交易日'), '每日快照上限與說明不符(程式 ' + A.DAILY_KEEP_ + ')');
-must(A.BACKUP_KEEP_ === 30 && doc.includes('雲端留 30 份'), '雲端備份份數與說明不符(程式 ' + A.BACKUP_KEEP_ + ')');
+must(A.BACKUP_KEEP_ === 60 && doc.includes('雲端留 60 份'), '雲端備份份數與說明不符(程式 ' + A.BACKUP_KEEP_ + ')');
 must(A.LOCAL_BACKUP_KEEP_ === 7 && doc.includes('一般 7 份'), '本機備份份數與說明不符(程式 ' + A.LOCAL_BACKUP_KEEP_ + ')');
 must(doc.includes('150KB') && doc.includes('300KB') && appJs.includes('sizeKB > 300') && appJs.includes('sizeKB > 150'),
      '本機備份的遞減門檻與說明不符');

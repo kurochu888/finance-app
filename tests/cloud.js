@@ -271,6 +271,51 @@ const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); 
     if (A.storageMode !== 'cloud' || !A.cloud) bugs.push('回到前景沒有重新連上雲端');
   }
 
+  // 14) 另一台開著很久沒同步的分頁(記憶體裡是好幾天前的資料)存檔、整份蓋掉雲端(2026-10-13 使用者的資料就這樣不見:
+  //     記帳 120 → 48、動用 5 → 0)。它的 _parent 這台沒見過、或根本沒有版本編號(舊版),這台本機又沒有新修改,
+  //     以前三方合併拿上次同步的內容當基準,等於整份接受。這台有、它沒有的要留著;這台真的刪掉的(有刪除紀錄)照樣刪
+  for (const variant of ['不認得的 _parent', '沒有版本編號']){
+    await wait(500);
+    const stale = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    A.state.transactions.push({ id:'new1', date:'2026-10-10', cat:'餐飲', desc:'這台後來記的', amount:-80 });
+    A.state.leverage.draws.push({ id:'dr1', label:'動用', amount:770000, useDate:'2026-10-08', note:'', repayments:[] });
+    const victim = stale.transactions.find(t => t.id !== 'new1');
+    if (victim) A.state.transactions = A.state.transactions.filter(t => t.id !== victim.id);
+    await A.save();
+    stale.transactions.push({ id:'old1-' + variant.length, date:'2026-10-11', cat:'餐飲', desc:'舊分頁記的', amount:-5 });
+    if (variant === '不認得的 _parent'){ stale._rev = 'stale' + variant.length; stale._parent = 'ancient'; }
+    else { delete stale._rev; delete stale._parent; delete stale._tomb; }
+    cloudDocs['state/finance'] = JSON.parse(JSON.stringify(stale));
+    A.applyRemote(JSON.parse(JSON.stringify(stale)));
+    await wait(500);
+    const ids = A.state.transactions.map(t => t.id), cd = cloudDocs['state/finance'];
+    console.log('14. 很久沒同步的分頁蓋掉雲端(' + variant + '):記帳', ids.length, '筆 | 動用', A.state.leverage.draws.length, '筆');
+    if (!ids.includes('new1') || !A.state.leverage.draws.some(d => d.id === 'dr1'))
+      bugs.push(variant + ':很久沒同步的分頁存檔,這台後來記的帳/動用被它蓋掉');
+    if (!ids.includes('old1-' + variant.length)) bugs.push(variant + ':舊分頁記的那筆沒有合併進來');
+    if (victim && ids.includes(victim.id)) bugs.push(variant + ':這台刪掉的交易被舊分頁那份救回來');
+    if (!cd.transactions.some(t => t.id === 'new1') || !cd.leverage.draws.some(d => d.id === 'dr1'))
+      bugs.push(variant + ':保留下來的沒有推回雲端');
+    if (!A.diagLoad().some(x => x.m.includes('這台有、它沒有的保留下來'))) bugs.push(variant + ':保留下來的沒有記進診斷紀錄');
+    A.state.transactions = A.state.transactions.filter(t => t.id !== 'new1');
+    A.state.leverage.draws = [];
+    await A.save();
+  }
+
+  // 15) 同一天另一台裝置也存每日備份:不能蓋掉這台存的那份(2026-10-13:舊分頁那台後存,當天唯一一份備份變成舊資料)
+  {
+    const today = A.todayISO(), mine = cloudDocs['backups/' + today];
+    localStorage.removeItem('financeLastBackup_cloud');   // 假裝是另一台(每台各自記「今天備份過了」)
+    const keepState = A.state;
+    A.state = A.normalize({ transactions: [] });
+    await A.maybeBackup();
+    A.state = keepState;
+    const n2 = cloudDocs['backups/' + today + ' 2'];
+    console.log('15. 同一天兩台各存一份備份:', !!mine, !!n2);
+    if (!mine || JSON.stringify(cloudDocs['backups/' + today]) !== JSON.stringify(mine)) bugs.push('同一天另一台的每日備份蓋掉了這台存的那份');
+    if (!n2) bugs.push('同一天另一台的每日備份沒有另存一份');
+  }
+
   // 7) 跨年的月份運算
   const ym = ['2026-01','2026-12'];
   console.log('7. 月份運算:', ym[0], '往前一個月 =', A.shiftMonth(ym[0], -1),
