@@ -581,6 +581,38 @@ console.log('一般型房貸跟銀行對帳(剩餘本金、本期應繳)');
   setNow('2026-10-05');
 }
 
+console.log('過去利率的結束日改成跟另一段同一天:不收(不然當下跟重新整理後算出來的利息不一樣)');
+{
+  // 理財型
+  const s = A.emptyState();
+  s.leverage.annualRate = 2.6;
+  s.leverage.rateHistory = [{ id:'r1', until:'2026-03-01', rate:2.2 }, { id:'r2', until:'2026-07-01', rate:2.4 }];
+  s.leverage.draws = [{ id:'d1', label:'', amount:1000000, useDate:'2026-01-01', note:'', repayments:[] }];
+  A.state = s;
+  A.onField('rate-until-r2', { value: '2026-03-01' });
+  const rh = A.state.leverage.rateHistory;
+  must(rh.length === 2 && rh[1].until === '2026-07-01', '撞日的不收,保留原本的日期:' + JSON.stringify(rh));
+  must(JSON.stringify(A.normalize(JSON.parse(JSON.stringify(A.state))).leverage.rateHistory) === JSON.stringify(rh), '重新整理前後的利率分段要一樣');
+  A.levTab = 'setup';
+  must(A.renderLeverage().includes('這一天已經有另一段了'), '設定頁要在那一段下面提示');
+  A.onField('rate-until-r2', { value: '2026-02-01' });   // 改成不撞日的:照收、重新排序
+  must(rh.length === 2 && rh[0].id === 'r2' && rh[0].until === '2026-02-01' && rh[1].id === 'r1' && !A.renderLeverage().includes('這一天已經有另一段了'),
+    '不撞日的照收、照日期排序、提示消失:' + JSON.stringify(rh));
+  A.onField('rate-until-r2', { value: '2026-02-01' });   // 改成自己原本的日期不算撞日
+  must(!A.renderLeverage().includes('這一天已經有另一段了'), '改成自己原本的日期不算撞日');
+  // 一般型
+  const s2 = A.emptyState();
+  s2.liabilities = [{ id:'m1', name:'房貸', amount:0, loan: { principal:5000000, start:'2020-01-02', years:20, annualRate:2.3,
+    rateHistory:[{ id:'q1', until:'2022-01-01', rate:1.6 }, { id:'q2', until:'2024-01-01', rate:1.9 }], autoInterest:false, interestPosted:[] } }];
+  A.state = A.normalize(s2);
+  A.onClick({ dataset: { act: 'loan-open', id: 'm1' } });
+  A.onField('lr-until-m1.q2', { value: '2022-01-01' });
+  const lh = A.state.liabilities[0].loan.rateHistory;
+  must(lh.length === 2 && lh[1].until === '2024-01-01', '一般型撞日的也不收:' + JSON.stringify(lh));
+  must(JSON.stringify(A.normalize(JSON.parse(JSON.stringify(A.state))).liabilities[0].loan.rateHistory) === JSON.stringify(lh), '一般型重新整理前後要一樣');
+  must(A.renderAssets().includes('這一天已經有另一段了'), '資產頁的房貸設定要提示');
+}
+
 if (bugs.length){
   console.log('\n發現 ' + bugs.length + ' 個問題:');
   bugs.forEach(b => console.log('  ✗ ' + b));

@@ -795,8 +795,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-12 · e97323916e';
-const BUILD_HASH = 'e97323916e';
+const BUILD_VERSION = '2026-10-12 · dd0ca3de6f';
+const BUILD_HASH = 'dd0ca3de6f';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2245,6 +2245,18 @@ function interestBetween(L, balance, a, b){
 }
 /* 改「目前利率」:已經有借款在跑(動用日在今天之前)的話,先把「到今天為止是舊利率」記成過去一段,過去的利息才不會跟著變;
    同一天再改(一個字一個字打)只換目前利率。還沒有借款在跑(剛設定)就直接改 */
+/* 改過去某一段利率的結束日(理財型 rate-until-、一般型 lr-until-)。改成跟另一段同一天的不收:兩段同一天時這次還兩段都在、
+   照前面那段算,存檔再讀回來 normalizeRateHistory() 只留一段(後面那段),兩台、重新整理前後算出來的利息不一樣,
+   其中一段也悄悄不見了(2026-10-12 隨機壓測抓到)。被擋下時記在 rateDupKey,畫面在那一段下面提示。 */
+let rateDupKey = '';
+const byUntil = (a, b) => a.until < b.until ? -1 : (a.until > b.until ? 1 : 0);
+function setRateUntil(list, e, value, key){
+  const d = isoDate(value, '');
+  if (!d) return;
+  if (list.some(x => x !== e && x.until === d)){ rateDupKey = key; return; }
+  e.until = d;
+  list.sort(byUntil);
+}
 function setCurrentRate(L, v){
   const today = todayISO();
   // L 可以是槓桿設定(看有沒有動用在跑)或一般型房貸的 loan(看撥款日)
@@ -3164,7 +3176,8 @@ function renderLoanBox(l){
       <input type="number" inputmode="decimal" step="0.01" data-k="lr-val-${l.id}.${e.id}" value="${e.rate}" style="flex:0 0 72px; width:72px; min-width:0;">
       <span class="muted">%</span>
       ${xDel('del-loan-rate', l.id + '.' + e.id)}
-    </div>`).join('')}` : ''}
+    </div>
+    ${rateDupKey === `lr-until-${l.id}.${e.id}` ? `<div class="muted neg" style="font-size:12px; margin-top:2px;">這一天已經有另一段了,沒有改。每一段的結束日要不一樣。</div>` : ''}`).join('')}` : ''}
     <div class="muted" style="margin-top:6px;">銀行調利率時改「目前年利率」(改完離開欄位才生效):今天以前照舊利率,之後每期月付用剩餘本金、剩餘期數、新利率重算。
       生效日不是今天的話,改上面那段的日期。</div>
     ${loanReady(l) ? renderLoanBankRecon(l) : ''}
@@ -5806,7 +5819,8 @@ function renderLeverage(){
         <input type="number" inputmode="decimal" step="0.01" data-k="rate-val-${e.id}" value="${e.rate}" style="flex:0 0 72px; width:72px; min-width:0;">
         <span class="muted">%</span>
         ${xDel('del-rate', e.id)}
-      </div>`).join('')}` : ''}
+      </div>
+      ${rateDupKey === `rate-until-${e.id}` ? `<div class="muted neg" style="font-size:12px; margin-top:2px;">這一天已經有另一段了,沒有改。每一段的結束日要不一樣。</div>` : ''}`).join('')}` : ''}
       <div class="muted" style="margin-top:6px;">銀行調利率時直接改「目前年利率」就好:已經借出去的錢,今天以前的利息照舊利率算,今天起照新利率。
         生效日不是今天的話,改上面那段的日期。</div>
       <div class="row"><span class="label">剩餘可動用${plannedDrawAmount() ? '(已扣預定動用)' : ''}</span><span class="val" id="out-remainingLine">NT$ ${fmt(Math.max(0, L.creditLimit - r.usedAmount - plannedDrawAmount()))}</span></div>
@@ -6443,6 +6457,7 @@ function applyLoanRate(lid, value){
 }
 function onField(key, el){
   diagLastAct = 'field ' + key;
+  rateDupKey = '';
   const dash = key.indexOf('-');
   const kind = key.slice(0, dash);
   const rest = key.slice(dash + 1);
@@ -6477,7 +6492,7 @@ function onField(key, el){
     const cut = rest.indexOf('-'), what = rest.slice(0, cut), ids = rest.slice(cut + 1), dot = ids.indexOf('.');
     const l = findById(state.liabilities, ids.slice(0, dot)), e = l && l.loan && findById(l.loan.rateHistory, ids.slice(dot + 1));
     if (e){
-      if (what === 'until'){ const d = isoDate(el.value, ''); if (d) e.until = d; l.loan.rateHistory.sort((a, b) => a.until < b.until ? -1 : 1); }
+      if (what === 'until') setRateUntil(l.loan.rateHistory, e, el.value, key);
       else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
       syncLoanLiabilities();
     }
@@ -6499,7 +6514,7 @@ function onField(key, el){
     const cut = rest.indexOf('-'), what = rest.slice(0, cut), rid = rest.slice(cut + 1);
     const e = findById(state.leverage.rateHistory || [], rid);
     if (e){
-      if (what === 'until'){ const d = isoDate(el.value, ''); if (d) e.until = d; state.leverage.rateHistory.sort((a, b) => a.until < b.until ? -1 : 1); }
+      if (what === 'until') setRateUntil(state.leverage.rateHistory, e, el.value, key);
       else if (String(el.value).trim() !== '') e.rate = Math.max(0, num(el.value));
     }
   }
@@ -6968,6 +6983,7 @@ async function copyJSON(){
 const CONFIRM_ACTS = ['diag-clear', 'del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
   diagLastAct = 'click ' + (el && el.dataset && el.dataset.act || '?');
+  rateDupKey = '';
   const act = el.dataset.act;
   const id = el.dataset.id;
   let rerender = true;
@@ -7446,6 +7462,8 @@ function init(){
     // 一般型房貸的利率:一個字一個字打的時候(2 → 2.3)不能每一下都當成「升降息」記一段過去利率,離開欄位才算數
     const dk = e.target.dataset && String(e.target.dataset.k || '');
     if (dk.startsWith('lo-rate-')){ applyLoanRate(dk.slice(8), e.target.value); renderAll(); return; }
+    // 過去利率的結束日跟另一段撞日被擋下:重畫,欄位回到原本的日期、那一段下面出現提示
+    if (rateDupKey && rateDupKey === dk){ renderAll(); return; }
     // 繳款日:打「1 → 15」途中的「1」不能先把本月的自動還本搬到 1 號,離開欄位才算數
     if (dk === 'lev-payDay'){ applyPayDay(e.target.value); renderAll(); return; }
     if ((dk.startsWith('lo-') || dk.startsWith('lr-') || dk.startsWith('lbc-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
