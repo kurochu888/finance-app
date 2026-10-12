@@ -506,6 +506,10 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
     (Firestore 出錯會停掉那個監聽),以前都被吞掉:整個 session 只存本機、別台的改動收不到,要重開 app。現在 `scheduleCloudRetry()`
     記進診斷紀錄,`CLOUD_RETRY_MS` 後或回到前景(`onForeground`)時 `retryCloud()` 重抓一次、重新監聽。`onChange(cb, onErr)` 兩個後端
     都回傳取消監聽的函式,`stopCloudListen()` 在重新監聽、登出前先停掉舊的(不然換帳號時舊帳號的監聽還會送資料來合併)。`tests/cloud.js` 12、13。
+  - **雲端那份的 `_parent` 這台不認得(或沒有版本編號)時,本機有、雲端沒有的不當成刪除**(2026-10-13 使用者資料不見:記帳 120 → 48、
+    動用 5 → 0):另一台開著很久沒同步的分頁一存檔就整份蓋掉雲端,這台沒有新修改,以前拿 `syncBase` 當基準等於整份接受。
+    現在 `applyRemote()` 這種情況把本機那份也交給 `reconcileTombs()` 補(有刪除紀錄的照刪),補了幾筆記進診斷紀錄。
+    第一次同步(沒有 `syncBase`)照舊以雲端為準。純量欄位(設定、價格歷史)還是照雲端那份。`tests/cloud.js` 14。
   - 本機有還沒推上去的修改時,`syncBase` 會存進 localStorage(`financeSyncBase`,推成功就刪),下次打開第一次同步
     拿它當合併基準。網頁版 Firestore 沒開離線持久化,離線時的寫入關掉 app 就沒了;以前第一次同步是雲端整份蓋掉本機,
     離線記的帳就不見了(`tests/offline.js`)。空間不夠時它是最後才被清掉的(主資料優先)。

@@ -779,8 +779,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-12 · dd0ca3de6f';
-const BUILD_HASH = 'dd0ca3de6f';
+const BUILD_VERSION = '2026-10-13 · 602c2633da';
+const BUILD_HASH = '602c2633da';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -932,17 +932,20 @@ function mergeTombs(remoteTomb){
 /* 合併完的結果照刪除紀錄補齊:有刪除紀錄的拿掉;雲端那份有、沒有刪除紀錄、合併結果卻沒有的補回來
    (三方合併以為「本機刪掉了」,其實本機從沒刪過——交叉合併時基準選錯就會這樣)。
    只補雲端那邊的,不補本機那邊的:剛更新到有刪除紀錄的版本時還沒有任何紀錄,本機資料比較舊的那台
-   (裡面還有另一台早就刪掉的東西)會把它們全部救回來;本機新增的交給三方合併本來的規則。回傳有沒有動到 */
-function reconcileTombs(merged, remote){
+   (裡面還有另一台早就刪掉的東西)會把它們全部救回來;本機新增的交給三方合併本來的規則。回傳有沒有動到。
+   例外是 local:雲端那份不知道是從哪一版改出來的時候(見 applyRemote),本機有、沒有刪除紀錄的也補回來,
+   補了幾筆照路徑記進 rescued。 */
+function reconcileTombs(merged, remote, local = null, rescued = null){
   let changed = false;
   const lists = new Map(keyedLists(merged).map(([path, list, kf]) => [path, { list, kf }]));
-  const sides = [remote].map(st => new Map(keyedLists(st).map(([path, list, kf]) => [path, list.map(x => [kf(x), x])])));
+  const sides = [remote, local].filter(Boolean).map(st => new Map(keyedLists(st).map(([path, list, kf]) => [path, list.map(x => [kf(x), x])])));
   // 先補:合併結果也有這個清單時才補(例如某筆動用整個被刪了,它的還款清單就不用補)
   lists.forEach(({ list, kf }, path) => {
     const have = new Set(list.map(kf));
     sides.forEach(side => (side.get(path) || []).forEach(([k, x]) => {
       if (k == null || have.has(k) || isDeleted(path + '|' + k)) return;
       list.push(JSON.parse(JSON.stringify(x))); have.add(k); changed = true;
+      if (rescued && side === sides[1]) rescued[path] = (rescued[path] || 0) + 1;
     }));
   });
   // 再刪
@@ -1110,9 +1113,16 @@ function applyRemote(raw, first = false){
   const restored = keepFieldsOldVersionsDrop(prev, data, state);
   const remoteC = canon(JSON.parse(JSON.stringify(state)));
   // 共同基準:雲端這份是從哪一版改出來的(見 knownRevs 的說明);不知道就用上次一致的那份
-  let kept = mergeLocalEdits(prev, state, (parent && knownRevs.get(parent)) || syncBase);
+  const baseKnown = !!(parent && knownRevs.has(parent));
+  let kept = mergeLocalEdits(prev, state, baseKnown ? knownRevs.get(parent) : syncBase);
+  /* 不知道雲端這份是從哪一版改出來的(沒有 _parent = 舊版分頁寫的,或 _parent 不是這台見過的版本),而這台已經跟雲端同步過:
+     本機有、雲端沒有的不能當成「別台刪掉了」。2026-10-13 使用者的資料就是這樣不見的:另一台開著很久沒同步的分頁
+     (監聽早就斷了、記憶體裡是好幾天前的資料)一存檔就整份蓋掉雲端,這台本機沒有新修改,三方合併等於整份接受,
+     記帳 120 → 48、動用 5 → 0。真的刪除有刪除紀錄(_tomb)跟過來,照樣刪;舊版分頁刪的會被補回來,寧可多不要少。
+     第一次同步(這台沒有基準)不在此列:那時本機可能才是舊的那份,照舊以雲端為準。 */
+  const rescued = {}, rescueLocal = !baseKnown && syncBase ? prev : null;
   // 用 id 對應的清單照刪除紀錄補齊:兩邊有的都留、刪過的都刪(交叉合併時單一基準會判錯,見 tombs)
-  if (reconcileTombs(state, normalize(data))){
+  if (reconcileTombs(state, normalize(data), rescueLocal ? JSON.parse(JSON.stringify(rescueLocal)) : null, rescued)){
     state = normalize(JSON.parse(JSON.stringify(state)));
     if (canon(JSON.parse(JSON.stringify(state))) !== remoteC) kept = true;
   }
@@ -1127,6 +1137,12 @@ function applyRemote(raw, first = false){
   if (restored || kept) scheduleSave();   // 補回來的東西/本機還沒推上去的修改推回雲端
   // 打開時載入雲端那份是每次都有的,只有合併了本機修改、或補回舊版丟掉的欄位才值得記
   if (!first || kept || restored) diag('同步', (first ? '打開時從雲端載入' : '收到別台裝置的改動') + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
+  const nRescued = Object.values(rescued).reduce((a, b) => a + b, 0);
+  if (nRescued){
+    const names = { transactions:'記帳', trades:'買賣', draws:'動用', assets:'資產', liabilities:'負債', netWorthHistory:'每月快照', instruments:'標的' };
+    diag('同步', `收到的雲端資料不知道是從哪一版改出來的(${rev ? '別台很久沒同步' : '沒有版本編號,舊版分頁寫的'}),`
+      + '這台有、它沒有的保留下來:' + Object.entries(rescued).map(([p, n]) => (names[p] || (p.endsWith('/repayments') ? '還款' : p)) + ' ' + n).join('、'));
+  }
   renderAll();
 }
 /* 收到別台裝置的改動時,本機可能有還沒推上去的修改:打字中收到的會先擱著、離開欄位才套用(那時剛打的字
@@ -1478,8 +1494,8 @@ async function signOutCloud(){
 }
 
 /* ===================== 每日備份 =====================
-   雲端可用時存在雲端的 backups 集合,否則存本機。每天一份,保留 30 天。 */
-const BACKUP_KEEP = 30;        // 雲端
+   雲端可用時存在雲端的 backups 集合,否則存本機。每台裝置每天一份,保留 60 份。 */
+const BACKUP_KEEP = 60;        // 雲端(兩台裝置每天各一份,約 30 天)
 const LOCAL_BACKUP_KEEP = 7;   // 本機 localStorage 只有幾 MB,備份不能佔太多
 const BACKUP_PREFIX = 'financeBackup_';
 const BACKUP_TS_KEY = 'financeLastBackup';
@@ -1536,10 +1552,19 @@ async function maybeBackup(){
     // 先清舊的再寫新的,免得寫的當下就把空間塞爆
     const before = await api.list();
     for (const id of before.slice(Math.max(0, keep - 1))) await api.del(id);
-    await api.put(today, JSON.parse(JSON.stringify(state)));
+    /* 同一天另一台裝置已經存過就另存一份,不蓋掉(2026-10-13:兩台共用「日期」這個名字,後打開的那台把前一台的蓋掉;
+       另一台是開著很久沒同步的舊分頁時,當天唯一一份備份就是舊資料,還原也救不回來) */
+    let id = today;
+    for (let n = 2; before.includes(id); n++) id = today + ' ' + n;
+    await api.put(id, JSON.parse(JSON.stringify(state)));
     try{ localStorage.setItem(tsKey, today); }catch(e){}
   }catch(e){ /* 備份失敗不影響使用 */ }
 }
+/* 備份清單每一份裡有幾筆(2026-10-13:資料被舊分頁蓋掉,使用者要找哪一份還是完整的,只看日期得一份一份還原試) */
+let backupInfo = {};
+const backupSummary = d => d && typeof d === 'object'
+  ? `記帳 ${(d.transactions || []).length}、買賣 ${(d.trades || []).length}、動用 ${((d.leverage || {}).draws || []).length}`
+  : '讀不到';
 async function loadBackups(){
   backupOpen = true;
   backupList = null;
@@ -1547,6 +1572,12 @@ async function loadBackups(){
   try{ backupList = await backupApi().list(); }
   catch(e){ backupList = []; }
   renderAll();
+  for (const id of backupList || []){
+    if (!backupOpen) return;
+    if (backupInfo[id]) continue;
+    try{ backupInfo[id] = backupSummary(await backupApi().get(id)); }catch(e){ backupInfo[id] = '讀不到'; }
+    renderAll();
+  }
 }
 /* 整份蓋掉之前(匯入、還原備份、載入範例、清空全部)先把目前的資料存成一份備份,按錯了還找得回來(2026-10)。
    以前每天只在第一次打開時備份一次,蓋錯的話那天之後改的全沒了,有雲端同步的話另一台也跟著被蓋掉。
@@ -3058,7 +3089,7 @@ function renderOverview(){
         : backupList.length
           ? backupList.map(id => `
             <div class="erow">
-              <div class="f-name muted" style="padding-left:2px;">${esc(id)}</div>
+              <div class="f-name muted" style="padding-left:2px;">${esc(id)}${backupInfo[id] ? `<div style="font-size:11px;">${esc(backupInfo[id])}</div>` : ''}</div>
               <button class="btn quiet" style="flex:0 0 auto; width:auto; margin:0; padding:8px 12px;" data-act="restore" data-id="${esc(id)}">${pendingConfirm === 'restore:' + id ? '⚠️ 再按一次' : '還原'}</button>
             </div>`).join('')
           : `<div class="muted" style="text-align:center; padding:10px;">還沒有備份 — 每天開啟 app 時會自動存一份。</div>`) : ''}
@@ -3689,7 +3720,7 @@ function renderHelp(){
           app 跟同一天自己算的比;差額剛好是某一筆動用(例如預定動用其實已經撥款)或還款(例如自動還本銀行還沒扣)會直接指出來,
           利息對不上會推算銀行實際用的年利率。有借款、超過 40 天沒對,「今天要做什麼」會提醒一次。一般型房貸(資產頁負債的「房貸設定」)也可以對:填銀行顯示的剩餘本金跟本期應繳,差一期本金、月付推算出來的利率不一樣都會指出來。</li>
         <li><strong>每日備份</strong>:每天第一次開啟存一份完整快照,可在總覽的「資料」卡還原。匯入備份、還原備份、載入範例、清空全部之前,也會先把當時的資料存成一份(名稱是「日期 時間 還原前」這類),按錯了可以再還原回來。
-        雲端留 30 份;本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
+        雲端留 60 份(每台裝置每天各一份,不互相蓋掉);本機的份數會隨資料量遞減(一般 7 份,資料超過 150KB 留 5 份、超過 300KB 留 3 份),
         因為手機瀏覽器的空間有限,備份佔太多會讓主資料存不進去。空間用超過 75% 時會提醒你。</li>
         <li><strong>複製診斷報告</strong>:錯誤、雲端同步、抓報價失敗、自動記帳(還本、利息、自動新增的動用)這些事件會記在這台裝置
           (不同步、不上傳,最多約 400 筆),加上用你的真實資料跑的健康檢查(房貸動用跟買進對不對得上、自動記帳有沒有漏月、價格歷史有沒有缺口…),
