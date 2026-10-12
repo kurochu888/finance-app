@@ -779,8 +779,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-12 · a41b069e7d';
-const BUILD_HASH = 'a41b069e7d';
+const BUILD_VERSION = '2026-10-12 · e97323916e';
+const BUILD_HASH = 'e97323916e';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2727,8 +2727,8 @@ function seedTrendBaselines(){
 }
 
 function renderAll(){
-  if (seedTrendBaselines()) scheduleSave();
-  if (captureOwnBase()) scheduleSave();          // 接刀只用自有資金:出場時記下接刀用的錢   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
+  if (seedTrendBaselines()) scheduleSave();   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
+  if (captureOwnBase()) scheduleSave();       // 接刀只用自有資金:出場時記下接刀用的錢
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
@@ -6084,8 +6084,8 @@ function postLoanInterest(){
       const id = ('li-' + l.id).slice(0, 50) + '-' + m.replace('-', '');
       if (row.interest >= 0.5 && !state.transactions.some(t => t.id === id)){
         noteAutoPosted('transactions', { id });
-        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: num(-Math.round(row.interest)) });
-        diag('自動記帳', `${m} ${l.name || '房貸'}(一般型)利息 ${$n(row.interest)}`);   // num():夾在 ±1 兆,跟存檔再讀回來一樣
+        state.transactions.push({ id, date: row.date, cat: '房貸利息', desc: (l.name || '房貸') + '利息(自動記入)', amount: num(-Math.round(row.interest)) });   // num():夾在 ±1 兆,跟存檔再讀回來一樣
+        diag('自動記帳', `${m} ${l.name || '房貸'}(一般型)利息 ${$n(row.interest)}`);
       }
       posted.push(m);
       changed = true;
