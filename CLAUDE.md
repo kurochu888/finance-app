@@ -76,6 +76,8 @@ id 沿用舊值以確保重複呼叫不會飄動。
 以前只有一個 `annualRate`,銀行升降息一改,過去已經發生的利息全部照新利率重算。改「目前年利率」走 `setCurrentRate()`:
 有借款在跑就先記「到今天為止是舊利率」,同一天再改只換目前利率;還沒借款就直接改。舊版分頁不認得 `rateHistory`,
 寫回來時 `keepFieldsOldVersionsDrop()` 保留本機的。`accrue(item, 2.4)` 傳數字 = 全程同一個利率(測試用)。
+過去某段的結束日改成跟另一段同一天不收(`setRateUntil()`,理財型、一般型共用):以前當下兩段都留著、照前面那段算,
+存檔再讀回來 `normalizeRateHistory()` 只留後面那段,兩台、重新整理前後的利息不一樣(2026-10-12 fuzz 抓到,`tests/loans.js`)。
 
 `DEFAULT_LEVERAGE` 裡還留著 `marketHigh`/`marketCurrent`/`historicalHighValue`/`autoHigh`
 這幾個欄位——**這些是舊觸發邏輯的遺跡,現在沒有任何 UI 讀寫它們**(只有 `tests/longrun.js`
