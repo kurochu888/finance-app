@@ -41,7 +41,8 @@ python3 build.py && bash tests/run.sh
   `globalThis.A = {...}` bridge 物件把裡面的 `let`/`const` 活繫結接出來給測試用
   (因為 `eval` 內的變數不會自然外洩到外層)。要在測試裡摸到新的內部函式/變數,record 要加進
   對應測試檔的這個 bridge 裡。
-- `longrun.js` 會把 `Date` 換成假的、模擬 15 年每天開 app,跑起來要 30~60 秒,是最慢的一個。
+- `longrun.js` 會把 `Date` 換成假的、模擬 15 年每天開 app,跑起來要約 8 分鐘(2026-10-12 在開發機上量的;這份文件以前寫 30~60 秒),是最慢的一個。
+  其他測試加起來約 4 分鐘,整個 `tests/run.sh` 約 12 分鐘。
 - 每個測試發現問題都要回傳非 0(`process.exitCode = 1`),`run.sh` 開了 `pipefail`——2026-09 以前有一半的測試
   只印「發現 N 個問題」、結束碼還是 0,再接 `| tail` 截短,`run.sh` 整體照樣回報成功。新增測試照這個規矩。
 - `audit.js` **不在** `tests/run.sh` 裡跑(故意的)——它是版面密度盤點,不是通過/失敗測試,
