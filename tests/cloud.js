@@ -316,6 +316,32 @@ const asOther = d => { d._parent = d._rev || ''; d._rev = 'other' + (++otherN); 
     if (!n2) bugs.push('同一天另一台的每日備份沒有另存一份');
   }
 
+  // 16) 寫的那端:這台監聽斷了、沒收到別台剛寫的(這裡故意不呼叫 snapCb),這台一存檔不能整份蓋掉雲端,要先合併再寫
+  for (const variant of ['別台新版', '舊版分頁(沒有版本編號)']){
+    await wait(500);
+    const other = JSON.parse(JSON.stringify(cloudDocs['state/finance']));
+    other.transactions.push({ id:'fromOther' + variant.length, date:'2026-10-12', cat:'餐飲', desc:'別台記的', amount:-30 });
+    if (variant === '別台新版') asOther(other); else { delete other._rev; delete other._parent; delete other._tomb; }
+    cloudDocs['state/finance'] = other;
+    const writes0 = writeLog.length;
+    A.state.transactions.push({ id:'mine' + variant.length, date:'2026-10-13', cat:'餐飲', desc:'這台記的', amount:-40 });
+    await A.save();
+    await wait(500);
+    const cd = cloudDocs['state/finance'], ids = cd.transactions.map(t => t.id);
+    const n = writeLog.length - writes0;
+    console.log('16. 監聽斷了還存檔(' + variant + '):雲端有別台的', ids.includes('fromOther' + variant.length), '| 有這台的', ids.includes('mine' + variant.length), '| 寫了', n, '次');
+    if (!ids.includes('fromOther' + variant.length)) bugs.push(variant + ':監聽斷了的這台存檔,把別台剛寫的整份蓋掉');
+    if (!ids.includes('mine' + variant.length)) bugs.push(variant + ':先合併再存之後,這台記的沒有寫上去');
+    if (!A.state.transactions.some(t => t.id === 'fromOther' + variant.length)) bugs.push(variant + ':別台寫的沒有合併進這台');
+    if (n > 3) bugs.push(variant + ':存檔前比對一直對不上,寫了 ' + n + ' 次');
+    if (!A.diagLoad().some(x => x.m.includes('存檔前發現雲端已經被別台改過'))) bugs.push(variant + ':存檔前發現雲端被改過沒有記進診斷紀錄');
+    // 再存一次:這次雲端就是這台剛寫的,要直接寫、不再合併
+    const w1 = writeLog.length;
+    A.state.assets[0].amount += 1;
+    await A.save();
+    if (writeLog.length - w1 !== 1) bugs.push(variant + ':合併後再存檔,沒有直接寫上去');
+  }
+
   // 7) 跨年的月份運算
   const ym = ['2026-01','2026-12'];
   console.log('7. 月份運算:', ym[0], '往前一個月 =', A.shiftMonth(ym[0], -1),

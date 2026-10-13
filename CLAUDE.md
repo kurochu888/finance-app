@@ -471,7 +471,7 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
 - **改 `state` 的資料格式時,要想到「還開著的舊版分頁」**——舊版的 `normalize()` 會把它不認得的欄位
   丟掉再存回雲端(2026-09 加 `instruments[].splits` 時就是這樣,新版只好一再遷移)。現在 PWA 版會在
   回到前景/每 30 分鐘問一次 `docs/version.json`(`build.py` 產生,內容是 build hash),換版了就在最上面
-  跳「有新版」提示(`checkForUpdate()`),舊分頁頂多多活一陣子;但新欄位的遷移邏輯還是要能承受
+  跳「有新版」提示(`checkForUpdate()`),能換的時候自動重新整理(2026-10-13 起),舊分頁頂多多活一陣子;但新欄位的遷移邏輯還是要能承受
   「被舊版寫回來」這件事,不能假設只會遷移一次。
 - **壓測留下來的幾條規矩(2026-09)**:
   - 所有數字輸入走 `num()`(非有限值一律 0,範圍夾在 ±1 兆;快照裡加總出來的值用 `finNum()`,夾 ±1000 兆),所有日期走 `isoDate()`,所有 id 在 `normalize()` 過 `safeId()`
@@ -510,6 +510,13 @@ Claude 看不到使用者手機上的真實資料,幾個實際 bug(預定動用�
     動用 5 → 0):另一台開著很久沒同步的分頁一存檔就整份蓋掉雲端,這台沒有新修改,以前拿 `syncBase` 當基準等於整份接受。
     現在 `applyRemote()` 這種情況把本機那份也交給 `reconcileTombs()` 補(有刪除紀錄的照刪),補了幾筆記進診斷紀錄。
     第一次同步(沒有 `syncBase`)照舊以雲端為準。純量欄位(設定、價格歷史)還是照雲端那份。`tests/cloud.js` 14。
+  - **寫雲端前先比對(2026-10-13,同一次事件)**:`save()` 走 `cloud.setIf(資料, cloudIsCurrent)`,Firebase 用 `runTransaction`
+    在同一個交易裡讀雲端那份(Claude Artifact 版沒有交易,先讀再寫);雲端的 `_rev` 不是 `syncRev`/自己推過的(沒有版本編號的比原樣內容
+    `lastRemoteRaw`)就不寫,`applyRemote()` 合併後再存。每次存檔多讀一次整份文件,換來監聽斷了的分頁不能拿舊資料蓋掉雲端。
+    Firebase 那段 node 測不到(ES module 從網址 import),改 `firebase-sync.js` 要在手機上實際試。`tests/cloud.js` 16。
+  - **有新版自動重新整理**(同一次事件):`checkForUpdate()` 發現新版時 `maybeAutoUpdate()`——沒在打字、沒有填到一半的草稿、
+    沒有待確認的刪除、沒在抓報價/歷史才換(回到前景、切到背景、每 30 分鐘再試);同一個新版 6 小時內只自動換一次
+    (`financeAutoUpdateTried`),換完還是舊版就留著提示,不會一直重整。新增草稿類的輸入要加進 `updateSafeNow()`。`tests/update.js`。
   - 本機有還沒推上去的修改時,`syncBase` 會存進 localStorage(`financeSyncBase`,推成功就刪),下次打開第一次同步
     拿它當合併基準。網頁版 Firestore 沒開離線持久化,離線時的寫入關掉 app 就沒了;以前第一次同步是雲端整份蓋掉本機,
     離線記的帳就不見了(`tests/offline.js`)。空間不夠時它是最後才被清掉的(主資料優先)。
