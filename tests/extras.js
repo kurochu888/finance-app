@@ -321,6 +321,48 @@ console.log('跟網路銀行對帳(使用者 2026-10-08 的數字:已撥款 182 
   must(!A.bankRecon(), '清空就沒有對帳結果');
 }
 
+console.log('過去的每日紀錄照收盤價重算(2026-10-13:還原備份後 10/12 那一點不對)');
+{
+  A.state = A.normalize(A.emptyState());
+  const it = A.state.instruments.find(x => x.id === '00631L');
+  it.priceHistory = [{ d:'2026-10-02', c:39 }, { d:'2026-10-05', c:40 }, { d:'2026-10-06', c:41 }, { d:'2026-10-07', c:42 }];
+  it.price = 42;
+  A.state.trades = [{ id:'t1', date:'2026-10-01', symbol:'00631L', action:'buy', source:'loan', shares:10000, price:40, amount:0, fee:570, note:'' }];
+  A.state.leverage.draws = [{ id:'d1', label:'動用', amount:400570, useDate:'2026-10-03', note:'', repayments:[] }];
+  A.state = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  // 10/07 收盤時的正確數字:時間撥到 10/07 收盤後用 app 本來的算法算
+  const keep = simNow;
+  simNow = new RealDate('2026-10-07T15:00:00').getTime();
+  const p7 = A.computePosition(), r7 = A.computeRisk();
+  const want = { pv: Math.round(p7.marketValue), loan: Math.round(r7.loan), pnl: Math.round(p7.total) };
+  simNow = keep;
+  A.state.dailyHistory = [
+    { d:'2026-10-04', pv:1, loan:1, eq:1, pnl:1 },                     // 週日,沒有收盤價:不動
+    { d:'2026-10-06', pv:405000, loan:0, eq:405000, pnl:4430 },       // 被舊資料蓋掉時記的(借款 0)
+    { d:'2026-10-07', pv:415000, loan:400570, eq:14430, pnl:14000 },  // 盤中打開、收盤後沒再開
+  ];
+  A.maybeDailySnapshot();
+  const h = d => A.state.dailyHistory.find(x => x.d === d);
+  const got7 = h('2026-10-07');
+  must(got7.pv === want.pv && got7.loan === want.loan && got7.pnl === want.pnl,
+    `10/07 要照收盤價重算成 ${JSON.stringify(want)},得到 ${JSON.stringify({ pv: got7.pv, loan: got7.loan, pnl: got7.pnl })}`);
+  must(h('2026-10-06').pv === 410000 && h('2026-10-06').loan === 400570, '10/06 被蓋掉時記的借款 0 要改回來,得到 ' + JSON.stringify(h('2026-10-06')));
+  must(h('2026-10-04').pnl === 1, '沒有收盤價的那天不能動');
+  must(h('2026-10-08') && h('2026-10-08').pv === 420000, '今天那筆照舊記');
+  must(A.diagLoad().some(x => x.m.includes('每日紀錄照收盤價重算')), '重算要記進診斷紀錄');
+  // 分割之前的日子不動(舊買賣紀錄不一定換算過)
+  const it2 = A.state.instruments.find(x => x.id === '00631L');
+  it2.splits = [{ d:'2026-10-07', ratio:2 }];
+  A.state.dailyHistory.find(x => x.d === '2026-10-06').pnl = 7;
+  A.maybeDailySnapshot();
+  must(h('2026-10-06').pnl === 7, '分割之前的日子不能重算');
+  // 已經對了就不再改、不再存
+  it2.splits = [];
+  A.maybeDailySnapshot();
+  const n = A.diagLoad().length;
+  must(A.maybeDailySnapshot() === false && A.diagLoad().length === n, '已經重算過就不該再改');
+}
+
 if (bugs.length){
   console.log('\n發現 ' + bugs.length + ' 個問題:');
   bugs.forEach(b => console.log('  ✗ ' + b));

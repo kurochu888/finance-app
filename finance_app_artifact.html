@@ -761,8 +761,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-13 · 459b43b212';
-const BUILD_HASH = '459b43b212';
+const BUILD_VERSION = '2026-10-13 · 34459db198';
+const BUILD_HASH = '34459db198';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2690,12 +2690,61 @@ function computeStress(d){
 /* 每日快照:每天第一次開啟(或按更新報價)記一筆,同一天會更新到最新。
    保留最近 1000 個交易日,約四年;更久以前看每月快照。 */
 const DAILY_KEEP = 1000;
+/* 過去某一天收盤時的部位市值、借款、整體損益(用那天的收盤價跟那天以前的買賣/動用重算)。
+   有持股的標的那天沒有收盤價(休市、價格歷史沒有)、或那天在分割之前(舊買賣紀錄不一定換算過)就回傳 null。 */
+function dailyAt(d){
+  const lots = {};
+  let realized = 0, any = false;
+  sortedTrades().filter(t => t.date <= d).forEach(t => {
+    any = true;
+    const lot = lots[t.symbol] || (lots[t.symbol] = { shares:0, cost:0 });
+    if (t.action === 'dividend') realized += t.amount - t.fee;
+    else if (t.action === 'sell'){
+      const avg = lot.shares > 0 ? lot.cost / lot.shares : 0, qty = Math.min(t.shares, lot.shares);
+      realized += (qty * t.price - t.fee) - avg * qty;
+      lot.shares -= qty; lot.cost -= avg * qty;
+    }else{ lot.shares += t.shares; lot.cost += t.shares * t.price + t.fee; }
+  });
+  if (!any) return null;
+  let pv = 0, cost = 0;
+  for (const sym of Object.keys(lots)){
+    if (!(lots[sym].shares > 0)){ cost += lots[sym].cost; continue; }
+    const it = findInstrument(sym), h = it && (it.priceHistory || []).find(x => x.d === d);
+    if (!h || (it.splits || []).some(sp => sp.d > d)) return null;
+    pv += lots[sym].shares * h.c; cost += lots[sym].cost;
+  }
+  const L = state.leverage;
+  const interest = sum(L.draws, t => accrue(t, L, d));
+  const loan = sum(L.draws, t => balanceAt(t, d)) + pendingLoanFunding(d);
+  return { pv: finNum(Math.round(pv)), loan: finNum(Math.round(loan)), pnl: finNum(Math.round(pv - cost + realized - interest)) };
+}
+/* 過去的每日紀錄照收盤價重算(2026-10-13):每日紀錄是「那天最後一次打開 app 時」的數字,盤中打開、收盤後沒再開,
+   記的就是盤中價;資料被舊分頁蓋掉的那段時間記的是舊資料算的,還原備份後 10/12 那一點跟使用者前一天看到的不一樣。
+   只動最近 DAILY_REPAIR_DAYS 天、今天以前、算得出來的;eq 沒有畫面在用,不動。回傳有沒有改。 */
+const DAILY_REPAIR_DAYS = 14;
+function repairDailyHistory(){
+  const today = todayISO(), from = new Date(today + 'T00:00:00');
+  from.setDate(from.getDate() - DAILY_REPAIR_DAYS);
+  const cut = from.getFullYear() + '-' + pad2(from.getMonth() + 1) + '-' + pad2(from.getDate());
+  let changed = 0;
+  state.dailyHistory.forEach(h => {
+    if (!(h.d < today && h.d >= cut) || h.pnl === null) return;
+    const r = dailyAt(h.d);
+    if (!r || (r.pv === h.pv && r.loan === h.loan && r.pnl === h.pnl)) return;
+    diag('快照', `${h.d} 每日紀錄照收盤價重算:損益 ${$n(h.pnl)} → ${$n(r.pnl)}、市值 ${$n(h.pv)} → ${$n(r.pv)}、借款 ${$n(h.loan)} → ${$n(r.loan)}`);
+    Object.assign(h, r);
+    changed++;
+  });
+  if (changed) scheduleSave();
+  return changed > 0;
+}
 function maybeDailySnapshot(){
+  const fixed = repairDailyHistory();
   const p = computePosition();
   const r = computeLeverage();
   const pv = p.hasData ? p.marketValue : r.totalValue;
-  if (!pv && !r.usedAmount) return false;
   const today = todayISO();
+  if (!pv && !r.usedAmount) return fixed;
   const rec = {
     d: today,
     pv: finNum(Math.round(pv)),            // 同 maybeSnapshot:跟 normalize() 一樣夾範圍
@@ -2706,10 +2755,10 @@ function maybeDailySnapshot(){
   const list = state.dailyHistory;
   // 已經有比今天還新的 = 手機時間被往回調了(同 maybeSnapshot):照寫的話會在最後面接一筆較早的日期,
   // 同一天可能變兩筆,走勢圖重複畫
-  if (list.some(h => h.d > today)) return false;
+  if (list.some(h => h.d > today)) return fixed;
   const last = list.length ? list[list.length - 1] : null;
   if (last && last.d === today){
-    if (last.pv === rec.pv && last.loan === rec.loan && last.eq === rec.eq && last.pnl === rec.pnl) return false;
+    if (last.pv === rec.pv && last.loan === rec.loan && last.eq === rec.eq && last.pnl === rec.pnl) return fixed;
     Object.assign(last, rec);
   }else{
     list.push(rec);
