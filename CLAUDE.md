@@ -114,6 +114,11 @@ id 沿用舊值以確保重複呼叫不會飄動。
 用那個月的 items 重算 `v`(資產 − 負債,跟 `netWorth()` 同算法)、標 `auto:false`;本月的不給改(跟著目前金額自動更新)。
 欄位 key 是 `ih-<快照 id>.<細項 id>`(id 只有英數、`_`、`-`,所以用 `.` 分隔);清空欄位那一下不算。
 
+**每日紀錄 `state.dailyHistory[]` `{d, pv, loan, eq, pnl}`** 是「那天最後一次打開 app」時的數字。`repairDailyHistory()`(`maybeDailySnapshot()` 開頭跑)
+把最近 `DAILY_REPAIR_DAYS`(14)天、今天以前的照 `dailyAt(d)` 重算:那天的收盤價 × 那天以前的買賣、`balanceAt()` + `pendingLoanFunding(d)`、
+利息算到那天(2026-10-13:資料被舊分頁蓋掉時記的、還原備份後是盤前數字,損益走勢圖 10/12 那點跟前一天看到的不一樣;盤中打開、收盤後沒再開也會這樣)。
+有持股的標的那天沒收盤價、或在分割之前就不動;`eq` 沒畫面在用,不重算。`tests/extras.js`。
+
 **`backtestFullHistory`(2026-09 新增,均線策略回測)**——刻意放在 `state` 之外的模組級變數,
 存在自己的 `localStorage` key(`financeBacktestHistory_v2`,內容是 `{hist, splits, listedFrom}`),
 不是 `state.instruments[].priceHistory` 的一部分。原因:回測要看 2015 年至今的完整歷史(~2500 筆/檔),`priceHistory` 只留 4 年
