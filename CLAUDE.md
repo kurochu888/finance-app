@@ -88,7 +88,13 @@ id 沿用舊值以確保重複呼叫不會飄動。
 
 **房貸還款(2026-10 使用者要的)**——理財型每月最低還本:`leverage.autoRepay/repayPermille/repayPosted`,`maybeAutoRepay()`
 每月繳款日(`leverage.payDay` 號,預設 1,沒有那天用月底,`levDueDate()`;理財型利息也記在這天、還沒到不記,金額 `levPeriodInterest()` = 上次繳款日到這次繳款日逐日計息,日息 = 年利率 ÷ 365)在每筆動用的 `repayments` 記「當時餘額 × ‰」,id 是 `autorepayYYYYMM`(固定 id,兩台同時補記合併是同一筆;不能有「-」,
-`rp-` 欄位 key 用「-」切)。額度是循環的,只減餘額不動 `creditLimit`。改繳款日走 `applyPayDay()`(change 才套用),本月已記的自動還本/利息搬到新日期。一般型房貸放在負債細項的 `liabilities[].loan`
+`rp-` 欄位 key 用「-」切)。額度是循環的,只減餘額不動 `creditLimit`。
+**繳款日以前動用的都還本**(2026-10-19 使用者回報:5 筆動用都在 10 月、最晚 10/12,銀行 10/17 那期照樣扣 259 萬 × 5‰ = 12,950;
+以前是「動用當月不還」,`leverage.repayRule` 1 → 2 的遷移在 `maybeAutoRepay()` 開頭,把本月拿掉重做,有刪除紀錄的不補)。
+**遇假日順延**:`levPayDate()` = 繳款日遇週末/休市日(`marketClosed(d, true)`)往後到營業日(10/17 週六 → 10/19 扣)。
+利息照樣算到 `levDueDate()`(銀行扣的 1,532 = app 算到 10/17 的),下一期也從那天起算;自動還本、利息記在 `levPayDate()`。
+利息 id 照 `levDueDate()`(兩台一台不知道休市日 id 還是一樣),「哪個月的利息」用 `autoInterestMonth()` 從 id 讀,
+還本「本月自己還過」不看自動那筆(`isAutoRepay()`)——順延到下個月初的自動那筆日期在下個月。改繳款日走 `applyPayDay()`(change 才套用),本月已記的自動還本/利息搬到新日期。一般型房貸放在負債細項的 `liabilities[].loan`
 (`{principal, start, years, annualRate, rateHistory, autoInterest, interestPosted}`,沒設是 `null`——新版一定寫出這個 key,
 `keepFieldsOldVersionsDrop()` 靠「沒有 key = 舊版寫的」補回),`amortize()` 每期用當時餘額、剩餘期數、當時利率重算月付,
 `syncLoanLiabilities()` 把負債金額設成剩餘本金,`postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`;理財型利息 id `levi-YYYYMMDD`(繳款日,兩台同時記合併成一筆)。

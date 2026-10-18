@@ -437,6 +437,8 @@ const DEFAULT_LEVERAGE = {
   // 利息也在同一天記。
   // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
   autoRepay:true, repayPermille:5, repayPosted:[], payDay:1, payDayFrom:null,
+  // 還本規則版本:2 = 繳款日以前動用的都還本(1 = 舊版「動用當月不還」,見 maybeAutoRepay 開頭的遷移)
+  repayRule:2,
   // 房貸買進自動新增動用時金額往上湊整到幾元(0 = 不湊、1000、10000)。自己先轉整數到交割戶的人用(2026-10 使用者要的),
   // 多借的那一點下次房貸買進先扣(unusedLoanCash)
   drawRound:0,
@@ -690,6 +692,7 @@ function normalize(raw){
   base.payDayFrom = L.payDayFrom && typeof L.payDayFrom === 'object' && isoDate(str(L.payDayFrom.m) + '-01', '') && isoDate(L.payDayFrom.d, '')
     ? { m: str(L.payDayFrom.m), d: isoDate(L.payDayFrom.d, '') } : null;
   base.repayPosted = arr(L.repayPosted).map(str).filter(m => isoDate(m + '-01', ''));
+  base.repayRule = L.repayRule === 2 ? 2 : 1;
   base.quoteDate = str(L.quoteDate);
   {
     // num() 把缺值/NaN 都收斂成 0,單獨用 finiteNum 沒辦法分辨「欄位不存在」跟「真的填了 0」——
@@ -761,8 +764,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-13 · 34459db198';
-const BUILD_HASH = '34459db198';
+const BUILD_VERSION = '2026-10-19 · 68acaf5660';
+const BUILD_HASH = '68acaf5660';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1177,9 +1180,11 @@ function mergeLocalEdits(local, next, baseStr = syncBase){
    兩筆 id 不同、都是「新增的」,三方合併兩筆都會留,同一個月的利息記兩次(壓測抓到)。
    雲端已經有那個月的自動利息時,本機剛新增(基準裡也沒有)的同月自動利息丟掉,以雲端那筆為準。 */
 const AUTO_INTEREST_DESC = '槓桿借款利息(自動記入)';
+// 自動利息是哪個月的那一期:看 id 裡原本的繳款日(levi-YYYYMMDD)。不看日期:遇假日順延到下個月初的話,日期是下個月
+const autoInterestMonth = t => { const g = /^levi-(\d{4})(\d{2})\d{2}$/.exec(String(t.id)); return g ? g[1] + '-' + g[2] : t.date.slice(0, 7); };
 function dropDuplicateAutoInterest(merged, remote, base){
   const isAuto = t => t && t.desc === AUTO_INTEREST_DESC && typeof t.date === 'string';
-  dropLocalCopies(merged, remote, base, 'transactions', t => isAuto(t) ? t.date.slice(0, 7) : null);
+  dropLocalCopies(merged, remote, base, 'transactions', t => isAuto(t) ? autoInterestMonth(t) : null);
   // 每月快照同一個道理:兩台換月後各自建當月那筆(id 不同),合併後同一個月兩筆
   dropLocalCopies(merged, remote, base, 'netWorthHistory', h => h && typeof h.m === 'string' ? h.m : null);
 }
@@ -1281,6 +1286,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
     next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
+    restored = true;
+  }
+  // 還本規則版本同理(不補的話每次被舊版寫回來都會再跑一次遷移;遷移本身可重複,只是多做事)
+  if (rawL && !('repayRule' in rawL) && prev.leverage && prev.leverage.repayRule === 2){
+    next.leverage.repayRule = 2;
     restored = true;
   }
   // 接刀只用自有資金(2026-10 加):舊版分頁的 normalize 只留 byLayer/hold,寫回來會把模式跟自有資金比例、金額丟掉
@@ -2904,19 +2914,19 @@ function monthLoanDues(){
   const out = [], m = thisMonth();
   const r = computeLeverage(), li = Math.round(levPeriodInterest(m));
   if (r.usedAmount > 0 || li > 0){            // 期中全部還清的話,繳款日照樣要付這期的利息
-    const mp = leverageMonthPrincipal(), L = state.leverage, due = levDueDate(m), md = x => x.slice(5).replace('-', '/');
-    const passed = due <= todayISO();
+    const mp = leverageMonthPrincipal(), L = state.leverage, due = levDueDate(m), pay = levPayDate(m), md = x => x.slice(5).replace('-', '/');
+    const passed = pay <= todayISO(), payTxt = pay === due ? md(due) : `${md(due)} 遇假日順延,${md(pay)}`;
     // 理財型的本金跟利息各列一行算式(2026-10 使用者問「千分之 5 怎麼列」:以前只寫「本金 1,750 + 利息 648」,看不出怎麼來的)
     const lines = [];
     if (mp.amount > 0 || mp.base > 0) lines.push(!mp.manual && mp.base > 0
       ? `最低還本 ${fmt(mp.amount)} = 餘額 ${fmt(mp.base)} × 千分之 ${L.repayPermille}`
       : `最低還本 ${fmt(mp.amount)}(每筆餘額 × 千分之 ${L.repayPermille},本月自己還過的照實際)`);
-    if (mp.newDraws) lines.push(`本月才動用的 ${mp.newDraws} 筆下個月起才還本`);
+    if (mp.newDraws) lines.push(`繳款日以後才動用的 ${mp.newDraws} 筆下個月起才還本`);
     lines.push(`利息 ${fmt(li)} = ${md(levPeriodFrom(m))}~${md(due)} 逐日計息(年利率 ${rateAt(L, due)}%)`);
     lines.push(passed
-      ? (mp.estimate ? `${md(due)} 已扣款;還本還沒記${L.autoRepay ? '' : '(自動還本關著,要自己到「紀錄」記一筆還款)'}` : `${md(due)} 已扣款`)
-      : `${md(due)} 扣款${mp.estimate ? '(還本照目前餘額估,繳款日自動記)' : ''}`);
-    out.push({ name: '理財型房貸(槓桿)', date: due, principal: mp.amount, interest: li, lines });
+      ? (mp.estimate ? `${payTxt} 已扣款;還本還沒記${L.autoRepay ? '' : '(自動還本關著,要自己到「紀錄」記一筆還款)'}` : `${payTxt} 已扣款`)
+      : `${payTxt} 扣款${mp.estimate ? '(還本照目前餘額估,扣款日自動記)' : ''}`);
+    out.push({ name: '理財型房貸(槓桿)', date: pay, principal: mp.amount, interest: li, lines });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
@@ -3766,7 +3776,9 @@ function renderHelp(){
       <p><strong>每月最低還本</strong>:理財型房貸每月要還一部分本金。「設定」分頁「借款與利息」填千分之幾(預設 5),
       每月繳款日(跟利息同一天)會在每筆動用底下自動記一筆還款 = 那天的剩餘餘額 × 千分之幾(所以金額逐月遞減),標「自動」。
       繳款日填 31 號、那個月沒有 31 號就記在月底;改繳款日時本月已經記的那幾筆會一起搬到新日期。
-      動用當月不還、下個月起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
+      繳款日以前動用的都要還(同一個月才動用的也算,銀行照繳款日的餘額扣),繳款日以後才動用的下個月起;
+      繳款日遇到週末或證交所休市日,銀行順延到下一個營業日扣款,還本跟利息都記在實際扣款那天,
+      利息照樣算到原本的繳款日、下一期也從那天算起;那個月已經自己記過還款就不另外記;刪掉自動那筆不會補回;沒開 app 的月份下次打開補記。
       還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動額度上限。還本不算支出、不進記帳,
       但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月最低還本 + 這期利息;月中自己多還的不算在要繳裡。</p>
       <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「本利攤還 ▸」,填原始貸款金額、
@@ -6015,7 +6027,7 @@ function maybePostInterest(){
 
 /* 理財型房貸每月最低還本:每月繳款日(payDay 號)對每筆動用記一筆「當時剩餘餘額 × repayPermille ‰」的還款。
    - 繳款日還沒到不記(那個月不標成已處理,過了繳款日再打開才記)
-   - 動用當月不還(動用日要在那個月 1 日之前),下個月起
+   - 繳款日以前動用的都還(包括同一個月才動用的;2026-10 以前是「動用當月不還」,跟銀行對不上)
    - 那個月已經有還款(自己記的)就不另外記
    - 處理過的月份記在 repayPosted(包括使用者刪掉自動那筆的月份),不會重複、也不會補回被刪的
    - 跟利息一樣,第一次只從本月開始,不回頭補更早的;中間沒開 app 的月份會補
@@ -6027,24 +6039,35 @@ function levDueDate(m, day = state.leverage.payDay){
   const last = Number(monthEndISO(m).slice(8, 10));
   return m + '-' + pad2(Math.min(Math.max(1, Math.round(day) || 1), last));
 }
+/* 實際扣款日:繳款日遇到週末、休市日順延到下一個營業日(2026-10 使用者回報:10/17 週六,銀行 10/19 才扣)。
+   休市日用證交所的清單(「僅辦理結算交割」那天銀行有上班,照常扣);不知道那年的休市日就只跳週末。
+   利息照樣算到原本的繳款日(銀行 10/19 扣的 1,532 跟 app 算到 10/17 的一樣),下一期也從原本的繳款日算起;
+   只有自動記的還本、利息記在實際扣款那天,網路銀行的餘額也是那天才變 */
+function levPayDate(m, day = state.leverage.payDay){
+  const d = new Date(levDueDate(m, day) + 'T00:00:00');
+  const s = () => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  for (let guard = 0; marketClosed(s(), true) && guard < 30; guard++) d.setDate(d.getDate() + 1);
+  return s();
+}
+const isAutoRepay = r => String(r.id).startsWith(AUTO_REPAY_PREFIX);
 /* 改繳款日:本月已經自動記的還本跟利息(記在舊繳款日的)搬到新的繳款日;過去月份不動 */
 function applyPayDay(value){
   const L = state.leverage;
   if (String(value).trim() === '') return;
   const nd = Math.min(31, Math.max(1, Math.round(num(value)) || 1));
   if (nd === L.payDay) return;
-  const m = thisMonth(), oldDue = levDueDate(m), newDue = levDueDate(m, nd), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+  const m = thisMonth(), oldDue = levDueDate(m), oldPay = levPayDate(m), newPay = levPayDate(m, nd), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
   // 上一期算到舊的上月繳款日為止(本月已經記的那筆也是從那天算起),本月改成從那天算到新繳款日。
   // 同一個月改兩次,照第一次改之前的
   if (!(L.payDayFrom && L.payDayFrom.m === m)) L.payDayFrom = { m, d: levDueDate(shiftMonth(m, -1)) };
   L.payDay = nd;
-  L.draws.forEach(d => (d.repayments || []).forEach(r => { if (r.id === rid) r.date = newDue; }));
+  L.draws.forEach(d => (d.repayments || []).forEach(r => { if (r.id === rid) r.date = newPay; }));
   // 搬到還沒到的日子的利息,postLeverageInterest() 會拿掉、到了繳款日再記(記帳裡不留還沒發生的支出)。
   // 自動還本只搬日期:id 照月份固定,刪掉會留刪除紀錄、到時候補不回來;未來日期的還款本來就不算進餘額
   state.transactions.forEach(t => {
-    if (t.desc !== AUTO_INTEREST_DESC || t.date !== oldDue) return;
-    t.date = newDue;
-    if (newDue <= todayISO()) t.amount = num(-Math.round(levPeriodInterest(m)));   // 期間變了,金額跟著重算
+    if (t.desc !== AUTO_INTEREST_DESC || (t.date !== oldPay && t.date !== oldDue)) return;
+    t.date = newPay;
+    if (newPay <= todayISO()) t.amount = num(-Math.round(levPeriodInterest(m)));   // 期間變了,金額跟著重算
   });
   maybePostInterest();
   scheduleSave();
@@ -6053,20 +6076,30 @@ function maybeAutoRepay(){
   const L = state.leverage;
   if (!L.autoRepay || !(L.repayPermille > 0)) return false;
   const cur = thisMonth(), posted = L.repayPosted;
-  const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
-  const first = last && last < cur ? shiftMonth(last, 1) : cur;
   const today = todayISO();
   let changed = false;
+  // 舊規則「動用當月不還」:2026-10 使用者 5 筆動用都在 10 月(最晚 10/12),銀行 10/17 那期照樣扣了 259 萬 × 千分之 5。
+  // 本月繳款日已經過了、照舊規則標成處理過的,拿掉重做一次(已經記的、使用者刪掉的照舊不補)
+  if (L.repayRule !== 2){
+    if (posted.includes(cur) && levPayDate(cur) <= today) posted.splice(posted.indexOf(cur), 1);
+    L.repayRule = 2;
+    changed = true;
+  }
+  const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
+  const first = last && last < cur ? shiftMonth(last, 1) : cur;
   // 第一次用、本月繳款日還沒到:上個月標成已處理,下次打開(就算跨月了)才知道要從本月開始記
-  if (!posted.length && levDueDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
+  if (!posted.length && levPayDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
-    const day = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
+    const due = levDueDate(m), day = levPayDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
     if (day > today) break;
     L.draws.forEach(d => {
-      if (!d.useDate || d.useDate >= m + '-01') return;
-      if ((d.repayments || []).some(r => r.id === rid || (r.date && r.date.slice(0, 7) === m))) return;
-      const bal = balanceAt(d, day);
+      // 繳款日以前動用的都要還(同一個月動用的也是);餘額照繳款日那天
+      if (!d.useDate || d.useDate >= due) return;
+      // 自己記過還款的月份不另外記。扣款日順延到下個月的話,上個月的自動那筆日期會落在這個月,不算
+      if ((d.repayments || []).some(r => r.id === rid || (!isAutoRepay(r) && r.date && r.date.slice(0, 7) === m))) return;
+      if (isDeleted('draws/' + mergeKey(d) + '/repayments|' + mergeKey({ id: rid }))) return;
+      const bal = balanceAt(d, due);
       const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
       if (!(amt > 0)) return;
       d.repayments.push({ id: rid, date: day, amount: amt });
@@ -6089,9 +6122,9 @@ function levPeriodFrom(m){
 /* 設定頁「下一期利息」:還沒到的最近一個繳款日要扣的利息,照目前餘額逐日算(跟總覽「房貸要繳」同一套)。
    2026-10 以前是「餘額 × 年利率 ÷ 12」,跟總覽的逐日計息對不起來(758 vs 919) */
 function nextLevInterest(){
-  const m0 = thisMonth(), m = levDueDate(m0) > todayISO() ? m0 : shiftMonth(m0, 1), due = levDueDate(m);
+  const m0 = thisMonth(), m = levPayDate(m0) > todayISO() ? m0 : shiftMonth(m0, 1), pay = levPayDate(m), due = levDueDate(m), md = x => x.slice(5).replace('-', '/');
   // bank:網路銀行現在看到的(只算已經轉出的;預定動用還沒發生)。2026-10 使用者對過:銀行 1,260、app 1,532,差的就是 10/12 那兩筆預定
-  return { amount: Math.round(levPeriodInterest(m)), bank: Math.round(levPeriodInterest(m, true)), label: `下一期利息(${due.slice(5).replace('-', '/')} 扣)` };
+  return { amount: Math.round(levPeriodInterest(m)), bank: Math.round(levPeriodInterest(m, true)), label: `下一期利息(${pay === due ? md(pay) : md(due) + ' 遇假日順延 ' + md(pay)} 扣)` };
 }
 /* 預定動用(動用日在今天之後)還沒轉出的金額。剩餘可動用要先扣掉:那筆錢已經講好要用了,網路銀行要到那天才看得到 */
 function plannedDrawAmount(){
@@ -6119,20 +6152,21 @@ function levPeriodInterest(m, onlyDrawn = false){
 /* 本月理財型要繳多少本金(最低還本),每筆動用照 maybeAutoRepay 的規則:
    - 本月已經自動記了 → 那筆的金額
    - 本月自己還過(自動就不另外記)→ 最低還本跟自己還的取小的:月中自己把整筆還清,不能顯示成「本月要繳 100 萬」
-   - 都還沒有 → 動用當月不還;否則預估繳款日那天的餘額 × ‰ */
+   - 都還沒有 → 繳款日以後才動用的不還(下個月);否則預估繳款日那天的餘額 × ‰ */
 /* 本月最低還本。base = 拿來乘千分之幾的餘額合計(總覽列「餘額 × 千分之 5」用);manual = 有一筆是自己記的還款,
-   算式對不上就不列;newDraws = 本月才動用、下個月起才還的筆數 */
+   算式對不上就不列;newDraws = 本月繳款日以後才動用、下個月起才還的筆數 */
 function leverageMonthPrincipal(){
   const L = state.leverage, m = thisMonth(), due = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
   let amount = 0, estimate = false, base = 0, manual = false, newDraws = 0;
   L.draws.forEach(d => {
-    const rs = (d.repayments || []).filter(r => r.date && r.date.slice(0, 7) === m);
-    const auto = rs.find(r => r.id === rid);
-    if (auto){ amount += auto.amount; base += balanceAt(d, due) + auto.amount; return; }   // 自動那筆是用扣之前的餘額算的
+    const rs = (d.repayments || []).filter(r => !isAutoRepay(r) && r.date && r.date.slice(0, 7) === m);
+    const auto = (d.repayments || []).find(r => r.id === rid);
+    if (auto){ amount += auto.amount; base += balanceAt(d, auto.date) + auto.amount; return; }   // 自動那筆是用扣之前的餘額算的
     if (!d.useDate) return;
-    if (d.useDate >= m + '-01'){ if (d.useDate <= due && d.amount > 0) newDraws++; return; }
+    if (d.useDate >= due){ if (d.useDate.slice(0, 7) === m && d.amount > 0) newDraws++; return; }
     if (rs.length){
-      const min = Math.round(balanceAt(d, monthEndISO(shiftMonth(m, -1))) * L.repayPermille / 1000);
+      // 最低還本照「自己還之前」的餘額:繳款日的餘額加回本月繳款日以前自己還的
+      const min = Math.round((balanceAt(d, due) + sum(rs.filter(r => r.date <= due), r => r.amount)) * L.repayPermille / 1000);
       amount += Math.min(min, sum(rs, r => r.amount));
       manual = true;
       return;
@@ -6241,7 +6275,7 @@ function postLeverageInterest(){
   const today0 = todayISO(), future = state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC && t.date > today0);
   let redo = '';
   if (future.length){
-    const ms = new Set(future.map(t => t.date.slice(0, 7)));
+    const ms = new Set(future.map(autoInterestMonth));
     state.transactions = state.transactions.filter(t => !future.includes(t));
     redo = [...ms].sort()[0];
     L.interestPosted = L.interestPosted.filter(x => !ms.has(x));
@@ -6262,21 +6296,22 @@ function postLeverageInterest(){
   const first = last && last < cur ? shiftMonth(last, 1) : cur;
   const today = todayISO();
   // 第一次用、本月繳款日還沒到:上個月標成已處理,下次打開(就算跨月了)才知道要從本月開始記
-  if (!posted.length && levDueDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
+  if (!posted.length && levPayDate(cur) > today){ posted.push(shiftMonth(cur, -1)); changed = true; }
   for (let m = first, guard = 0; m <= cur && guard < 240; m = shiftMonth(m, 1), guard++){
     if (posted.includes(m)) continue;
-    const due = levDueDate(m);
-    if (due > today) break;
+    const due = levDueDate(m), pay = levPayDate(m);   // 利息算到繳款日,記在實際扣款日(遇假日順延)
+    if (pay > today) break;
     const amt = levPeriodInterest(m);
     if (!(amt > 0)) continue;
     // id 照繳款日固定:兩台裝置同一天各自記,合併時是同一筆(以前用 uid() 會變兩筆)。
-    // 帶日期不只月份:改繳款日時舊的那筆被拿掉、新日期重記,只用月份的話會被刪除紀錄擋掉
+    // 帶日期不只月份:改繳款日時舊的那筆被拿掉、新日期重記,只用月份的話會被刪除紀錄擋掉。
+    // 用原本的繳款日不用扣款日:一台知道休市日、一台不知道(還沒抓到清單)時,id 還是同一個
     const id = 'levi-' + due.replace(/-/g, '');
     if (state.transactions.some(t => t.id === id)){ posted.push(m); changed = true; continue; }
     noteAutoPosted('transactions', { id });
     state.transactions.push({
       id,
-      date: due,
+      date: pay,
       cat: '房貸利息',
       desc: AUTO_INTEREST_DESC,
       amount: num(-Math.round(amt))   // num():夾在 ±1 兆,跟存檔再讀回來一樣
@@ -6465,7 +6500,7 @@ function healthCheck(){
   if (L.autoInterest) holes(L.interestPosted, '理財型自動利息');
   state.liabilities.forEach(l => { if (loanReady(l) && l.loan.autoInterest) holes(l.loan.interestPosted, `「${l.name}」自動利息`); });
   const autoByMonth = {};
-  state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC).forEach(t => { const m = t.date.slice(0, 7); autoByMonth[m] = (autoByMonth[m] || 0) + 1; });
+  state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC).forEach(t => { const m = autoInterestMonth(t); autoByMonth[m] = (autoByMonth[m] || 0) + 1; });
   Object.keys(autoByMonth).filter(m => autoByMonth[m] > 1).forEach(m => warn(`${m} 理財型自動利息記了 ${autoByMonth[m]} 筆`));
   // 買賣紀錄
   const sq = soldQtyById();

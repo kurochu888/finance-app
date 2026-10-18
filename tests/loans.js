@@ -28,7 +28,7 @@ eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
   applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, nextLevInterest, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; },
-  loanBankRecon, loanPay, todoItems, healthCheck, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
+  loanBankRecon, loanPay, todoItems, healthCheck, levPayDate, get tombs(){ return tombs; }, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -157,7 +157,7 @@ console.log('理財型:每月繳款日自動還本(預設 1 號,剩餘餘額 × 
   const rp = d => L.draws.find(x => x.id === d).repayments;
   must(rp('d1').length === 1 && rp('d1')[0].id === 'autorepay202610' && rp('d1')[0].date === '2026-10-01' && rp('d1')[0].amount === 5000,
     '第一筆應該記 10/01 還 5,000:' + JSON.stringify(rp('d1')));
-  must(rp('d2').length === 0, '本月才動用的不應該還本');
+  must(rp('d2').length === 0, '繳款日以後才動用的不應該還本');
   must(rp('d3').length === 1, '本月已經自己記過還款的不應該再記');
   must(!rp('d1')[0].id.includes('-'), '自動還款 id 不能有「-」(rp- 欄位用「-」切)');
   // 第一次只記本月,不回頭補 7~9 月
@@ -172,7 +172,7 @@ console.log('理財型:每月繳款日自動還本(預設 1 號,剩餘餘額 × 
   setNow('2026-12-20');
   A.maybePostInterest();
   const amts = rp('d1').map(r => r.date + ':' + r.amount).join(' ');
-  must(amts === '2026-10-01:5000 2026-11-01:4975 2026-12-01:4950', '補記金額應該照餘額遞減:' + amts);
+  must(amts === '2026-10-01:5000 2026-11-02:4975 2026-12-01:4950', '補記金額應該照餘額遞減(11/01 週日順延到 11/02):' + amts);
   must(rp('d2').map(r => r.amount).join() === '2500,2488', '11 月起才還:' + rp('d2').map(r => r.amount).join());
   // 刪掉自動那筆不補回
   L.draws[0].repayments = L.draws[0].repayments.filter(r => r.date !== '2026-12-01');
@@ -191,7 +191,7 @@ console.log('理財型:每月繳款日自動還本(預設 1 號,剩餘餘額 × 
   field('lev-repayPermille', 99999);
   must(L.repayPermille === 1000, '千分比最多 1000');
   // 還本算進 XIRR 的自有資金流出
-  must(A.cashFlows(false).some(f => f.date === '2026-11-01' && f.amount < 0), '還本要算成自有資金流出');
+  must(A.cashFlows(false).some(f => f.date === '2026-11-02' && f.amount < 0), '還本要算成自有資金流出');
   A.levTab = 'setup';
   must(A.renderLeverage().includes('本月要繳'), '槓桿頁「設定」要顯示本月要繳');
 }
@@ -225,7 +225,7 @@ console.log('理財型:繳款日不是 1 號');
   A.maybePostInterest();
   must(/^2026-10-15:\d+$/.test(intr()), '到了繳款日重新記:' + intr());
   A.applyPayDay('10');   // 改到已經過了的日子:本月那兩筆直接搬過去
-  must(rp()[0].date === '2026-10-10' && /^2026-10-10:\d+$/.test(intr()), '改到已過的日子要直接搬:' + JSON.stringify(rp()) + ' ' + intr());
+  must(rp()[0].date === '2026-10-12' && /^2026-10-12:\d+$/.test(intr()), '改到已過的日子要直接搬(10/10 週六,順延到 10/12):' + JSON.stringify(rp()) + ' ' + intr());
   A.applyPayDay('15');
   A.applyPayDay('');   // 清空那一下不算
   must(L.payDay === 15, '清空欄位不應該改繳款日');
@@ -234,21 +234,25 @@ console.log('理財型:繳款日不是 1 號');
   A.maybePostInterest();
   must(rp().length === 1 && !L.repayPosted.includes('2026-11') && !L.interestPosted.includes('2026-11'), '繳款日還沒到不應該記:' + JSON.stringify(rp()));
   const lastLine = () => A.monthLoanDues()[0].lines.slice(-1)[0];
-  must(lastLine().startsWith('11/15 扣款'), '總覽要寫幾號扣款:' + lastLine());
+  must(lastLine().startsWith('11/15 遇假日順延,11/16 扣款'), '總覽要寫幾號扣款(11/15 週日):' + lastLine());
   must(A.monthLoanDues()[0].lines[0] === '最低還本 4,975 = 餘額 995,000 × 千分之 5', '還沒記的時候照目前餘額估:' + A.monthLoanDues()[0].lines[0]);
   must(A.monthLoanDues()[0].lines.some(t => t.startsWith('利息 ') && t.includes('10/15~11/15')), '利息要寫期間:' + A.monthLoanDues()[0].lines.join(' / '));
   setNow('2026-11-15');
   A.maybePostInterest();
-  must(rp().map(r => r.date + ':' + r.amount).join(' ') === '2026-10-15:5000 2026-11-15:4975', '11/15 應該記:' + JSON.stringify(rp()));
-  must(intr().split(' ').length === 2 && intr().split(' ')[1].startsWith('2026-11-15:'), '利息也記在 11/15:' + intr());
-  must(lastLine() === '11/15 已扣款', '過了繳款日要寫已扣款:' + lastLine());
+  must(rp().length === 1 && !L.interestPosted.includes('2026-11'), '11/15 週日,銀行 11/16 才扣,今天還不能記:' + JSON.stringify(rp()));
+  setNow('2026-11-16');
+  A.maybePostInterest();
+  must(rp().map(r => r.date + ':' + r.amount).join(' ') === '2026-10-15:5000 2026-11-16:4975', '11/16 應該記:' + JSON.stringify(rp()));
+  must(intr().split(' ').length === 2 && intr().split(' ')[1].startsWith('2026-11-16:'), '利息也記在 11/16:' + intr());
+  must(lastLine() === '11/15 遇假日順延,11/16 已扣款', '過了扣款日要寫已扣款:' + lastLine());
   must(A.monthLoanDues()[0].lines[0] === '最低還本 4,975 = 餘額 995,000 × 千分之 5', '記了之後算式一樣(用扣之前的餘額):' + A.monthLoanDues()[0].lines[0]);
   // 31 號:沒有 31 號的月份用月底;中間沒開 app 照樣補
   A.applyPayDay('31');
   must(rp()[1].date === '2026-11-30', '11 月沒有 31 號,搬到 11/30:' + rp()[1].date);
   setNow('2027-03-05');
   A.maybePostInterest();
-  must(rp().map(r => r.date).join() === '2026-10-15,2026-11-30,2026-12-31,2027-01-31,2027-02-28', '補記照每月月底:' + rp().map(r => r.date).join());
+  // 2027-01-31、02-28 都是週日:順延到 02-01、03-01(1 月那筆落在 2 月,不能被當成 2 月自己還過)
+  must(rp().map(r => r.date).join() === '2026-10-15,2026-11-30,2026-12-31,2027-02-01,2027-03-01', '補記照每月月底:' + rp().map(r => r.date).join());
   must(A.levDueDate('2028-02') === '2028-02-29', '閏年 2 月底');
   // 舊版分頁(認得還本、不認得繳款日)寫回來,繳款日要保留
   const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
@@ -281,10 +285,10 @@ console.log('理財型利息:上次繳款日到這次繳款日逐日計息(年�
   setNow('2026-11-08');
   A.state.leverage.annualRate = 2.6;
   A.onField('lev-annualRate', { value: '3' });
-  setNow('2026-11-15');
+  setNow('2026-11-16');   // 11/15 週日,11/16 扣;利息照樣算到 11/15
   A.maybePostInterest();
   const exp = Math.round(1000000 * 0.026 * 21 / 365 + 800000 * 0.026 * 3 / 365 + 800000 * 0.03 * 7 / 365);
-  must(intr()[1] === '2026-11-15:' + exp, '中途還款、升息要照日期分段:' + intr()[1] + ' 應該 ' + exp);
+  must(intr()[1] === '2026-11-16:' + exp, '中途還款、升息要照日期分段:' + intr()[1] + ' 應該 ' + exp);
   // 總覽的本月利息 = 本期逐日利息
   must(A.monthLoanDues()[0].interest === exp, '總覽本月利息:' + A.monthLoanDues()[0].interest + ' 應該 ' + exp);
   // 下一期還沒到:預估照目前餘額、目前利率 31 天
@@ -326,8 +330,8 @@ console.log('繳款日的邊界:第一次用在繳款日前、拿掉未來利息
   setNow('2026-10-06'); A.state = A.normalize(base()); A.maybePostInterest();
   setNow('2026-11-20'); A.maybePostInterest();
   const dates = x => x.map(t => t.date).sort().join();
-  must(dates(A.state.transactions) === '2026-10-15,2026-11-15', '第一次用在繳款日前,10 月利息不能漏:' + dates(A.state.transactions));
-  must(dates(A.state.leverage.draws[0].repayments) === '2026-10-15,2026-11-15', '10 月還本不能漏:' + dates(A.state.leverage.draws[0].repayments));
+  must(dates(A.state.transactions) === '2026-10-15,2026-11-16', '第一次用在繳款日前,10 月利息不能漏:' + dates(A.state.transactions));
+  must(dates(A.state.leverage.draws[0].repayments) === '2026-10-15,2026-11-16', '10 月還本不能漏:' + dates(A.state.leverage.draws[0].repayments));
   // 8、9 月使用者刪掉了,10 月那筆在未來日期:拿掉之後到 10/15 只記 10 月,8、9 月不補
   setNow('2026-10-06');
   const s = base({ autoRepay: false, interestPosted: ['2026-07', '2026-10'] });
@@ -381,7 +385,7 @@ console.log('一般型:第一次設定在本月繳款日前,下次跨月才打�
   must(d === '2026-10-20,2026-11-20', '10/20 那期不能漏:' + d);
 }
 
-console.log('本月還本預估:動用當月的不算');
+console.log('本月還本預估:繳款日以前動用的都算(包括本月才動用的)');
 {
   setNow('2026-10-06');
   const s = A.emptyState(); s.leverage.payDay = 15;
@@ -389,9 +393,13 @@ console.log('本月還本預估:動用當月的不算');
                       { id: 'd2', label: 'y', amount: 2000000, useDate: '2026-10-03', note: '', repayments: [] }];
   A.state = A.normalize(s); A.maybePostInterest();
   const mp = A.leverageMonthPrincipal();
-  must(mp.estimate && mp.amount === 5000, '10/15 只有 6 月那筆要還 5,000,10/03 動用的下個月才還:' + JSON.stringify(mp));
+  // 2026-10 使用者回報:5 筆動用都在 10 月(最晚 10/12),銀行 10/17 照樣扣了 259 萬 × 千分之 5
+  must(mp.estimate && mp.amount === 15000, '10/15 要還 6 月那筆 5,000 + 10/03 那筆 10,000:' + JSON.stringify(mp));
   setNow('2026-10-15'); A.maybePostInterest();
-  must(A.leverageMonthPrincipal().amount === 5000 && !A.leverageMonthPrincipal().estimate, '記了之後跟預估一樣');
+  must(A.leverageMonthPrincipal().amount === 15000 && !A.leverageMonthPrincipal().estimate, '記了之後跟預估一樣:' + JSON.stringify(A.leverageMonthPrincipal()));
+  A.state.leverage.draws.push({ id: 'd3', label: 'z', amount: 500000, useDate: '2026-10-20', note: '', repayments: [] });
+  setNow('2026-10-21');
+  must(A.leverageMonthPrincipal().newDraws === 1 && A.leverageMonthPrincipal().amount === 15000, '繳款日以後才動用的下個月才還:' + JSON.stringify(A.leverageMonthPrincipal()));
 }
 
 console.log('本月要繳本金:月中自己還清不能顯示成要繳整筆');
@@ -611,6 +619,70 @@ console.log('過去利率的結束日改成跟另一段同一天:不收(不然�
   must(lh.length === 2 && lh[1].until === '2024-01-01', '一般型撞日的也不收:' + JSON.stringify(lh));
   must(JSON.stringify(A.normalize(JSON.parse(JSON.stringify(A.state))).liabilities[0].loan.rateHistory) === JSON.stringify(lh), '一般型重新整理前後要一樣');
   must(A.renderAssets().includes('這一天已經有另一段了'), '資產頁的房貸設定要提示');
+}
+
+console.log('使用者 2026-10 實例:5 筆動用都在 10 月,10/17(週六)那期銀行 10/19 扣本金 12,950 + 利息 1,532');
+{
+  const mk = () => { const s = A.emptyState();
+    Object.assign(s.leverage, { payDay: 17, annualRate: 2.58, creditLimit: 8000000, rateHistory: [] });
+    s.leverage.draws = [
+      { id: 'w1', label: 'a', amount: 200000, useDate: '2026-10-05', note: '', repayments: [] },
+      { id: 'w2', label: 'b', amount: 1200000, useDate: '2026-10-07', note: '', repayments: [] },
+      { id: 'w3', label: 'c', amount: 420000, useDate: '2026-10-08', note: '', repayments: [] },
+      { id: 'w4', label: 'd', amount: 400000, useDate: '2026-10-12', note: '', repayments: [] },
+      { id: 'w5', label: 'e', amount: 370000, useDate: '2026-10-12', note: '', repayments: [] }];
+    return s; };
+  const total = st => st.leverage.draws.reduce((a, d) => a + d.repayments.reduce((b, r) => b + r.amount, 0), 0);
+  must(A.levPayDate('2026-10', 17) === '2026-10-19', '10/17 週六應該順延到 10/19:' + A.levPayDate('2026-10', 17));
+  // 10/16 打開:還沒到,總覽寫順延後的日子、本金照 259 萬估
+  setNow('2026-10-16');
+  A.state = A.normalize(mk()); A.maybePostInterest();
+  const due = A.monthLoanDues()[0];
+  must(due.date === '2026-10-19' && due.principal === 12950, '10/16 看:10/19 扣、本金 12,950:' + JSON.stringify(due));
+  must(due.lines.slice(-1)[0].startsWith('10/17 遇假日順延,10/19 扣款'), '要寫順延:' + due.lines.slice(-1)[0]);
+  setNow('2026-10-18');
+  A.maybePostInterest();
+  must(total(A.state) === 0 && !A.state.transactions.length, '10/18 週日還沒扣,不能先記');
+  setNow('2026-10-19');
+  A.maybePostInterest();
+  must(total(A.state) === 12950, '10/19 記本金 12,950:' + total(A.state));
+  must(A.state.leverage.draws.every(d => d.repayments.every(r => r.date === '2026-10-19')), '還本記在 10/19(銀行餘額那天才變)');
+  const it = A.state.transactions.filter(t => t.cat === '房貸利息');
+  must(it.length === 1 && it[0].date === '2026-10-19' && it[0].id === 'levi-20261017', '利息記在 10/19、id 照原本的繳款日:' + JSON.stringify(it));
+  must(A.monthLoanDues()[0].lines.slice(-1)[0] === '10/17 遇假日順延,10/19 已扣款', '扣了之後:' + A.monthLoanDues()[0].lines.slice(-1)[0]);
+  must(A.computeLeverage().usedAmount === 2590000 - 12950, '餘額扣掉還本');
+  // 下一期從原本的繳款日 10/17 算起
+  must(A.monthLoanDues()[0].lines.some(t => t.includes('09/17~10/17')), '本期利息算到 10/17:' + A.monthLoanDues()[0].lines.join(' / '));
+  setNow('2026-10-20');
+  must(A.nextLevInterest().label.includes('11/17'), '下一期 11/17:' + A.nextLevInterest().label);
+  must(!A.healthCheck().some(x => x.lv === 'warn' && /自動/.test(x.t)), '健康檢查不該報自動記帳有問題:' + JSON.stringify(A.healthCheck().filter(x => x.lv === 'warn')));
+
+  // 舊版(動用當月不還)已經把 10 月標成處理過、沒記還本:新版打開要補
+  setNow('2026-10-19');
+  const old = mk(); old.leverage.repayPosted = ['2026-10']; delete old.leverage.repayRule;
+  A.state = A.normalize(old);
+  must(A.state.leverage.repayRule === 1, '舊資料沒有 repayRule 應該是 1');
+  A.maybePostInterest();
+  must(total(A.state) === 12950 && A.state.leverage.repayRule === 2 && A.state.leverage.repayPosted.join() === '2026-10', '舊規則漏記的 10 月要補:' + total(A.state) + ' ' + A.state.leverage.repayPosted.join());
+  A.maybePostInterest();
+  must(total(A.state) === 12950, '補過不重複');
+  // 舊版分頁寫回來丟掉 repayRule:補回;就算沒補回,再跑一次遷移也不會重複記
+  const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  const raw = JSON.parse(JSON.stringify(prev)); delete raw.leverage.repayRule;
+  const next = A.normalize(JSON.parse(JSON.stringify(raw)));
+  A.keepFieldsOldVersionsDrop(prev, raw, next);
+  must(next.leverage.repayRule === 2, '舊版寫回來要補回 repayRule');
+  A.state = A.normalize(JSON.parse(JSON.stringify(raw)));
+  A.maybePostInterest();
+  must(total(A.state) === 12950, '遷移重跑不重複記:' + total(A.state));
+  // 使用者刪掉的自動還本,遷移不補回
+  setNow('2026-10-19');
+  const old2 = mk(); old2.leverage.repayPosted = ['2026-10']; delete old2.leverage.repayRule;
+  A.state = A.normalize(old2);
+  A.tombs['draws/i:w2/repayments|i:autorepay202610'] = Date.now();
+  A.maybePostInterest();
+  must(total(A.state) === 12950 - 6000, '刪掉的那筆(w2)不補:' + total(A.state));
+  delete A.tombs['draws/i:w2/repayments|i:autorepay202610'];
 }
 
 if (bugs.length){
