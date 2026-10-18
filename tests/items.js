@@ -133,7 +133,8 @@ console.log('房貸利息自動記入:整個月沒開 app 的月份,下次打開
   simNow = new RealDate('2027-01-10T09:00:00').getTime(); A.maybePostInterest();
   const posted = A.state.leverage.interestPosted.slice().sort().join(',');
   must(posted === '2026-09,2026-10,2026-11,2026-12,2027-01', `中間沒開的月份要補記,得到 ${posted}`);
-  const amt = m => (A.state.transactions.find(t => t.date === m + '-01') || {}).amount;
+  // 用 id(原本的繳款日)找:2026-11-01 週日,記在 11/02
+  const amt = m => (A.state.transactions.find(t => t.id === 'levi-' + m.replace('-', '') + '01') || {}).amount;
   // 以日計息:10/01 那筆 = 9/01~10/01 30 天 100 萬;11/01 那筆 = 10/01~10/20 19 天 100 萬 + 10/20~11/01 12 天 50 萬
   const e10 = -Math.round(1000000 * 0.024 * 30 / 365), e11 = -Math.round((1000000 * 19 + 500000 * 12) * 0.024 / 365);
   must(amt('2026-10') === e10 && amt('2026-11') === e11, `10/20 還了 50 萬,10、11 月利息應該是 ${e10} / ${e11}:得到 ${amt('2026-10')} / ${amt('2026-11')}`);
@@ -149,7 +150,7 @@ console.log('房貸利息自動記入:整個月沒開 app 的月份,下次打開
   simNow = new RealDate('2027-05-04T09:00:00').getTime();
   A.onClick({ dataset: { act: 'toggle-autointerest' } });          // 2027-05 打開
   must(!['2027-03-01', '2027-04-01'].some(d => A.state.transactions.some(t => t.date === d)), '關掉期間(3、4 月)不該被補記');
-  must(A.state.transactions.some(t => t.date === '2027-05-01'), '重新打開的當月要記入');
+  must(A.state.transactions.some(t => t.id === 'levi-20270501'), '重新打開的當月要記入(5/01 週六,記在 5/03)');
   // 更早的歷史空檔也不回頭補(可能是刻意關掉的)
   const s5 = A.emptyState();
   s5.leverage.autoInterest = true; s5.leverage.annualRate = 2.4;

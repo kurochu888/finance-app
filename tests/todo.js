@@ -66,7 +66,8 @@ A.state.leverage.draws = [
   { id:'d3', label:'', amount:300000, useDate:'2026-11-30', note:'', repayments:[] }];
 A.state = A.normalize(A.state);
 const it2 = A.todoItems();
-must(it2.some(x => x.icon === '🏦' && /10\/10/.test(x.text) && /2 天後/.test(x.sub)), '10/10 繳款日要提醒:' + JSON.stringify(it2));
+// 10/10 週六,銀行 10/12 才扣
+must(it2.some(x => x.icon === '🏦' && /10\/12/.test(x.text) && /4 天後/.test(x.sub)), '10/10 繳款日(順延到 10/12)要提醒:' + JSON.stringify(it2));
 must(it2.filter(x => x.icon === '💳').length === 1 && it2.some(x => x.icon === '💳' && /10\/10/.test(x.text)), '一週內的預定動用才列:' + JSON.stringify(it2));
 // 動用日就是今天:撥款那天也要留在清單上(2026-10-12 使用者回報,以前當天就消失)
 A.state.leverage.draws.push({ id:'d4', label:'', amount:2590000, useDate:A.todayISO(), note:'', repayments:[] });
