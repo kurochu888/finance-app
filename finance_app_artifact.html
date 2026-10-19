@@ -765,8 +765,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-19 · c74683d62d';
-const BUILD_HASH = 'c74683d62d';
+const BUILD_VERSION = '2026-10-19 · 9817387882';
+const BUILD_HASH = '9817387882';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6316,15 +6316,24 @@ function postLeverageInterest(){
   }
   // 2026-10-06 以前的版本:打開 app 那個月就記一筆(id 是亂數、日期是 1 號、金額 = 當時餘額 × 年利率 ÷ 12),那個月標成處理過。
   // 使用者 10/05 第一次動用時被記了一筆 10/01 的,改成 17 號繳款之後,10/17 那期(1,532)就因為「10 月處理過了」一直沒記。
-  // 本月繳款日已經到了、本月只有這種舊版記的:拿掉(會記成刪除,另一台也跟著拿掉)、照繳款日重記。過去月份的不動
+  // 本月繳款日已經到了、本月只有這種舊版記的:拿掉(會記成刪除,另一台也跟著拿掉)、照繳款日重記。過去月份的不動。
+  // 本月標成處理過、記帳裡卻一筆都沒有的也重記(使用者 10 月就是這樣,10/01 那筆不知道什麼時候不見了,
+  // 可能是 10/13 舊分頁蓋掉雲端那次:記帳救回來的只有當時還在的,處理過的月份照雲端那份)。
+  // 只有照繳款日記的那筆被使用者刪掉(有刪除紀錄)才不補。本月的月份只會在記了利息時標成處理過
+  // (第一次用、重新打開開關標的都是之前的月份),所以本月處理過卻沒有利息一定是弄丟了
   {
-    const m = thisMonth(), isLevi = t => /^levi-/.test(String(t.id));
+    const m = thisMonth(), isLevi = t => /^levi-/.test(String(t.id)), lid = 'levi-' + levDueDate(m).replace(/-/g, '');
     const mine = state.transactions.filter(t => t.desc === AUTO_INTEREST_DESC && autoInterestMonth(t) === m);
     const legacy = mine.filter(t => !isLevi(t));
-    if (legacy.length && !mine.some(isLevi) && levPayDate(m) <= todayISO() && L.interestPosted.includes(m)){
+    // 刪除紀錄要等存檔才寫(recordTombs):這次打開才記、或上次存檔時還在的,現在沒有也是使用者剛刪掉
+    const tk = 'transactions|' + mergeKey({ id: lid });
+    const justDeleted = autoPostedKeys.has(tk) || !!(lastSavedObj && Array.isArray(lastSavedObj.transactions) && lastSavedObj.transactions.some(t => t && t.id === lid));
+    const lost = !mine.length && !isDeleted(tk) && !justDeleted && levPeriodInterest(m) > 0;
+    if ((legacy.length || lost) && !mine.some(isLevi) && levPayDate(m) <= todayISO() && L.interestPosted.includes(m)){
       state.transactions = state.transactions.filter(t => !legacy.includes(t));
       L.interestPosted = L.interestPosted.filter(x => x !== m);
-      diag('自動記帳', `${m} 拿掉舊版記的理財型利息 ${legacy.map(t => t.date + ' ' + $n(-t.amount)).join('、')},照繳款日重記`);
+      diag('自動記帳', legacy.length ? `${m} 拿掉舊版記的理財型利息 ${legacy.map(t => t.date + ' ' + $n(-t.amount)).join('、')},照繳款日重記`
+        : `${m} 理財型利息標成記過了、記帳裡卻沒有,照繳款日補記`);
       changed = true;
     }
   }

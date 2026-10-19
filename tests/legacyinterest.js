@@ -58,6 +58,8 @@ const bugs = [], must = (c, m) => { if (!c) bugs.push(m); };
   Object.assign(s.leverage, { payDay: 17, annualRate: 2.6, rateHistory: [], repayPosted: ['2026-10'], repayRule: 3, interestPosted: ['2026-10'], autoRepay: false });
   s.leverage.draws = [{ id: 'w1', label: 'a', amount: 2590000, useDate: '2026-10-07', note: '', repayments: [] }];
   s.transactions = [{ id: 'oldoct', date: '2026-10-01', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -430 }];
+  const ids = st => st.transactions.map(t => t.id).sort().join();
+  if (process.argv[2] !== 'boot'){
   const doc = JSON.parse(JSON.stringify(A.normalize(s))); doc._rev = 'r1';
   cloudDocs['state/finance'] = doc;
   A.state = A.normalize(JSON.parse(JSON.stringify(s)));
@@ -71,12 +73,28 @@ const bugs = [], must = (c, m) => { if (!c) bugs.push(m); };
   cloudDocs['state/finance'] = JSON.parse(JSON.stringify(other));
   A.applyRemote(other);
   await wait(2500);
-  const ids = st => st.transactions.map(t => t.id).sort().join();
   console.log('這台:', ids(A.state), '| 雲端:', ids(cloudDocs['state/finance']));
   for (const [who, st] of [['這台', A.state], ['雲端', cloudDocs['state/finance']]]){
     must(st.transactions.some(t => t.id === 'levi-20261017'), who + ':照繳款日記的 10/17 利息不見了(被當成同月重複丟掉)');
     must(!st.transactions.some(t => t.id === 'oldoct'), who + ':舊版 10/01 那筆還在');
     must(st.transactions.some(t => t.id === 'bf'), who + ':另一台記的早餐沒合併進來');
+  }
+  }
+  // node tests/legacyinterest.js boot(另開一個 process,剛打開的 app)。使用者實際的情況:雲端那份 10 月標成處理過、記帳裡沒有。開 app 時(還沒連上雲端)先補記,接著第一次同步雲端那份蓋過來:
+  // 同步之後要再補一次(不能因為「這次打開記過、現在沒有」就當成使用者刪掉的)
+  else {
+    fixed = new RealDate('2026-10-19T08:00:00').getTime();
+    const s2 = JSON.parse(JSON.stringify(s)); s2.transactions = [];
+    const d2 = JSON.parse(JSON.stringify(A.normalize(s2))); d2._rev = 'r9';
+    cloudDocs['state/finance'] = d2;
+    A.state = A.normalize(JSON.parse(JSON.stringify(s2)));
+    A.maybePostInterest();
+    must(A.state.transactions.some(t => t.id === 'levi-20261017'), '開 app 時要補記');
+    await A.connectCloud();
+    await wait(2500);
+    console.log('第一次同步之後:這台', ids(A.state), '| 雲端', ids(cloudDocs['state/finance']));
+    must(A.state.transactions.some(t => t.id === 'levi-20261017'), '第一次同步之後補記不見了');
+    must(cloudDocs['state/finance'].transactions.some(t => t.id === 'levi-20261017'), '補記沒有推上雲端');
   }
   if (bugs.length){ console.log('\n發現 ' + bugs.length + ' 個問題:'); bugs.forEach(b => console.log('  ✗ ' + b)); process.exitCode = 1; }
   else console.log('沒有發現問題');
