@@ -99,7 +99,10 @@ id 沿用舊值以確保重複呼叫不會飄動。
 還本「本月自己還過」不看自動那筆(`isAutoRepay()`)——順延到下個月初的自動那筆日期在下個月。改繳款日走 `applyPayDay()`(change 才套用),本月已記的自動還本/利息搬到新日期。一般型房貸放在負債細項的 `liabilities[].loan`
 (`{principal, start, years, annualRate, rateHistory, autoInterest, interestPosted}`,沒設是 `null`——新版一定寫出這個 key,
 `keepFieldsOldVersionsDrop()` 靠「沒有 key = 舊版寫的」補回),`amortize()` 每期用當時餘額、剩餘期數、當時利率重算月付,
-`syncLoanLiabilities()` 把負債金額設成剩餘本金,`postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`;理財型利息 id `levi-YYYYMMDD`(繳款日,兩台同時記合併成一筆)。
+`syncLoanLiabilities()` 把負債金額設成剩餘本金,
+`loan.payRound`(0 照公式 / 1 四捨五入到元 / 10 進位到 10 元,2026-10-19 使用者的安康房貸:公式 12,118.31、銀行 12,120)有設時
+利息每期四捨五入、本金 = 月付 − 利息、月付固定到升降息才重算(`amortize()`),對帳換個進位就對得上時 `roundHint()` 提示,
+`postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`;理財型利息 id `levi-YYYYMMDD`(繳款日,兩台同時記合併成一筆)。
 這幾個都從 `maybePostInterest()` 跑(還本 → 理財型利息 → 一般型)。一般型利率只在 change(離開欄位)才套用 `applyLoanRate()`,
 打字途中的「2 → 2.3」不能被當成升息記一段;`setCurrentRate()` 原本是 0 也不記。測試 `tests/loans.js`。
 這幾條是踩過才補的,改這塊時不要弄回去:
