@@ -28,7 +28,7 @@ eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
   applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, nextLevInterest, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; },
-  loanBankRecon, loanPay, todoItems, healthCheck, levPayDate, get tombs(){ return tombs; }, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
+  loanBankRecon, loanPay, todoItems, healthCheck, levPayDate, get tombs(){ return tombs; }, autoPostedKeys, set lastSavedObj(v){ lastSavedObj = v; }, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -689,6 +689,27 @@ console.log('2026-10-06 以前的版本在 10/01 記的理財型利息:本月繳
   const s2 = mk(); s2.transactions.push({ id: 'levi-20261017', date: '2026-10-19', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -999 });
   A.state = A.normalize(s2); A.maybePostInterest();
   must(A.state.transactions.some(t => t.id === 'oldoct') && A.state.transactions.find(t => t.id === 'levi-20261017').amount === -999, '已經有新版那筆就不動');
+  // 使用者 10 月的實際情況:標成處理過,記帳裡一筆都沒有(10/01 那筆不見了)→ 補記
+  const s3 = mk(); s3.transactions = s3.transactions.filter(t => t.id !== 'oldoct');
+  A.autoPostedKeys.clear(); A.lastSavedObj = null;   // 新打開的 app(前面幾段在同一個 session 記過、沒存檔)
+  setNow('2026-10-16'); A.state = A.normalize(s3); A.maybePostInterest();
+  must(auto() === 'oldsep@2026-09-01', '繳款日還沒到不補:' + auto());
+  setNow('2026-10-19'); A.maybePostInterest();
+  must(auto() === 'levi-20261017@2026-10-19 oldsep@2026-09-01' && A.state.transactions.find(t => t.id === 'levi-20261017').amount === -exp, '處理過卻沒有利息要補記:' + auto());
+  // 剛記、還沒存檔就被刪掉(刪除紀錄還沒寫):不補
+  A.state.transactions = A.state.transactions.filter(t => t.id !== 'levi-20261017');
+  A.maybePostInterest();
+  must(auto() === 'oldsep@2026-09-01', '剛刪掉、還沒存檔的不補:' + auto());
+  A.autoPostedKeys.clear();
+  // 使用者自己刪掉照繳款日記的那筆:不補
+  const s4 = mk(); s4.transactions = s4.transactions.filter(t => t.id !== 'oldoct');
+  A.state = A.normalize(s4);
+  A.tombs['transactions|i:levi-20261017'] = Date.now();
+  A.maybePostInterest();
+  must(auto() === 'oldsep@2026-09-01', '使用者刪掉的不補:' + auto());
+  delete A.tombs['transactions|i:levi-20261017'];
+  // 過去月份處理過卻沒有利息(第一次用時標的上個月):不補
+  must(!A.state.transactions.some(t => t.id === 'levi-20260917'), '過去月份不補');
 }
 
 console.log('使用者 2026-10 實例:5 筆動用都在 10 月,10/17(週六)那期銀行 10/19 扣本金 12,950 + 利息 1,532');
