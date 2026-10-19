@@ -90,7 +90,9 @@ id 沿用舊值以確保重複呼叫不會飄動。
 每月繳款日(`leverage.payDay` 號,預設 1,沒有那天用月底,`levDueDate()`;理財型利息也記在這天、還沒到不記,金額 `levPeriodInterest()` = 上次繳款日到這次繳款日逐日計息,日息 = 年利率 ÷ 365)在每筆動用的 `repayments` 記「當時餘額 × ‰」,id 是 `autorepayYYYYMM`(固定 id,兩台同時補記合併是同一筆;不能有「-」,
 `rp-` 欄位 key 用「-」切)。額度是循環的,只減餘額不動 `creditLimit`。
 **繳款日以前動用的都還本**(2026-10-19 使用者回報:5 筆動用都在 10 月、最晚 10/12,銀行 10/17 那期照樣扣 259 萬 × 5‰ = 12,950;
-以前是「動用當月不還」,`leverage.repayRule` 1 → 2 的遷移在 `maybeAutoRepay()` 開頭,把本月拿掉重做,有刪除紀錄的不補)。
+以前是「動用當月不還」,`leverage.repayRule` → 3 的遷移在 `maybeAutoRepay()` 開頭,把本月拿掉重做,有刪除紀錄的不補)。
+**遷移旗標不要進 `keepFieldsOldVersionsDrop()`**(版本 2 踩過):開 app 時還沒連上雲端就先跑了遷移,接著雲端那份(另一台舊版寫的)
+蓋過來,遷移做的事不見了,旗標卻從本機補回來 → 永遠不再做。旗標被舊版丟掉就讓遷移重跑,遷移本身要能重複。測試 `tests/repayrule.js`(`stuck` = 已經卡住的資料)。
 **遇假日順延**:`levPayDate()` = 繳款日遇週末/休市日(`marketClosed(d, true)`)往後到營業日(10/17 週六 → 10/19 扣)。
 利息照樣算到 `levDueDate()`(銀行扣的 1,532 = app 算到 10/17 的),下一期也從那天起算;自動還本、利息記在 `levPayDate()`。
 利息 id 照 `levDueDate()`(兩台一台不知道休市日 id 還是一樣),「哪個月的利息」用 `autoInterestMonth()` 從 id 讀,

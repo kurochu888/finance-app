@@ -471,8 +471,8 @@ const DEFAULT_LEVERAGE = {
   // 利息也在同一天記。
   // 還掉的本金額度會恢復(循環額度),所以只減借款餘額、不動 creditLimit。
   autoRepay:true, repayPermille:5, repayPosted:[], payDay:1, payDayFrom:null,
-  // 還本規則版本:2 = 繳款日以前動用的都還本(1 = 舊版「動用當月不還」,見 maybeAutoRepay 開頭的遷移)
-  repayRule:2,
+  // 還本規則版本(見 maybeAutoRepay 開頭的遷移):1 = 舊版「動用當月不還」;2、3 = 繳款日以前動用的都還本
+  repayRule:3,
   // 房貸買進自動新增動用時金額往上湊整到幾元(0 = 不湊、1000、10000)。自己先轉整數到交割戶的人用(2026-10 使用者要的),
   // 多借的那一點下次房貸買進先扣(unusedLoanCash)
   drawRound:0,
@@ -726,7 +726,7 @@ function normalize(raw){
   base.payDayFrom = L.payDayFrom && typeof L.payDayFrom === 'object' && isoDate(str(L.payDayFrom.m) + '-01', '') && isoDate(L.payDayFrom.d, '')
     ? { m: str(L.payDayFrom.m), d: isoDate(L.payDayFrom.d, '') } : null;
   base.repayPosted = arr(L.repayPosted).map(str).filter(m => isoDate(m + '-01', ''));
-  base.repayRule = L.repayRule === 2 ? 2 : 1;
+  base.repayRule = [2, 3].includes(L.repayRule) ? L.repayRule : 1;
   base.quoteDate = str(L.quoteDate);
   {
     // num() 把缺值/NaN 都收斂成 0,單獨用 finiteNum 沒辦法分辨「欄位不存在」跟「真的填了 0」——
@@ -798,8 +798,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-19 · 68acaf5660';
-const BUILD_HASH = '68acaf5660';
+const BUILD_VERSION = '2026-10-19 · a579c72d49';
+const BUILD_HASH = 'a579c72d49';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1320,11 +1320,6 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (rawL && ('repayPosted' in rawL) && !('payDay' in rawL) && prev.leverage && prev.leverage.payDay !== undefined){
     next.leverage.payDay = prev.leverage.payDay;
     next.leverage.payDayFrom = prev.leverage.payDayFrom || null;
-    restored = true;
-  }
-  // 還本規則版本同理(不補的話每次被舊版寫回來都會再跑一次遷移;遷移本身可重複,只是多做事)
-  if (rawL && !('repayRule' in rawL) && prev.leverage && prev.leverage.repayRule === 2){
-    next.leverage.repayRule = 2;
     restored = true;
   }
   // 接刀只用自有資金(2026-10 加):舊版分頁的 normalize 只留 byLayer/hold,寫回來會把模式跟自有資金比例、金額丟掉
@@ -6111,12 +6106,17 @@ function maybeAutoRepay(){
   if (!L.autoRepay || !(L.repayPermille > 0)) return false;
   const cur = thisMonth(), posted = L.repayPosted;
   const today = todayISO();
-  let changed = false;
+  let changed = false, redoMonth = '';
   // 舊規則「動用當月不還」:2026-10 使用者 5 筆動用都在 10 月(最晚 10/12),銀行 10/17 那期照樣扣了 259 萬 × 千分之 5。
-  // 本月繳款日已經過了、照舊規則標成處理過的,拿掉重做一次(已經記的、使用者刪掉的照舊不補)
-  if (L.repayRule !== 2){
-    if (posted.includes(cur) && levPayDate(cur) <= today) posted.splice(posted.indexOf(cur), 1);
-    L.repayRule = 2;
+  // 本月繳款日已經過了、照舊規則標成處理過的,拿掉重做一次(已經記的不重複;使用者刪掉的不補)。
+  // 版本 2 那次:開 app 時(還沒連上雲端)先補記了,接著雲端那份(另一台舊版寫的,沒有補記、沒有 repayRule)蓋過來,
+  // 補記不見了,repayRule 卻被 keepFieldsOldVersionsDrop() 從本機補回來,就再也不補(2026-10-19 使用者的診斷報告)。
+  // 所以 repayRule 不進 keepFieldsOldVersionsDrop(),被舊版寫回來就再跑一次,反正可以重複;版本 3 讓已經卡住的資料再跑一次,
+  // 那次被蓋掉的補記可能已經被記成刪除,版本 3 之前的那次不看刪除紀錄(使用者在那幾分鐘裡刪掉的機會很小)
+  if (L.repayRule !== 3){
+    const ignoreTombs = L.repayRule === 2;
+    if (posted.includes(cur) && levPayDate(cur) <= today){ posted.splice(posted.indexOf(cur), 1); redoMonth = ignoreTombs ? cur : ''; }
+    L.repayRule = 3;
     changed = true;
   }
   const last = posted.length ? posted.slice().sort()[posted.length - 1] : '';
@@ -6132,7 +6132,7 @@ function maybeAutoRepay(){
       if (!d.useDate || d.useDate >= due) return;
       // 自己記過還款的月份不另外記。扣款日順延到下個月的話,上個月的自動那筆日期會落在這個月,不算
       if ((d.repayments || []).some(r => r.id === rid || (!isAutoRepay(r) && r.date && r.date.slice(0, 7) === m))) return;
-      if (isDeleted('draws/' + mergeKey(d) + '/repayments|' + mergeKey({ id: rid }))) return;
+      if (m !== redoMonth && isDeleted('draws/' + mergeKey(d) + '/repayments|' + mergeKey({ id: rid }))) return;
       const bal = balanceAt(d, due);
       const amt = Math.min(bal, Math.round(bal * L.repayPermille / 1000));
       if (!(amt > 0)) return;

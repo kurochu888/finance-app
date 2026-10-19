@@ -663,15 +663,15 @@ console.log('使用者 2026-10 實例:5 筆動用都在 10 月,10/17(週六)那�
   A.state = A.normalize(old);
   must(A.state.leverage.repayRule === 1, '舊資料沒有 repayRule 應該是 1');
   A.maybePostInterest();
-  must(total(A.state) === 12950 && A.state.leverage.repayRule === 2 && A.state.leverage.repayPosted.join() === '2026-10', '舊規則漏記的 10 月要補:' + total(A.state) + ' ' + A.state.leverage.repayPosted.join());
+  must(total(A.state) === 12950 && A.state.leverage.repayRule === 3 && A.state.leverage.repayPosted.join() === '2026-10', '舊規則漏記的 10 月要補:' + total(A.state) + ' ' + A.state.leverage.repayPosted.join());
   A.maybePostInterest();
   must(total(A.state) === 12950, '補過不重複');
-  // 舊版分頁寫回來丟掉 repayRule:補回;就算沒補回,再跑一次遷移也不會重複記
+  // 舊版分頁寫回來丟掉 repayRule:不補回(補回的話,遷移做的事被雲端蓋掉時就再也不做,見 tests/repayrule.js),再跑一次遷移不重複記
   const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
   const raw = JSON.parse(JSON.stringify(prev)); delete raw.leverage.repayRule;
   const next = A.normalize(JSON.parse(JSON.stringify(raw)));
   A.keepFieldsOldVersionsDrop(prev, raw, next);
-  must(next.leverage.repayRule === 2, '舊版寫回來要補回 repayRule');
+  must(next.leverage.repayRule === 1, 'repayRule 不能從本機補回:' + next.leverage.repayRule);
   A.state = A.normalize(JSON.parse(JSON.stringify(raw)));
   A.maybePostInterest();
   must(total(A.state) === 12950, '遷移重跑不重複記:' + total(A.state));
