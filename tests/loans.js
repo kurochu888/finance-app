@@ -621,6 +621,48 @@ console.log('過去利率的結束日改成跟另一段同一天:不收(不然�
   must(A.renderAssets().includes('這一天已經有另一段了'), '資產頁的房貸設定要提示');
 }
 
+console.log('一般型月付進位(使用者 2026-10-19 安康房貸:銀行月付 12,120 = 公式 12,118.31 進位到 10 元)');
+{
+  setNow('2026-10-19');
+  const s = A.emptyState(); s.leverage.autoRepay = false;
+  s.liabilities = [{ id: 'ak', name: '安康房貸', amount: 0, loan: { principal: 3000000, start: '2026-09-17', years: 28, annualRate: 2.3, rateHistory: [], autoInterest: true, interestPosted: [] } }];
+  A.state = A.normalize(s);
+  const l = A.state.liabilities[0];
+  must(l.loan.payRound === 0, '預設不進位');
+  must(Math.round(A.amortize(l.loan).balance) === 2993632, '不進位:2,993,632');
+  // 使用者填銀行的數字:對不上,而且要提示改進位
+  A.onField('lbc-balance-ak', { value: '2993630' });
+  A.onField('lbc-payment-ak', { value: '12120' });
+  let rc = A.loanBankRecon(l);
+  must(!rc.ok && rc.balance.hints.some(h => h.includes('進位到 10 元')), '要提示月付進位到 10 元:' + JSON.stringify(rc.balance));
+  A.onClick({ dataset: { act: 'loan-payround', id: 'ak', v: '10' } });
+  const rows = A.amortize(l.loan, '2026-11-30').rows;
+  must(rows[0].payment === 12120 && rows[0].interest === 5750 && rows[0].principal === 6370 && rows[0].balance === 2993630, '10/17 那期:12,120 = 利息 5,750 + 本金 6,370:' + JSON.stringify(rows[0]));
+  must(rows[1].payment === 12120 && rows[1].interest === 5738 && rows[1].principal === 6382, '11/17 那期:利息 5,738、本金 6,382(使用者在網路銀行看到的):' + JSON.stringify(rows[1]));
+  const nx = A.nextLoanPayment(l.loan);
+  must(nx.payment === 12120 && nx.interest === 5738, '下一期 12,120:' + JSON.stringify(nx));
+  rc = A.loanBankRecon(l);
+  must(rc.ok, '改成進位到 10 元之後要對得上:' + JSON.stringify(rc));
+  must(l.amount === 2993630, '負債金額跟著變:' + l.amount);
+  // 月付固定到最後一期,最後一期還清
+  const all = A.amortize(l.loan, '9999-12-31');
+  must(all.rows.length === 336 && all.balance === 0, '336 期繳完歸零:' + all.rows.length + ' ' + all.balance);
+  must(all.rows.slice(0, -1).every(r => r.payment === 12120), '升降息之前每期都是 12,120');
+  // 升息:月付照剩餘本金重算、再進位
+  setNow('2027-01-05');
+  A.onField('lo-rate-ak', { value: '2.5' });
+  A.applyLoanRate('ak', '2.5');
+  // 1/17 那期利息是 12/17~1/17 的,照舊利率;2/17 起照新利率
+  const after = A.amortize(l.loan, '2027-06-30').rows.filter(r => r.date > '2027-01-31');
+  must(after.length && after.every(r => r.payment % 10 === 0 && r.payment > 12120 && r.payment === after[0].payment), '升息後月付重算、還是 10 元整:' + after.map(r => r.payment).join());
+  // 舊版分頁寫回來丟掉 payRound:補回
+  const prev = A.normalize(JSON.parse(JSON.stringify(A.state)));
+  const raw = JSON.parse(JSON.stringify(prev)); delete raw.liabilities[0].loan.payRound;
+  const next = A.normalize(JSON.parse(JSON.stringify(raw)));
+  A.keepFieldsOldVersionsDrop(prev, raw, next);
+  must(next.liabilities[0].loan.payRound === 10, '舊版寫回來要補回 payRound');
+}
+
 console.log('使用者 2026-10 實例:5 筆動用都在 10 月,10/17(週六)那期銀行 10/19 扣本金 12,950 + 利息 1,532');
 {
   const mk = () => { const s = A.emptyState();

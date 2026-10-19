@@ -525,7 +525,8 @@ function normalizeLoan(v){
     rateHistory: normalizeRateHistory(v.rateHistory),
     autoInterest: v.autoInterest !== false,
     interestPosted: (Array.isArray(v.interestPosted) ? v.interestPosted : []).filter(m => typeof m === 'string' && isoDate(m + '-01', '')),
-    bankCheck: normalizeLoanBankCheck(v.bankCheck)
+    bankCheck: normalizeLoanBankCheck(v.bankCheck),
+    payRound: [1, 10].includes(Number(v.payRound)) ? Number(v.payRound) : 0   // 月付怎麼進位,見 amortize()
   };
 }
 /* 一般型房貸跟銀行對帳(2026-10):銀行顯示的剩餘本金、本期應繳;appPayment = 填的當下 app 算的下一期月付。見 loanBankRecon() */
@@ -1327,6 +1328,10 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
     // 對帳(2026-10 加):認得 loan、不認得 bankCheck 的版本寫回來會丟掉
     else if (r && r.loan && typeof r.loan === 'object' && !('bankCheck' in r.loan) && l.loan && p && p.loan && p.loan.bankCheck && p.loan.bankCheck.date){
       l.loan.bankCheck = JSON.parse(JSON.stringify(p.loan.bankCheck)); restored = true;
+    }
+    // 月付進位(2026-10-19 加)同理
+    if (r && r.loan && typeof r.loan === 'object' && !('payRound' in r.loan) && l.loan && p && p.loan && p.loan.payRound){
+      l.loan.payRound = p.loan.payRound; restored = true;
     }
   });
   const rawInst = new Map((Array.isArray(raw.instruments) ? raw.instruments : []).filter(x => x).map(x => [String(x.key || ''), x]));
@@ -3278,6 +3283,8 @@ function renderLoanBox(l){
       <div class="field"><label>年限(年)</label><input type="number" inputmode="decimal" data-k="lo-years-${l.id}" value="${lo.years || ''}"></div>
       <div class="field"><label>目前年利率(%)</label><input type="number" inputmode="decimal" step="0.01" data-k="lo-rate-${l.id}" value="${lo.annualRate || ''}"></div>
     </div>
+    <div class="field"><label>月付進位(照銀行的扣款金額)</label><div class="seg">${[0, 10, 1].map(v =>
+      `<button class="seg-btn ${(lo.payRound || 0) === v ? 'on' : ''}" data-act="loan-payround" data-id="${l.id}" data-v="${v}">${PAY_ROUND_LABEL[v]}</button>`).join('')}</div></div>
     ${lo.rateHistory.length ? `
     <div class="muted" style="margin-top:2px;">過去的利率(那段期間的每期月付照當時的利率算):</div>
     ${lo.rateHistory.map((e, i) => `
@@ -3778,7 +3785,8 @@ function renderHelp(){
       但報酬率(XIRR)把它算成自有資金流出。「本月要繳」= 本月最低還本 + 這期利息;月中自己多還的不算在要繳裡。</p>
       <p><strong>一般型房貸(本利攤還)</strong>:「資產」分頁的負債項目點「本利攤還 ▸」,填原始貸款金額、
       撥款日、年限、目前年利率,這一項的金額就自動等於剩餘本金(之後每月同一天繳一期,沒有那天就是月底)。
-      每期月付 = 餘額 × r ÷ (1 − (1 + r)<sup>−剩餘期數</sup>),r = 年利率 ÷ 12;升降息時改「目前年利率」(離開欄位才生效),
+      每期月付 = 餘額 × r ÷ (1 − (1 + r)<sup>−剩餘期數</sup>),r = 年利率 ÷ 12。銀行扣的月付是整數的話,「月付進位」選跟銀行一樣的
+      (四捨五入到元、進位到 10 元):利息每期四捨五入到元、本金 = 月付 − 利息,月付固定到下次升降息才重算;跟銀行對帳時差額剛好是進位造成的會提示。升降息時改「目前年利率」(離開欄位才生效),
       今天以前照舊利率,之後用剩餘本金、剩餘期數、新利率重算月付。每期利息在扣款日自動記一筆「房貸利息」
       (可以關掉;第一次只從本月開始,不回頭補撥款以來的),還本只減負債。總覽會列「本月房貸要繳」。</p>
     </div>
@@ -6190,17 +6198,32 @@ function addMonthsISO(iso, k){
 /* 本利攤還(等額本息):每期月付 = 餘額 × r ÷ (1 − (1+r)^−剩餘期數),r = 那一期開始時的年利率 ÷ 12。
    每期都用「當時餘額、剩餘期數、當時利率」重算,所以升降息之後月付會跟著變(銀行的做法),利率沒變時每期一樣。
    回傳到 until(含)為止繳過的每一期跟繳完的餘額;還沒撥款(start 在 until 之後)餘額是 0。 */
+/* payRound(2026-10-19 使用者的安康房貸):銀行的月付不是公式算出來的小數。0 = 照公式(不進位);
+   1 = 月付四捨五入到元;10 = 月付進位到 10 元(安康:公式 12,118.31 → 銀行 12,120)。有進位時跟銀行一樣:
+   利息每期四捨五入到元、本金 = 月付 − 利息,月付固定到下次升降息才重算(不然本金多還的會讓月付慢慢往下跳一格),最後一期還清剩下的 */
 function amortize(loan, until = todayISO()){
   const N = Math.round((loan && loan.years || 0) * 12);
   const out = { rows: [], balance: 0, N };
   if (!loan || !loan.start || !(loan.principal > 0) || !(N > 0) || loan.start > until) return out;
-  let B = loan.principal;
+  let B = loan.principal, fixedPay = null, fixedRate = null;
+  const step = loan.payRound || 0;
   for (let k = 1; k <= N; k++){
     const date = addMonthsISO(loan.start, k);
     if (date > until) break;
     const r = rateAt(loan, addMonthsISO(loan.start, k - 1)) / 1200, n = N - k + 1;
-    const pay = r > 0 ? B * r / (1 - Math.pow(1 + r, -n)) : B / n;
-    const interest = B * r, principal = Math.min(B, pay - interest);
+    let pay, interest, principal;
+    if (step){
+      if (fixedPay === null || r !== fixedRate){
+        const exact = loanPay(B, n, r);
+        fixedPay = step === 10 ? Math.ceil(exact / 10 - 1e-9) * 10 : Math.round(exact);
+        fixedRate = r;
+      }
+      interest = Math.round(B * r);
+      principal = k === N ? B : Math.min(B, Math.max(0, fixedPay - interest));
+    } else {
+      pay = loanPay(B, n, r);
+      interest = B * r; principal = Math.min(B, pay - interest);
+    }
     B = Math.max(0, B - principal);
     out.rows.push({ k, date, payment: interest + principal, interest, principal, balance: B });
   }
@@ -6214,6 +6237,10 @@ function nextLoanPayment(loan){
   if (!loan || !loan.start || !(a.N > 0) || k > a.N || !(loan.principal > 0)) return null;
   const B = loan.start > todayISO() ? loan.principal : a.balance;
   if (!(B > 0)) return null;
+  if (loan.payRound){   // 有進位時月付固定(見 amortize),照排程拿下一期
+    const row = amortize(loan, '9999-12-31').rows[k - 1];
+    if (row) return { k, N: a.N, date: row.date, payment: row.payment, interest: row.interest, principal: row.principal, balance: B };
+  }
   const r = rateAt(loan, todayISO()) / 1200, n = a.N - k + 1;
   const pay = r > 0 ? B * r / (1 - Math.pow(1 + r, -n)) : B / n;
   return { k, N: a.N, date: addMonthsISO(loan.start, k), payment: pay, interest: B * r, principal: pay - B * r, balance: B };
@@ -6403,9 +6430,12 @@ function loanBankRecon(l){
     const app = Math.round(lo.start > B.date ? lo.principal : amortize(lo, B.date).balance);
     const diff = Math.round(B.balance - app), hints = [];
     if (Math.abs(diff) > 1){
+      const alt = roundHint(lo, x => Math.abs(B.balance - Math.round(lo.start > B.date ? lo.principal : amortize(x, B.date).balance)) <= 1);
+      if (alt) hints.push(alt);
       const rows = amortize(lo, '9999-12-31').rows, near = (a, b) => Math.abs(a - b) <= Math.max(2, Math.abs(b) * 0.002);
       const last = rows.filter(r => r.date <= B.date).pop(), next = rows.find(r => r.date > B.date);
-      if (last && near(diff, last.principal)) hints.push(`差額剛好是 ${last.date} 那期的本金 ${$n(last.principal)}:銀行還沒扣那期,扣款日可能比撥款日(${lo.start.slice(8)} 號)晚幾天,過幾天再對一次`);
+      if (alt){}
+      else if (last && near(diff, last.principal)) hints.push(`差額剛好是 ${last.date} 那期的本金 ${$n(last.principal)}:銀行還沒扣那期,扣款日可能比撥款日(${lo.start.slice(8)} 號)晚幾天,過幾天再對一次`);
       else if (next && near(-diff, next.principal)) hints.push(`差額剛好是 ${next.date} 那期的本金 ${$n(next.principal)}:銀行已經扣了,扣款日比撥款日早,把撥款日改成扣款那天`);
       else hints.push(diff > 0 ? `銀行多 ${$n(diff)}:撥款日、年限、利率(過去各段)跟銀行一樣嗎?有沒有寬限期(只繳息)?`
                                : `銀行少 ${$n(-diff)}:有提前還款嗎?app 不會記提前還款,改「原始貸款金額」或撥款日讓剩餘本金對上`);
@@ -6415,7 +6445,9 @@ function loanBankRecon(l){
   }
   if (B.payment != null && B.appPayment != null){
     const diff = Math.round(B.payment - B.appPayment), hints = [];
-    if (Math.abs(diff) > 2){
+    const alt = diff ? roundHint(lo, x => { const nx = nextLoanPayment(x); return !!nx && Math.round(nx.payment) === B.payment; }) : '';
+    if (alt){ hints.push(alt); out.ok = false; }
+    else if (Math.abs(diff) > 2){
       const nx = nextLoanPayment(lo);
       if (nx && nx.balance > 0){
         const n = nx.N - nx.k + 1;
@@ -6431,6 +6463,12 @@ function loanBankRecon(l){
     out.payment = { bank: B.payment, app: B.appPayment, diff, hints };
   }
   return out;
+}
+/* 換一種月付進位方式就對得上的話,提示改「月付進位」(安康房貸:銀行 12,120 = 公式 12,118.31 進位到 10 元) */
+const PAY_ROUND_LABEL = { 0: '照公式(不進位)', 1: '四捨五入到元', 10: '進位到 10 元' };
+function roundHint(lo, fits){
+  const v = [10, 1, 0].find(v => v !== (lo.payRound || 0) && fits({ ...lo, payRound: v }));
+  return v === undefined ? '' : `銀行的月付像是「${PAY_ROUND_LABEL[v]}」:房貸設定的「月付進位」選這個就對得上`;
 }
 function renderLoanBankRecon(l){
   const B = l.loan.bankCheck || {}, rc = loanBankRecon(l);
@@ -7411,6 +7449,17 @@ function onClick(el){
       const [lid, rid] = String(id).split('.');
       const l = findById(state.liabilities, lid);
       if (l && l.loan){ l.loan.rateHistory = l.loan.rateHistory.filter(e => e.id !== rid); syncLoanLiabilities(); }
+      break;
+    }
+    case 'loan-payround': {
+      const l = findById(state.liabilities, id), v = Number(el.dataset.v);
+      if (!l || !l.loan) break;
+      l.loan.payRound = [1, 10].includes(v) ? v : 0;
+      // 對帳記的「app 月付」是填的當下照舊設定算的,換了算法就照新的重算(不然改完還是顯示對不上)
+      const B = l.loan.bankCheck, nx = nextLoanPayment(l.loan);
+      if (B && B.appPayment != null) B.appPayment = nx ? num(Math.round(nx.payment)) : null;
+      syncLoanLiabilities();
+      scheduleSave();
       break;
     }
     case 'toggle-loan-interest': {
