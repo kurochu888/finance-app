@@ -31,6 +31,7 @@ echo "=== 房貸還款(理財型每月還本、一般型本利攤還) ==="
 node loans.js || fail=1
 node repayrule.js || fail=1
 node repayrule.js stuck || fail=1
+node legacyinterest.js || fail=1
 echo
 echo "=== 計算正確性(隨機 400 組:會計恆等式、XIRR 是真的解、同日買賣順序) ==="
 node semantic.js || fail=1

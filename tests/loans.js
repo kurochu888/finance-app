@@ -663,6 +663,34 @@ console.log('一般型月付進位(使用者 2026-10-19 安康房貸:銀行月�
   must(next.liabilities[0].loan.payRound === 10, '舊版寫回來要補回 payRound');
 }
 
+console.log('2026-10-06 以前的版本在 10/01 記的理財型利息:本月繳款日到了換成照繳款日算的(使用者 10 月少了 1,532)');
+{
+  const mk = () => { const s = A.emptyState();
+    Object.assign(s.leverage, { payDay: 17, annualRate: 2.6, rateHistory: [], repayPosted: ['2026-10'], repayRule: 3, interestPosted: ['2026-09', '2026-10'], autoRepay: false });
+    s.leverage.draws = [{ id: 'w1', label: 'a', amount: 200000, useDate: '2026-09-05', note: '', repayments: [] },
+                        { id: 'w2', label: 'b', amount: 2390000, useDate: '2026-10-07', note: '', repayments: [] }];
+    s.transactions = [
+      { id: 'oldsep', date: '2026-09-01', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -300 },
+      { id: 'oldoct', date: '2026-10-01', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -430 }];
+    return s; };
+  const auto = () => A.state.transactions.filter(t => t.cat === '房貸利息').map(t => t.id + '@' + t.date).sort().join(' ');
+  setNow('2026-10-16');
+  A.state = A.normalize(mk()); A.maybePostInterest();
+  must(auto() === 'oldoct@2026-10-01 oldsep@2026-09-01', '繳款日還沒到不動:' + auto());
+  setNow('2026-10-19');
+  A.maybePostInterest();
+  must(auto() === 'levi-20261017@2026-10-19 oldsep@2026-09-01', '10/19:10/01 那筆換成 10/17 那期、過去月份不動:' + auto());
+  const tx = A.state.transactions.find(t => t.id === 'levi-20261017');
+  const exp = Math.round(200000 * 0.026 * 30 / 365 + 2390000 * 0.026 * 10 / 365);
+  must(tx && tx.amount === -exp, '金額照 9/17~10/17 逐日計息:' + (tx && tx.amount) + ' 應該 ' + -exp);
+  A.maybePostInterest();
+  must(auto() === 'levi-20261017@2026-10-19 oldsep@2026-09-01', '再跑一次不變:' + auto());
+  // 本月已經有照繳款日記的(另一台記的):舊版那筆不動(兩筆都留,健康檢查會報同月兩筆)
+  const s2 = mk(); s2.transactions.push({ id: 'levi-20261017', date: '2026-10-19', cat: '房貸利息', desc: '槓桿借款利息(自動記入)', amount: -999 });
+  A.state = A.normalize(s2); A.maybePostInterest();
+  must(A.state.transactions.some(t => t.id === 'oldoct') && A.state.transactions.find(t => t.id === 'levi-20261017').amount === -999, '已經有新版那筆就不動');
+}
+
 console.log('使用者 2026-10 實例:5 筆動用都在 10 月,10/17(週六)那期銀行 10/19 扣本金 12,950 + 利息 1,532');
 {
   const mk = () => { const s = A.emptyState();

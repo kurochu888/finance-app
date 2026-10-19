@@ -103,7 +103,11 @@ id 沿用舊值以確保重複呼叫不會飄動。
 `loan.payRound`(0 照公式 / 1 四捨五入到元 / 10 進位到 10 元,2026-10-19 使用者的安康房貸:公式 12,118.31、銀行 12,120)有設時
 利息每期四捨五入、本金 = 月付 − 利息、月付固定到升降息才重算(`amortize()`),對帳換個進位就對得上時 `roundHint()` 提示,
 `postLoanInterest()` 只記利息(使用者選的:還本不算支出),交易 id `li-<負債id>-YYYYMM`;理財型利息 id `levi-YYYYMMDD`(繳款日,兩台同時記合併成一筆)。
-這幾個都從 `maybePostInterest()` 跑(還本 → 理財型利息 → 一般型)。一般型利率只在 change(離開欄位)才套用 `applyLoanRate()`,
+這幾個都從 `maybePostInterest()` 跑(還本 → 理財型利息 → 一般型)。
+**2026-10-06 以前的版本**利息是「打開 app 那個月記一筆、日期 1 號、id 亂數」:使用者 10/05 第一次動用被記了 10/01 的 −430,
+10 月標成處理過,改 17 號繳款後 10/17 那期 1,532 就沒記。`postLeverageInterest()` 開頭:本月繳款日到了、本月只有這種(id 不是 `levi-`)
+的就拿掉、取消處理過、照繳款日重記;過去月份不動。合併時「同月自動利息只留一筆」(`dropLocalCopies()`)不算這台已經刪掉的雲端那筆,
+不然另一台還留著舊的那筆時,新記的反而被丟掉(`tests/legacyinterest.js`)。一般型利率只在 change(離開欄位)才套用 `applyLoanRate()`,
 打字途中的「2 → 2.3」不能被當成升息記一段;`setCurrentRate()` 原本是 0 也不記。測試 `tests/loans.js`。
 這幾條是踩過才補的,改這塊時不要弄回去:
 - **第一次用不回頭補,但要記一個起點**:`repayPosted`/`interestPosted`/`loan.interestPosted` 是空的時候先把上個月標成已處理,
