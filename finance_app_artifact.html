@@ -765,8 +765,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-19 · 9817387882';
-const BUILD_HASH = '9817387882';
+const BUILD_VERSION = '2026-10-22 · 69125e4db6';
+const BUILD_HASH = '69125e4db6';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3477,7 +3477,9 @@ function renderTemplates(){
 function renderLedger(){
   const cats0 = knownCats();
   if (!draft.newCat && !cats0.includes(draft.cat)) draft.cat = cats0[0] || '';
-  const tx = txOfMonth(viewMonth).slice().sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  // 同一天後記的排上面(剛按「新增紀錄」的那筆一眼看得到);id 是亂數沒有時間,用在 state.transactions 裡的先後順序
+  const txPos = new Map(state.transactions.map((t, i) => [t, i]));
+  const tx = txOfMonth(viewMonth).slice().sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : txPos.get(b) - txPos.get(a));
   const flow = monthFlow(viewMonth);
   const cats = knownCats();
   return `

@@ -3477,7 +3477,9 @@ function renderTemplates(){
 function renderLedger(){
   const cats0 = knownCats();
   if (!draft.newCat && !cats0.includes(draft.cat)) draft.cat = cats0[0] || '';
-  const tx = txOfMonth(viewMonth).slice().sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  // 同一天後記的排上面(剛按「新增紀錄」的那筆一眼看得到);id 是亂數沒有時間,用在 state.transactions 裡的先後順序
+  const txPos = new Map(state.transactions.map((t, i) => [t, i]));
+  const tx = txOfMonth(viewMonth).slice().sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : txPos.get(b) - txPos.get(a));
   const flow = monthFlow(viewMonth);
   const cats = knownCats();
   return `
