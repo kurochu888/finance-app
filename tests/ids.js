@@ -15,7 +15,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html','utf8');
 const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 const appJs = blocks.sort((a,b)=>b.length-a.length)[0];
 eval(appJs + `
-globalThis.A = { get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
+globalThis.A = { openFolds, get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v},
   set levTab(v){levTab=v}, renderAll, sampleData, emptyState, maybeDailySnapshot, refreshLeverage };`);
 
 const bugs = [];
@@ -27,6 +27,7 @@ for (let i = 1; i <= 5; i++)
   A.state.dailyHistory.push({ d:'2026-09-0' + i, pv:900000+i*1000, loan:1000000, eq:-100000+i*1000, pnl:40000+i*500 });
 
 const rendered = {};
+A.openFolds.add('bankchk');   // 對帳的比對結果(bankrecon-out)收在這個區塊裡,打開才畫
 ['overview','signal','log','setup'].forEach(t => {
   A.currentTab = 'leverage'; A.levTab = t;
   A.renderAll();

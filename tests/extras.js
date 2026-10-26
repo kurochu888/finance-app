@@ -23,7 +23,7 @@ const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, sampleData, onClick,
   settleDate, renderTrades, get tradeDraft(){return tradeDraft}, set tradeDraft(v){tradeDraft=v}, get tradeNote(){return tradeNote},
   computeLeverage, loanMismatch, togglePrivacy, fmt, renderOverview, renderLedger, get privacy(){return privacy},
-  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV, onField, bankRecon, todoItems, healthCheck, diagLoad, maybePostInterest };`);
+  set viewMonth(v){viewMonth=v}, unusedLoanCash, keepFieldsOldVersionsDrop, computePosition, plannedDrawAmount, nextLevInterest, renderLeverage, set levTab(v){levTab=v}, yearSummary, renderYearCard, set summaryYear(v){summaryYear=v}, computeRisk, pendingLoanFunding, captureOwnBase, maybeSnapshot, maybeDailySnapshot, stateCSV, onField, bankRecon, todoItems, healthCheck, diagLoad, maybePostInterest, set currentTab(v){currentTab=v} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -305,7 +305,12 @@ console.log('跟網路銀行對帳(使用者 2026-10-08 的數字:已撥款 182 
   fill('interest', Math.round(app * 2.7 / 2.6));
   const ih = A.bankRecon().interest.hints.join(' | ');
   must(app > 0 && !A.bankRecon().ok && /年利率約 2\.70%/.test(ih), '利息對不上要推算銀行用的年利率:' + ih + ' app ' + app);
+  // 2026-10-22 使用者:填完利息、游標還在欄位上(不會整頁重畫),結果那塊還是上次的數字。打字時要跟著換
+  A.currentTab = 'leverage';
   fill('interest', app + 2);
+  const shown = store['bankrecon-out'] ? store['bankrecon-out'].innerHTML : '';
+  must(shown.includes('銀行 ' + A.fmt(app + 2)) && shown.includes('對得上'), '打字途中比對結果要跟著更新:' + shown.replace(/\s+/g, ' ').slice(0, 200));
+  A.currentTab = 'overview';
   must(A.bankRecon().ok, '利息差幾塊(每筆各自四捨五入)不算對不上');
   // 40 天後再提醒;對帳結果還是跟那天比,不會因為過了幾天就對不上
   simNow += 41 * 86400000;

@@ -765,8 +765,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-10-22 · 69125e4db6';
-const BUILD_HASH = '69125e4db6';
+const BUILD_VERSION = '2026-10-27 · 97d15b6868';
+const BUILD_HASH = '97d15b6868';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6018,6 +6018,8 @@ function refreshLeverage(){
   { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))); }
   const stress = document.getElementById('stress-body');
   if (stress) stress.innerHTML = stressBody();
+  const recon = document.getElementById('bankrecon-out');
+  if (recon) recon.innerHTML = bankReconResult();
 }
 
 /* 每月把槓桿利息記成一筆支出。已記過的月份會留在 interestPosted,
@@ -6429,18 +6431,24 @@ function bankBalanceHints(diff, date){
   return out;
 }
 function renderBankRecon(){
-  const B = state.leverage.bankCheck || {}, rc = bankRecon();
-  const rows = (label, x) => !x ? '' : `
-      <div class="row sub"><span class="label">${label}:銀行 ${fmt(x.bank)} · app ${fmt(x.app)}</span>
-        <span class="val ${Math.abs(x.diff) <= 1 || !x.hints.length ? 'pos' : 'neg'}">${!x.hints.length ? '✓ 對得上' : (x.diff > 0 ? '銀行多 ' : '銀行少 ') + fmt(Math.abs(x.diff))}</span></div>
-      ${x.hints.map(h => `<div class="muted neg" style="font-size:12px; margin:2px 0 4px;">· ${esc(diagMask(h))}</div>`).join('')}`;
+  const B = state.leverage.bankCheck || {};
   return `
     <div class="muted" style="font-size:12px; margin-bottom:6px;">打開網路銀行,把看到的數字填進來就好,app 會跟同一天自己算的比。差額剛好是某一筆動用或還款的話會直接指出來。</div>
     <div class="grid2">
       <div class="field"><label>網路銀行顯示的借款餘額</label><input type="number" inputmode="decimal" data-k="bankchk-balance" value="${B.balance ?? ''}"></div>
       <div class="field"><label>網路銀行顯示的下一期利息</label><input type="number" inputmode="decimal" data-k="bankchk-interest" value="${B.interest ?? ''}"></div>
     </div>
-    ${rc ? `
+    <div id="bankrecon-out">${bankReconResult()}</div>`;
+}
+/* 比對結果另外拆出來:打字時 refreshLeverage() 只換這一塊(2026-10-22 使用者貼的畫面:填完利息、游標還在欄位上,
+   結果還是上次的 1,532 對 5,649,看起來對不上其實已經對上了) */
+function bankReconResult(){
+  const rc = bankRecon();
+  const rows = (label, x) => !x ? '' : `
+      <div class="row sub"><span class="label">${label}:銀行 ${fmt(x.bank)} · app ${fmt(x.app)}</span>
+        <span class="val ${Math.abs(x.diff) <= 1 || !x.hints.length ? 'pos' : 'neg'}">${!x.hints.length ? '✓ 對得上' : (x.diff > 0 ? '銀行多 ' : '銀行少 ') + fmt(Math.abs(x.diff))}</span></div>
+      ${x.hints.map(h => `<div class="muted neg" style="font-size:12px; margin:2px 0 4px;">· ${esc(diagMask(h))}</div>`).join('')}`;
+  return `${rc ? `
       <div class="muted" style="font-size:12px;">對帳日 ${esc(rc.date)}${rc.days > 0 ? `(${rc.days} 天前,要再對一次就重新填)` : ''}</div>
       ${rows('借款餘額', rc.balance)}${rows('下一期利息', rc.interest)}` : ''}`;
 }
