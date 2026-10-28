@@ -130,7 +130,7 @@ for (const s of SEEDS){
     let desc;
     try{
       if (roll < 0.06){
-        const t = pick(['overview', 'assets', 'leverage', 'ledger', 'help']); A.switchTab(t); desc = 'tab ' + t;
+        const t = pick(['overview', 'assets', 'stocks', 'leverage', 'ledger', 'help']); A.switchTab(t); desc = 'tab ' + t;
       }else if (roll < 0.09){
         // 跨日/跨月後像真的打開 app 一樣跑每月自動記帳(還本、利息、一般型房貸)
         simNow += Math.floor(rnd() * 40) * 86400000; desc = 'time +' ; A.maybePostInterest(); A.renderAll();

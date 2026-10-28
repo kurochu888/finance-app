@@ -38,7 +38,7 @@ for (let it = 0; it < Number(process.argv[3] || 150); it++){
     if (A.canon(s1) !== A.canon(s2)){ const a = A.canon(s1), b = A.canon(s2); let i = 0; while (a[i] === b[i]) i++; probs.push(tag + ' → normalize 不冪等 ' + a.slice(i - 60, i + 40)); }
     A.state = s1;
     let html = '';
-    for (const [tab, lt] of [['overview'],['assets'],['leverage','overview'],['leverage','signal'],['leverage','log'],['leverage','setup'],['ledger'],['help']]){
+    for (const [tab, lt] of [['overview'],['assets'],['stocks'],['leverage','overview'],['leverage','signal'],['leverage','log'],['leverage','setup'],['ledger'],['help']]){
       A.tab = tab; if (lt) A.lt = lt; A.renderAll(); html += document.getElementById('content').innerHTML;
     }
     A.ith = (s1.assets[0] || {}).id; A.tab = 'assets'; A.renderAll(); html += document.getElementById('content').innerHTML;

@@ -63,7 +63,7 @@ A.state.liabilities = [{ id:'l1', name:'房貸', amount:4000000 }];
 let rnd = 12345;
 const rand = () => (rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
 
-const tabs = ['overview','assets','ledger','leverage','help'];
+const tabs = ['overview','assets','stocks','ledger','leverage','help'];
 let maxRender = 0, maxRenderDay = '', drawn = 0;
 const samples = [];
 

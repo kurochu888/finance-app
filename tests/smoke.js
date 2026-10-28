@@ -67,7 +67,7 @@ const draw = i => {
   return A.state.leverage.draws[i];
 };
 const inst = id => A.state.instruments.find(x => x.id === id);
-const tabs = ['overview','assets','ledger','leverage','help'];
+const tabs = ['overview','assets','stocks','ledger','leverage','help'];
 function pass(label){
   for (const t of tabs){
     A.currentTab = t;

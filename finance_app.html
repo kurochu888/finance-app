@@ -325,6 +325,7 @@
     <nav class="toptabs">
       <button class="top-tab active" data-tab="overview">總覽</button>
       <button class="top-tab" data-tab="assets">資產</button>
+      <button class="top-tab" data-tab="stocks">股票</button>
       <button class="top-tab" data-tab="leverage">槓桿</button>
       <button class="top-tab" data-tab="ledger">記帳</button>
       <button class="top-tab" data-tab="help">說明</button>
@@ -337,6 +338,7 @@
   <nav class="tabbar">
     <button class="tab-btn active" data-tab="overview"><span class="ic">📊</span><span>總覽</span></button>
     <button class="tab-btn" data-tab="assets"><span class="ic">🏦</span><span>資產</span></button>
+    <button class="tab-btn" data-tab="stocks"><span class="ic">📈</span><span>股票</span></button>
     <button class="tab-btn" data-tab="leverage"><span class="ic">⚡</span><span>槓桿</span></button>
     <button class="tab-btn" data-tab="ledger"><span class="ic">📒</span><span>記帳</span></button>
     <button class="tab-btn" data-tab="help"><span class="ic">📖</span><span>說明</span></button>
@@ -502,6 +504,43 @@ const DEFAULT_INSTRUMENTS = [
 // 不然改一個標的的均線參數會意外改到共用預設值,下次重置資料就跑掉。
 const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: uid() }, JSON.parse(JSON.stringify(x))));
 
+/* 股票分頁的資料(說明見下面「股票(台股 + 美股)」那段):emptyState() 在載入時就會用到,要先定義 */
+const CNYES_QUOTE = 'https://ws.api.cnyes.com/ws/api/v1/quote/quotes/';
+const STOCK_HIST_KEEP = 1000;
+const STOCK_INTRADAY_KEY = 'financeStockIntraday_v1', STOCK_INTRADAY_MAX = 300;
+const STOCK_ASSET_NAME = '股票(台股+美股)';
+const emptyStocks = () => ({ holdings:[], usd:0, usdTime:'', assetId:'', history:[] });
+const stockMarket = code => /^\d/.test(String(code || '')) ? 'TW' : 'US';
+const stockCodeOk = code => /^[0-9A-Z][0-9A-Z.\-]{0,11}$/.test(code);
+function normalizeStocks(v){
+  const S = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const objs = x => (Array.isArray(x) ? x : []).filter(o => o && typeof o === 'object' && !Array.isArray(o));
+  const str = x => typeof x === 'string' ? x : (typeof x === 'number' && Number.isFinite(x)) ? String(x) : '';
+  const holdings = objs(S.holdings).map(h => ({
+    id: safeId(h.id),
+    code: str(h.code).trim().toUpperCase().slice(0, 12),
+    name: str(h.name).slice(0, 60),
+    shares: Math.max(0, num(h.shares)),
+    cost: Math.max(0, num(h.cost)),
+    price: Math.max(0, num(h.price)),
+    chg: num(h.chg),
+    qt: str(h.qt).slice(0, 16)          // 報價時間 'YYYY-MM-DD HH:MM'(交易所當地時間換成這台的時間)
+  }));
+  const seen = new Set();
+  holdings.forEach(h => { while (seen.has(h.id)) h.id = uid(); seen.add(h.id); });
+  const history = objs(S.history).map(h => ({ d: isoDate(str(h.d), ''), v: finNum(h.v), c: finNum(h.c), f: h.f === true }))
+    .filter(h => h.d)
+    .sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0))
+    .filter((h, i, arr) => i === arr.length - 1 || arr[i + 1].d !== h.d)
+    .slice(-STOCK_HIST_KEEP);
+  return {
+    holdings,
+    usd: Math.max(0, num(S.usd)),
+    usdTime: str(S.usdTime).slice(0, 16),
+    assetId: typeof S.assetId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(S.assetId) ? S.assetId : '',
+    history
+  };
+}
 function emptyState(){
   return {
     version:2,
@@ -512,6 +551,7 @@ function emptyState(){
     templates:[],   // 固定收支範本(月薪、保險…),記帳頁按一下記到那個月,見 renderTemplates
     // 「今天要做什麼」手動打勾(2026-10 使用者要的):只留當天,done = { key: {icon, text} },見 renderTodo
     todoChecks: { date:'', done:{} },
+    stocks: emptyStocks(),   // 槓桿頁以外的台股、美股(2026-10),見 normalizeStocks
     leverage: JSON.parse(JSON.stringify(DEFAULT_LEVERAGE))
   };
 }
@@ -636,6 +676,7 @@ function normalize(raw){
       s.todoChecks.done[k] = { icon: str(x.icon).slice(0, 8), text: str(x.text).slice(0, 200) };
     });
   }
+  s.stocks = normalizeStocks(raw.stocks);
   s.templates = objs(raw.templates).map(t => ({ id: safeId(t.id), cat: str(t.cat) || '其他', desc: str(t.desc), amount: num(t.amount) }))
     .filter(t => t.amount);
   s.dailyHistory = objs(raw.dailyHistory)
@@ -783,8 +824,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-27 · 97d15b6868';
-const BUILD_HASH = '97d15b6868';
+const BUILD_VERSION = '2026-10-28 · 19532b69d8';
+const BUILD_HASH = '19532b69d8';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -873,6 +914,7 @@ function keyedLists(st){
   ['transactions', 'trades', 'assets', 'liabilities', 'netWorthHistory', 'budgets', 'templates'].forEach(k => {
     if (Array.isArray(st[k])) out.push([k, st[k], mergeKey]);
   });
+  if (st.stocks && Array.isArray(st.stocks.holdings)) out.push(['stocks', st.stocks.holdings, mergeKey]);
   if (Array.isArray(st.instruments)) out.push(['instruments', st.instruments, x => x && x.key != null ? 'k:' + x.key : null]);
   const L = st.leverage;
   if (L && Array.isArray(L.draws)){
@@ -1168,7 +1210,7 @@ function applyRemote(raw, first = false){
   if (!first || kept || restored) diag('同步', (first ? '打開時從雲端載入' : '收到別台裝置的改動') + (kept ? ',跟這台還沒推上去的修改合併' : '') + (restored ? ',補回舊版分頁丟掉的欄位' : ''));
   const nRescued = Object.values(rescued).reduce((a, b) => a + b, 0);
   if (nRescued){
-    const names = { transactions:'記帳', trades:'買賣', draws:'動用', assets:'資產', liabilities:'負債', netWorthHistory:'每月快照', instruments:'標的' };
+    const names = { transactions:'記帳', trades:'買賣', draws:'動用', assets:'資產', liabilities:'負債', netWorthHistory:'每月快照', instruments:'標的', stocks:'股票' };
     diag('同步', `收到的雲端資料不知道是從哪一版改出來的(${rev ? '別台很久沒同步' : '沒有版本編號,舊版分頁寫的'}),`
       + '這台有、它沒有的保留下來:' + Object.entries(rescued).map(([p, n]) => (names[p] || (p.endsWith('/repayments') ? '還款' : p)) + ' ' + n).join('、'));
   }
@@ -1284,6 +1326,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   // 今天要做什麼的打勾(2026-10 加):舊版分頁寫回來沒有 todoChecks
   if (!('todoChecks' in raw) && prev.todoChecks && prev.todoChecks.date){
     next.todoChecks = JSON.parse(JSON.stringify(prev.todoChecks));
+    restored = true;
+  }
+  // 股票分頁(2026-10 加):舊版分頁寫回來沒有 stocks 這個 key
+  if (!('stocks' in raw) && prev.stocks && (prev.stocks.holdings.length || prev.stocks.assetId || prev.stocks.history.length)){
+    next.stocks = JSON.parse(JSON.stringify(prev.stocks));
     restored = true;
   }
   if (!Array.isArray(raw.templates) && (prev.templates || []).length){
@@ -2897,6 +2944,7 @@ function renderAll(){
   const c = document.getElementById('content');
   if (currentTab === 'overview') c.innerHTML = renderOverview();
   else if (currentTab === 'assets') c.innerHTML = renderAssets();
+  else if (currentTab === 'stocks') c.innerHTML = renderStocks();
   else if (currentTab === 'ledger') c.innerHTML = renderLedger();
   else if (currentTab === 'help') c.innerHTML = renderHelp();
   else c.innerHTML = renderLeverage();
@@ -3342,10 +3390,11 @@ function renderAssets(){
         <div style="margin-bottom:12px;">
           <div class="erow">
             <input class="f-name" data-k="an-${a.id}" value="${esc(a.name)}" placeholder="項目名稱">
-            <input class="f-amt" type="number" inputmode="decimal" data-k="aa-${a.id}" value="${a.amount || ''}" placeholder="金額">
+            <input class="f-amt" type="number" inputmode="decimal" data-k="aa-${a.id}" value="${a.amount || ''}" placeholder="金額"${a.id === state.stocks.assetId ? ' readonly style="opacity:.7;" title="跟著股票分頁的總值"' : ''}>
             ${xDel('del-asset', a.id)}
           </div>
           <div class="bar-track" style="margin-top:8px;"><div class="bar-fill" id="a-bar-${a.id}" style="width:${pct.toFixed(1)}%;background:${seriesColor(i)}"></div></div>
+          ${a.id === state.stocks.assetId ? `<button class="linkish muted" data-act="go" data-v="stocks" style="padding:0; font-size:12px;">跟著股票分頁的總值 ▸</button>` : ''}
           ${itemRowExtras(a, false, seriesColor(i), `<span class="muted" style="font-size:12px; white-space:nowrap;"><span class="legend-dot" style="background:${seriesColor(i)}"></span>佔 <span id="a-pct-${a.id}">${pct.toFixed(1)}%</span></span>`)}
         </div>`;
       }).join('') : `<div class="empty">還沒有資產項目。<br>例如:現金與活存、股票、不動產。</div>`}
@@ -3582,13 +3631,400 @@ function renderLedger(){
 
 /* ===================== 說明 =====================
    把不直覺的算法寫給使用者看,免得過幾個月自己也忘了數字是怎麼來的。 */
+/* ===================== 股票(台股 + 美股) ===================== */
+/* 2026-10 使用者要的:槓桿頁以外的股票(台股、美股)另外記一塊,只記「股數、平均成本」,按更新抓現價,美股照美元匯率換成台幣。
+   跟槓桿頁完全分開:不算進曝險比例、訊號、部位市值;要算進淨資產就在卡片上選一個資產細項讓它跟著總值(syncStockAsset)。
+   報價用鉅亨網的公開 API(不用 key、有開 CORS,台股上市上櫃都用 TWS:代號、美股 USS:代號、匯率 FX:USDTWD),
+   證交所 mis 的盤中報價不給網頁直接抓。盤中按更新拿到的是當下成交價,收盤後就是收盤價。
+   state.stocks = { holdings:[{id, code, name, shares, cost, price, chg, qt}], usd, usdTime, assetId, history:[{d, v, c}] }
+   - 代號第一個字是數字 = 台股(新台幣),不是 = 美股(美元),見 stockMarket()
+   - cost = 每股平均成本(原幣別);chg = 現價比前一天收盤的漲跌(原幣別),手動改現價時歸 0
+   - history = 每天最後一次的總值(台幣)跟總成本,跟每日快照一樣是「那天最後一次」;美股缺匯率時不記
+   - 今天盤中每次更新的總值只存在這台裝置(STOCK_INTRADAY_KEY),不同步 */
+/* 每一檔的市值、成本、損益(原幣別跟台幣)。美股沒有匯率時 noFx,台幣欄位是 0、總值不算它 */
+function stockRows(){
+  const S = state.stocks, fx = S.usd > 0 ? S.usd : 0;
+  return S.holdings.map(h => {
+    const us = stockMarket(h.code) === 'US', rate = us ? fx : 1;
+    const value = h.shares * h.price, cost = h.shares * h.cost, day = h.shares * h.chg;
+    return {
+      h, us, value, cost, day, pnl: value - cost, pnlPct: cost > 0 ? (value - cost) / cost * 100 : null,
+      twd: value * rate, twdCost: cost * rate, twdDay: day * rate, noFx: us && !fx
+    };
+  });
+}
+function stockTotals(){
+  const rows = stockRows();
+  const t = { rows, twd: 0, cost: 0, day: 0, tw: 0, us: 0, usTwd: 0, noFx: 0 };
+  rows.forEach(r => {
+    if (r.noFx){ t.noFx++; return; }
+    t.twd += r.twd; t.cost += r.twdCost; t.day += r.twdDay;
+    if (r.us){ t.us += r.value; t.usTwd += r.twd; } else t.tw += r.twd;
+  });
+  t.pnl = t.twd - t.cost;
+  t.pnlPct = t.cost > 0 ? t.pnl / t.cost * 100 : null;
+  t.dayPct = t.twd - t.day > 0 ? t.day / (t.twd - t.day) * 100 : null;
+  return t;
+}
+const stockAsset = () => state.stocks.assetId ? findById(state.assets, state.stocks.assetId) : null;
+/* 選了要跟著股票總值的資產細項:金額設成總值(台幣,四捨五入到元)。有美股還沒匯率時不動,不然淨資產會突然少一截 */
+function syncStockAsset(){
+  const a = stockAsset();
+  if (!a) return false;
+  const t = stockTotals();
+  if (t.noFx) return false;
+  const v = Math.round(finNum(t.twd));
+  if (a.amount === v) return false;
+  a.amount = v;
+  maybeSnapshot();
+  return true;
+}
+/* 今天的總值記一筆(同一天更新成最後一次)。手機時間被往回調(有比今天新的紀錄)就不寫 */
+function maybeStockSnapshot(){
+  const S = state.stocks;
+  if (!S.holdings.length) return false;
+  const t = stockTotals();
+  if (t.noFx) return false;
+  const d = todayISO();
+  if (S.history.some(h => h.d > d)) return false;
+  const rec = { d, v: finNum(Math.round(t.twd)), c: finNum(Math.round(t.cost)), f: false };
+  const found = S.history.find(h => h.d === d);
+  if (found){
+    if (found.f || (found.v === rec.v && found.c === rec.c)) return false;   // 已經用收盤價定案的不蓋(見 finalizeStockHistory)
+    Object.assign(found, rec);
+  }else{
+    S.history.push(rec);
+    if (S.history.length > STOCK_HIST_KEEP) S.history.splice(0, S.history.length - STOCK_HIST_KEEP);
+  }
+  return true;
+}
+/* 今天盤中每次按更新的總值(只存這台、只留今天):畫「今天」的走勢 */
+function stockIntraday(){
+  try{
+    const x = JSON.parse(localStorage.getItem(STOCK_INTRADAY_KEY) || 'null');
+    if (x && x.d === todayISO() && Array.isArray(x.pts)) return x.pts.filter(p => Array.isArray(p) && typeof p[0] === 'string' && Number.isFinite(p[1]));
+  }catch(e){}
+  return [];
+}
+function recordStockIntraday(v){
+  const d = new Date(), pts = stockIntraday();
+  pts.push([pad2(d.getHours()) + ':' + pad2(d.getMinutes()), Math.round(v)]);
+  if (pts.length > STOCK_INTRADAY_MAX) pts.splice(0, pts.length - STOCK_INTRADAY_MAX);
+  try{ localStorage.setItem(STOCK_INTRADAY_KEY, JSON.stringify({ d: todayISO(), pts })); }catch(e){}
+}
+const unixToLocal = s => { const d = new Date(s * 1000); return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+let stockBusy = false, stockMsg = '';
+/* 鉅亨網一次查完:匯率 + 每一檔。查不到的代號回應裡直接沒有那一筆 */
+async function fetchStockQuotes(){
+  if (!QUOTES_ENABLED || stockBusy) return;
+  stockBusy = true;
+  stockMsg = '更新報價中…';
+  renderAll();
+  try{
+    const codes = [...new Set(state.stocks.holdings.map(h => h.code).filter(stockCodeOk))];
+    const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
+    const syms = ['FX:USDTWD:FOREX'].concat(codes.map(sym));
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+    let body;
+    try{
+      const res = await fetch(CNYES_QUOTE + syms.map(encodeURIComponent).join(','), ctl ? { signal: ctl.signal } : undefined);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      body = await res.json();
+    }finally{ if (timer) clearTimeout(timer); }
+    const got = new Map();
+    (body && Array.isArray(body.data) ? body.data : []).forEach(q => {
+      if (!q || typeof q !== 'object') return;
+      const price = Number(q['6']);
+      if (typeof q['0'] === 'string' && Number.isFinite(price) && price > 0) got.set(q['0'], q);
+    });
+    // 抓的途中雲端同步可能把 state.stocks 整個換掉:等回應回來才找要寫的那幾檔
+    const S = state.stocks, missed = [];
+    const fx = got.get('FX:USDTWD:FOREX');
+    if (fx){ S.usd = num(fx['6']); S.usdTime = unixToLocal(Number(fx['200007'])); }
+    let n = 0;
+    S.holdings.forEach(h => {
+      if (!stockCodeOk(h.code)) return;
+      const q = got.get(sym(h.code));
+      if (!q){ if (!missed.includes(h.code)) missed.push(h.code); return; }
+      h.price = num(q['6']);
+      h.chg = Number.isFinite(Number(q['11'])) ? num(q['11']) : 0;
+      if (typeof q['200009'] === 'string' && q['200009']) h.name = q['200009'].slice(0, 60);
+      h.qt = unixToLocal(Number(q['200007']));
+      n++;
+    });
+    if (!n && !fx){
+      stockMsg = '抓不到報價,維持原本的數字';
+      diag('股票', '抓不到任何報價');
+    }else{
+      stockMsg = missed.length ? '查不到:' + missed.join('、') + '(代號是否正確?)' : '';
+      if (missed.length) diag('股票', '查不到:' + missed.join('、'));
+      if (!fx) stockMsg = (stockMsg ? stockMsg + ';' : '') + '匯率沒抓到,用上次的';
+      syncStockAsset();
+      maybeStockSnapshot();
+      const t = stockTotals();
+      if (!t.noFx && S.holdings.length) recordStockIntraday(t.twd);
+      scheduleSave();
+    }
+  }catch(e){
+    stockMsg = '抓不到報價(可能沒有網路),維持原本的數字';
+    diag('股票', '抓報價失敗:' + (e && e.message || e));
+  }
+  stockBusy = false;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT'){ if (currentTab === 'stocks') refreshStocks(); }
+  else renderAll();
+}
+/* 前一天的總值用收盤價定案(2026-10-28 使用者要的:「以每天台灣時間早上 6 點為前一天總值的抓取時間」)。
+   網頁沒打開不會跑,所以是「6 點以後第一次打開 / 切回前景(開著的話計時器每 10 分鐘)」時補:
+   台股用那天的收盤、美股用那天(美東日期)的收盤 = 台灣時間凌晨 4~5 點收的那盤、匯率用那天的收盤,
+   都是「日期 ≤ 那天的最後一筆」,6 點整抓跟 10 點才抓結果一樣(盤中按更新記的是當下價格,會被這裡換掉)。
+   補到最近 STOCK_FINAL_DAYS 天,但不早於第一筆紀錄(開始用股票分頁之前的不編);用的是現在的股數跟成本。
+   定案的標 f:true,maybeStockSnapshot 不再蓋。那天台股美股都沒開盤、也沒有當天紀錄的不寫(週末不畫平的點)。 */
+const STOCK_FINAL_HOUR = 6, STOCK_FINAL_DAYS = 14;
+const CNYES_HISTORY = 'https://ws.api.cnyes.com/ws/api/v1/charting/history?resolution=D&symbol=';
+const STOCK_FINAL_TRY_KEY = 'financeStockFinalTry';
+let stockFinalBusy = false;
+const addDaysISO = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+/* 現在可以定案到哪一天:6 點以後是昨天,6 點以前是前天(昨天的美股還沒收) */
+const stockFinalThrough = () => addDaysISO(todayISO(), new Date().getHours() >= STOCK_FINAL_HOUR ? -1 : -2);
+function stockDaysToFinalize(){
+  const S = state.stocks, hist = S.history;
+  if (!S.holdings.some(h => stockCodeOk(h.code) && h.shares > 0) || !hist.length) return [];
+  const last = stockFinalThrough(), first = hist[0].d, out = [];
+  for (let d = addDaysISO(last, -(STOCK_FINAL_DAYS - 1)); d <= last; d = addDaysISO(d, 1)){
+    if (d < first) continue;
+    const h = hist.find(x => x.d === d);
+    if (!(h && h.f)) out.push(d);
+  }
+  return out;
+}
+/* 鉅亨網的日線:t 是交易日那天 UTC 0 點,c 是收盤。回傳照日期排好的 [[YYYY-MM-DD, 收盤]] */
+async function cnyesDaily(symbol, fromISO){
+  const now = Math.floor(Date.now() / 1000), from = Math.floor(new Date(fromISO + 'T00:00:00').getTime() / 1000);
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+  try{
+    // 鉅亨網的參數是反的:from = 比較新的時間、to = 比較舊的
+    const res = await fetch(CNYES_HISTORY + encodeURIComponent(symbol) + '&from=' + now + '&to=' + from, ctl ? { signal: ctl.signal } : undefined);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json(), D = body && body.data;
+    if (!D || !Array.isArray(D.t) || !Array.isArray(D.c)) return [];
+    return D.t.map((ts, i) => {
+      const d = new Date(Number(ts) * 1000), c = Number(D.c[i]);
+      return isNaN(d.getTime()) || !(c > 0) ? null : [d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()), c];
+    }).filter(Boolean).sort((a, b) => a[0] < b[0] ? -1 : 1);
+  }finally{ if (timer) clearTimeout(timer); }
+}
+const closeOn = (series, d) => { let v = null; for (const [x, c] of series){ if (x > d) break; v = c; } return v; };
+async function finalizeStockHistory(){
+  if (!QUOTES_ENABLED || stockFinalBusy) return false;
+  const days = stockDaysToFinalize();
+  if (!days.length) return false;
+  // 失敗(沒網路、某檔查不到)的話 30 分鐘內不再試,不然每次切回前景都打一輪
+  const key = days.join(',');
+  try{ const t = JSON.parse(localStorage.getItem(STOCK_FINAL_TRY_KEY) || 'null'); if (t && t.k === key && Date.now() - t.at < 30 * 60000) return false; }catch(e){}
+  try{ localStorage.setItem(STOCK_FINAL_TRY_KEY, JSON.stringify({ k: key, at: Date.now() })); }catch(e){}
+  stockFinalBusy = true;
+  let wrote = 0;
+  try{
+    const codes = [...new Set(state.stocks.holdings.filter(h => stockCodeOk(h.code) && h.shares > 0).map(h => h.code))];
+    const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
+    const fromISO = addDaysISO(days[0], -15);   // 往前多抓一段:連假、颱風假的前一個收盤
+    const series = new Map();
+    for (const c of codes) series.set(c, await cnyesDaily(sym(c), fromISO));   // 一檔一個請求,照順序不要一次全丟
+    const needFx = codes.some(c => stockMarket(c) === 'US');
+    const fx = needFx ? await cnyesDaily('FX:USDTWD:FOREX', fromISO) : [];
+    // 抓的途中雲端同步可能換掉 state.stocks:回來才讀
+    const S = state.stocks;
+    days.forEach(d => {
+      let v = 0, cost = 0, traded = false, ok = true;
+      const rate = needFx ? closeOn(fx, d) : 1;
+      S.holdings.forEach(h => {
+        if (!ok || !(h.shares > 0) || !stockCodeOk(h.code)) return;
+        const ser = series.get(h.code) || [], px = closeOn(ser, d), us = stockMarket(h.code) === 'US';
+        if (!ser.length && !(h.price > 0)) return;   // 打錯、從來沒抓到報價的代號:即時總值也當 0 算,不能讓它卡住每一天
+        if (px === null || (us && !(rate > 0))){ ok = false; return; }   // 那天以前沒有收盤(還沒上市、查不到):這天先不定案
+        if (ser.some(x => x[0] === d)) traded = true;
+        v += h.shares * px * (us ? rate : 1);
+        cost += h.shares * h.cost * (us ? rate : 1);
+      });
+      if (!ok) return;
+      const found = S.history.find(x => x.d === d);
+      if (!traded && !found) return;
+      const rec = { d, v: finNum(Math.round(v)), c: finNum(Math.round(cost)), f: true };
+      if (found) Object.assign(found, rec);
+      else S.history.push(rec);
+      wrote++;
+    });
+    if (wrote){
+      S.history.sort((a, b) => a.d < b.d ? -1 : (a.d > b.d ? 1 : 0));
+      if (S.history.length > STOCK_HIST_KEEP) S.history.splice(0, S.history.length - STOCK_HIST_KEEP);
+      diag('股票', `用收盤價定案 ${wrote} 天的總值(${days[0]}~${days[days.length - 1]})`);
+      scheduleSave();
+    }
+  }catch(e){
+    diag('股票', '抓收盤歷史失敗:' + (e && e.message || e));
+  }
+  stockFinalBusy = false;
+  if (wrote && currentTab === 'stocks' && !(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
+  return wrote > 0;
+}
+const fmtPx = v => (Number(v) || 0).toLocaleString('en-US', { maximumFractionDigits: 4 });   // 股價、匯率不遮(看不出身家)
+const usdMoney = v => (v < 0 ? '−' : '') + 'US$ ' + fmt(Math.abs(v));
+const signMoney = v => (v > 0 ? '+' : v < 0 ? '−' : '') + 'NT$ ' + fmt(Math.abs(v));
+const pnlClass = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+function stockRowText(r){
+  const h = r.h, cur = r.us ? usdMoney : money;
+  if (!h.code) return { line: '先填代號', pnl: '', pnlCls: '' };
+  if (!(h.price > 0)) return { line: QUOTES_ENABLED ? '還沒有現價,按上面「更新報價」' : '填現價', pnl: '', pnlCls: '' };
+  const chgPct = h.price - h.chg > 0 ? h.chg / (h.price - h.chg) * 100 : 0;
+  const line = `現價 ${fmtPx(h.price)}${h.chg ? `(${h.chg > 0 ? '+' : ''}${fmtPx(h.chg)},${fmtPct(chgPct)})` : ''} · 市值 ${cur(r.value)}`
+    + (r.us ? (r.noFx ? '(沒有匯率,沒算進總值)' : ` ≈ ${money(r.twd)}`) : '');
+  const pnl = r.cost > 0 ? `損益 ${r.us ? (r.pnl < 0 ? '−' : '+') + 'US$ ' + fmt(Math.abs(r.pnl)) : signMoney(r.pnl)}(${fmtPct(r.pnlPct)})` : '';
+  return { line, pnl, pnlCls: pnlClass(r.pnl) };
+}
+function stockTrendChart(){
+  const pts = stockIntraday(), hist = state.stocks.history;
+  const today = pts.length >= 2 ? lineChart('stk-today', pts.map(p => p[0]), [
+    { name: '總值', color: 'var(--s1)', values: pts.map(p => p[1]) }
+  ], { label: '今天的總值', height: 120, area: true, hint: '點圖上任一處看那次更新的總值' }) : '';
+  const days = hist.slice(-180);
+  const daily = days.length >= 2 ? lineChart('stk-days', days.map(h => dayLabel(h.d)), [
+    { name: '總值', color: 'var(--s1)', values: days.map(h => h.v) },
+    { name: '成本', color: 'var(--s2)', values: days.map(h => h.c) }
+  ], { label: '每天的總值與成本', height: 130, hint: '點圖上任一處看那天的數字' }) : '';
+  if (!today && !daily) return `<div class="empty">按幾次「更新報價」之後這裡會畫出走勢:今天每次更新一個點,每天留最後一次。</div>`;
+  return (today ? `<div class="muted" style="font-size:12px; margin-top:6px;">今天(這台裝置每次更新一個點)</div>${today}` : '')
+    + (daily ? `<div class="muted" style="font-size:12px; margin-top:12px;">每天(最近 ${days.length} 天,收盤價;今天是最後一次更新)</div>${daily}` : '');
+}
+function renderStocks(){
+  const S = state.stocks, t = stockTotals(), linked = stockAsset();
+  const rowsHtml = t.rows.map(r => {
+    const h = r.h, tx = stockRowText(r);
+    return `
+      <div style="margin-bottom:14px;">
+        <div class="erow">
+          <input class="f-code" data-k="sk-code-${h.id}" value="${esc(h.code)}" placeholder="代號" autocapitalize="characters" spellcheck="false">
+          <span class="muted" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${esc(h.name) || (h.code ? (stockMarket(h.code) === 'TW' ? '台股' : '美股') : '')}</span>
+          ${xDel('del-stock', h.id)}
+        </div>
+        <div class="erow">
+          <input class="f-amt" type="number" inputmode="decimal" data-k="sk-shares-${h.id}" value="${h.shares || ''}" placeholder="股數" aria-label="股數">
+          <input class="f-amt" type="number" inputmode="decimal" data-k="sk-cost-${h.id}" value="${h.cost || ''}" placeholder="平均成本/股" aria-label="平均成本">
+          ${QUOTES_ENABLED ? '' : `<input class="f-amt" type="number" inputmode="decimal" data-k="sk-price-${h.id}" value="${h.price || ''}" placeholder="現價" aria-label="現價">`}
+        </div>
+        <div class="muted" style="font-size:12px; margin-top:6px;" id="sk-line-${h.id}">${tx.line}</div>
+        <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>
+      </div>`;
+  }).join('');
+  const assetOpts = [`<option value="">不算進資產頁</option>`]
+    .concat(state.assets.map(a => `<option value="${a.id}"${linked && linked.id === a.id ? ' selected' : ''}>${esc(a.name || '(沒有名稱)')}</option>`))
+    .concat(`<option value="new">＋ 新增一項「${STOCK_ASSET_NAME}」</option>`).join('');
+  return `
+    <div class="card">
+      <h3>股票總值</h3>
+      <div class="big-num" id="sk-total">${money(t.twd)}</div>
+      <div class="row"><span class="label">今天漲跌</span><span class="val ${pnlClass(t.day)}" id="sk-day">${signMoney(t.day)}${t.dayPct !== null ? `(${fmtPct(t.dayPct)})` : ''}</span></div>
+      <div class="row"><span class="label">總損益</span><span class="val ${pnlClass(t.pnl)}" id="sk-pnl">${signMoney(t.pnl)}${t.pnlPct !== null ? `(${fmtPct(t.pnlPct)})` : ''}</span></div>
+      <div class="row"><span class="label">台股</span><span class="val" id="sk-tw">${money(t.tw)}</span></div>
+      <div class="row"><span class="label">美股</span><span class="val" id="sk-us">${usdMoney(t.us)} ≈ ${money(t.usTwd)}</span></div>
+      <div class="row"><span class="label">美元匯率</span><span class="val">${QUOTES_ENABLED
+        ? (S.usd > 0 ? `${fmtPx(S.usd)}${S.usdTime ? `<span class="muted" style="font-size:11px;"> · ${esc(S.usdTime.slice(5))}</span>` : ''}` : '還沒抓')
+        : `<input class="f-amt" type="number" inputmode="decimal" data-k="sk-usd" value="${S.usd || ''}" placeholder="例如 32.5" aria-label="美元匯率">`}</span></div>
+      ${t.noFx ? `<div class="notice" style="margin-top:8px;">有 ${t.noFx} 檔美股還沒有匯率,沒算進總值。${QUOTES_ENABLED ? '按「更新報價」會一起抓匯率。' : '在上面填美元匯率。'}</div>` : ''}
+      ${QUOTES_ENABLED ? `<button class="btn solid" data-act="stock-quotes" ${stockBusy ? 'disabled' : ''}>${stockBusy ? '更新中…' : '🔄 更新報價'}</button>` : ''}
+      ${stockMsg ? `<div class="muted" style="font-size:12px; margin-top:6px;">${esc(stockMsg)}</div>` : ''}
+      <div class="row" style="margin-top:10px;"><span class="label">算進淨資產</span>
+        <select data-k="sk-asset" aria-label="算進哪個資產細項" style="max-width:62%;">${assetOpts}</select></div>
+      <div class="muted" style="font-size:12px;">${linked ? `資產頁的「${esc(linked.name || '(沒有名稱)')}」跟著這裡的總值自動更新。` : '選一個資產細項,它的金額就會跟著這裡的總值更新;原本自己記股票市值的那一項直接選它,才不會算兩次。'}</div>
+    </div>
+
+    <div class="card">
+      <h3>走勢</h3>
+      ${stockTrendChart()}
+    </div>
+
+    <div class="card">
+      <h3>持股</h3>
+      <div class="muted" style="font-size:12px;">代號數字開頭是台股(新台幣,上市上櫃都可以,例如 2330、00631L),英文是美股(美元,例如 AAPL、BRK.B)。成本填每股平均成本。</div>
+      ${rowsHtml || `<div class="empty">還沒有股票。</div>`}
+      <button class="btn" data-act="add-stock">＋ 新增股票</button>
+    </div>`;
+}
+/* 打字時只更新數字,不整頁重畫(整頁重畫會讓正在打的欄位失焦) */
+function refreshStocks(){
+  const t = stockTotals();
+  const set = (id, v, cls) => { const el = document.getElementById(id); if (el){ el.innerHTML = v; if (cls !== undefined) el.className = cls; } };
+  set('sk-total', money(t.twd));
+  set('sk-day', signMoney(t.day) + (t.dayPct !== null ? `(${fmtPct(t.dayPct)})` : ''), 'val ' + pnlClass(t.day));
+  set('sk-pnl', signMoney(t.pnl) + (t.pnlPct !== null ? `(${fmtPct(t.pnlPct)})` : ''), 'val ' + pnlClass(t.pnl));
+  set('sk-tw', money(t.tw));
+  set('sk-us', usdMoney(t.us) + ' ≈ ' + money(t.usTwd));
+  t.rows.forEach(r => {
+    const tx = stockRowText(r);
+    set('sk-line-' + r.h.id, tx.line);
+    set('sk-pnl-' + r.h.id, tx.pnl, tx.pnlCls);
+  });
+}
+/* 股票分頁的欄位:sk-<欄位>-<id>、sk-usd、sk-asset */
+function onStockField(rest, el){
+  const S = state.stocks;
+  if (rest === 'usd'){ S.usd = Math.max(0, num(el.value)); }
+  else if (rest === 'asset'){
+    const v = String(el.value || '');
+    if (v === 'new'){
+      const a = { id: uid(), name: STOCK_ASSET_NAME, amount: 0 };
+      state.assets.push(a);
+      S.assetId = a.id;
+    }else S.assetId = v && findById(state.assets, v) ? v : '';
+    syncStockAsset();
+    maybeSnapshot();
+    renderAll();
+    return;
+  }else{
+    const cut = rest.indexOf('-'), what = rest.slice(0, cut), h = findById(S.holdings, rest.slice(cut + 1));
+    if (!h) return;
+    if (what === 'code'){
+      const c = String(el.value).trim().toUpperCase().slice(0, 12);
+      if (c !== h.code){ h.code = c; h.name = ''; h.price = 0; h.chg = 0; h.qt = ''; }   // 換代號:舊的名稱跟報價不能沿用
+      refreshStocks();
+      return;   // 還沒有新報價:資產跟今天的紀錄等抓到報價再更新,不然打字途中總值掉一截就被記下來
+    }
+    else if (what === 'shares') h.shares = Math.max(0, num(el.value));
+    else if (what === 'cost') h.cost = Math.max(0, num(el.value));
+    else if (what === 'price'){ h.price = Math.max(0, num(el.value)); h.chg = 0; }   // 手動改的現價沒有「比昨天」
+    else return;
+  }
+  syncStockAsset();
+  maybeStockSnapshot();
+  refreshStocks();
+}
+
 function renderHelp(){
   return `
     <div class="sect">這個 app 在算什麼</div>
     <div class="card doc">
       <p>四件事:<strong>記錄</strong>每一筆收支與買賣、<strong>算出</strong>你的損益與曝險、
       <strong>提醒</strong>什麼時候該加碼或減碼、<strong>保存</strong>資料不會不見。</p>
-      <p>所有數字都是你自己填的,app 只負責算。唯一會自己去外面抓的是股票收盤價。</p>
+      <p>所有數字都是你自己填的,app 只負責算。會自己去外面抓的只有股票價格:槓桿頁的收盤價(證交所),
+      跟「股票」分頁的現價與美元匯率(鉅亨網)。</p>
+    </div>
+
+    <div class="sect">股票分頁(台股 + 美股)</div>
+    <div class="card doc">
+      <p>槓桿頁以外的股票記在這裡,每檔只填<strong>代號、股數、每股平均成本</strong>。代號數字開頭是台股(新台幣,上市上櫃都可以),
+      英文開頭是美股(美元)。按「更新報價」抓現價跟美元匯率:盤中按是當下的成交價,收盤後就是收盤價。</p>
+      <div class="formula">市值       = 股數 × 現價
+台幣市值   = 市值 × 美元匯率(美股)/ 市值(台股)
+損益       = (現價 − 平均成本)× 股數
+今天漲跌   = 股數 × 現價比前一天收盤的漲跌</div>
+      <p>美股的台幣損益用<em>現在的匯率</em>換算成本,匯率本身的漲跌不另外算。手續費、稅不算在裡面,平均成本要含手續費的話自己填進去。</p>
+      <p>這一塊<strong>跟槓桿頁完全分開</strong>:不算進曝險比例、訊號、部位市值。要算進淨資產,在「算進淨資產」選一個資產細項,
+      它的金額就跟著總值更新(原本自己記股票市值的那一項直接選它,才不會算兩次)。</p>
+      <p>走勢:今天每按一次更新記一個點(只存在這台裝置)。每天的總值以<strong>隔天台灣時間早上 ${STOCK_FINAL_HOUR} 點</strong>為準:
+      ${STOCK_FINAL_HOUR} 點以後第一次打開 app 時,用那天台股的收盤價、美股那天的收盤(台灣時間凌晨 4~5 點收的那盤)、那天的收盤匯率重算,
+      盤中按更新記的數字會被換掉;幾天沒開的話補最近 ${STOCK_FINAL_DAYS} 天(用現在的股數,中間買賣過的那幾天會有落差)。
+      app 沒打開不會自己跑,所以是「打開時補」,不是準時 ${STOCK_FINAL_HOUR} 點抓。最多留 ${STOCK_HIST_KEEP} 天;有美股但還沒有匯率時不記,也不更新資產細項。</p>
     </div>
 
     <div class="sect">損益怎麼算</div>
@@ -4420,7 +4856,7 @@ function lineChart(key, labels, series, opts){
       <text x="${w - padR}" y="${h - 5}" fill="var(--sub)" font-size="10" text-anchor="end">${esc(labels[labels.length - 1])}</text>
     </svg>
     <div class="row" id="cap-${key}" style="flex-wrap:wrap; gap:4px 14px;">${chartCaption(key, labels.length - 1)}</div>
-    <div class="muted" style="font-size:11px;">點圖上任一處看該月數字</div>`;
+    <div class="muted" style="font-size:11px;">${esc(o.hint || '點圖上任一處看該月數字')}</div>`;
 }
 
 /* 說明列:月份 + 每條線在該點的數值 */
@@ -6695,8 +7131,9 @@ function onField(key, el){
   const rest = key.slice(dash + 1);
   let structural = false;
 
+  if (kind === 'sk'){ onStockField(rest, el); scheduleSave(); return; }   // 股票分頁
   if (kind === 'an'){ const a = findById(state.assets, rest); if (a) a.name = el.value; }
-  else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a) a.amount = Math.max(0, num(el.value)); }
+  else if (kind === 'aa'){ const a = findById(state.assets, rest); if (a && a.id !== state.stocks.assetId) a.amount = Math.max(0, num(el.value)); }   // 跟著股票總值的那項不給改
   else if (kind === 'ln'){ const l = findById(state.liabilities, rest); if (l) l.name = el.value; }
   else if (kind === 'la'){ const l = findById(state.liabilities, rest); if (l && !loanReady(l)) l.amount = Math.max(0, num(el.value)); }
   else if (kind === 'lo'){                        // 一般型房貸設定:lo-<欄位>-<負債 id>
@@ -7016,6 +7453,10 @@ function sampleData(){
     { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
       trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[], splitsAcked:[] }
   ];
+  s.stocks = { holdings: [
+      { id:uid(), code:'2330', name:'台積電', shares:200, cost:980, price:2400, chg:15, qt:'' },
+      { id:uid(), code:'AAPL', name:'蘋果', shares:30, cost:185.5, price:347.1, chg:3.19, qt:'' }
+    ], usd:32.45, usdTime:'', assetId:'', history:[] };
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
     { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  amount:0, fee:445, source:'cash', note:'定期投入' },
@@ -7212,7 +7653,7 @@ async function copyJSON(){
   renderAll();
 }
 
-const CONFIRM_ACTS = ['diag-clear', 'del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
+const CONFIRM_ACTS = ['diag-clear', 'del-tpl', 'load-sample', 'clear-all', 'del-tx', 'del-trade', 'restore', 'del-draw', 'del-asset', 'del-liab', 'del-stock', 'del-hist', 'del-instrument', 'del-rate', 'loan-off', 'del-loan-rate', 'del-repay'];
 function onClick(el){
   diagLastAct = 'click ' + (el && el.dataset && el.dataset.act || '?');
   rateDupKey = '';
@@ -7234,7 +7675,11 @@ function onClick(el){
     case 'add-asset': state.assets.push({ id:uid(), name:'', amount:0 }); break;
     // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
     case 'del-asset': { const a = findById(state.assets, id); if (a && (a.name || a.amount) && needsConfirm('del-asset:' + id)) return;
-      state.assets = state.assets.filter(a => a.id !== id); break; }
+      state.assets = state.assets.filter(a => a.id !== id); if (state.stocks.assetId === id) state.stocks.assetId = ''; break; }
+    case 'add-stock': state.stocks.holdings.push({ id:uid(), code:'', name:'', shares:0, cost:0, price:0, chg:0, qt:'' }); break;
+    case 'del-stock': { const h = findById(state.stocks.holdings, id); if (h && (h.code || h.shares) && needsConfirm('del-stock:' + id)) return;
+      state.stocks.holdings = state.stocks.holdings.filter(h => h.id !== id); syncStockAsset(); maybeStockSnapshot(); break; }
+    case 'stock-quotes': fetchStockQuotes(); return;
     case 'add-liab': state.liabilities.push({ id:uid(), name:'', amount:0, loan:null }); break;
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
@@ -7675,6 +8120,7 @@ function onForeground(fromTimer = false){
   }
   // 計時器(桌機分頁一直開在前景)只在收盤後抓一次,不要整天每小時問證交所
   maybeAutoQuote(fromTimer);
+  finalizeStockHistory();   // 早上 6 點以後:前一天的股票總值用收盤價定案
 }
 
 function init(){
@@ -7709,6 +8155,9 @@ function init(){
     if (rateDupKey && rateDupKey === dk){ renderAll(); return; }
     // 繳款日:打「1 → 15」途中的「1」不能先把本月的自動還本搬到 1 號,離開欄位才算數
     if (dk === 'lev-payDay'){ applyPayDay(e.target.value); renderAll(); return; }
+    // 股票代號打完(離開欄位):重畫出名稱,能連線的順便抓報價
+    if (dk.startsWith('sk-code-') && QUOTES_ENABLED && !stockBusy){ fetchStockQuotes(); return; }
+    if (dk.startsWith('sk-') && dk !== 'sk-asset' && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     if ((dk.startsWith('lo-') || dk.startsWith('lr-') || dk.startsWith('lbc-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
     if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){
@@ -7747,6 +8196,7 @@ function init(){
   maybeDailySnapshot();
   renderAll();
   maybeAutoQuote();
+  finalizeStockHistory();
   connectCloud();   // 連上雲端後會自動接手並更新畫面
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') onForeground(); });
   // 桌機分頁可能一直開著、一直在前景,不會有 visibilitychange

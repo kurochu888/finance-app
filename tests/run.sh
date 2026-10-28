@@ -40,6 +40,9 @@ echo
 echo "=== 固定收支範本 ==="
 node templates.js || fail=1
 echo
+echo "=== 股票分頁(台股 + 美股、匯率、報價) ==="
+node stocks.js || fail=1
+echo
 echo "=== 槓桿頁「今天要做什麼」 ==="
 node todo.js || fail=1
 echo

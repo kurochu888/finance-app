@@ -437,6 +437,26 @@ id 沿用舊值以確保重複呼叫不會飄動。
   金額小、下次房貸買進就先用掉;加回去的話錢轉去別處 app 不知道,反而高估。以後有人提,先看這段。
   設定頁「借款與利息」列出這個數字(「借了還沒用完(在交割戶)」,2026-10-12 使用者要的,只顯示、不算進任何比例;沒有房貸買進紀錄時不列)。
 
+## 股票分頁(台股 + 美股,2026-10-28 使用者要的)
+
+`state.stocks {holdings:[{id, code, name, shares, cost, price, chg, qt}], usd, usdTime, assetId, history:[{d, v, c}]}`,
+`normalizeStocks()`。**跟槓桿頁完全分開**(使用者選的):不進 `instruments`、曝險比例、訊號、`computePosition()`。只記股數跟每股平均成本(原幣別),
+不記逐筆買賣;代號數字開頭 = 台股(新台幣),不是 = 美股(美元),`stockMarket()`。
+- **報價來源是鉅亨網** `ws.api.cnyes.com/ws/api/v1/quote/quotes/<符號,逗號分隔>`(不用 key、有 CORS):`TWS:代號:STOCK`(上市上櫃都是 TWS,
+  6488 這種上櫃也查得到)、`USS:代號:STOCK`、`FX:USDTWD:FOREX`。欄位 `6` 現價、`11` 漲跌、`200009` 名稱、`200007` 時間(unix 秒),查不到的代號回應裡沒那一筆。
+  使用者要「按更新時拿現價」、不要申請 key;Yahoo、證交所 mis(盤中)、Stooq 都沒開 CORS 或要 key(2026-10-28 用 curl 帶 Origin 試過)。
+  只在按「更新報價」或改完代號時抓(`fetchStockQuotes()`),不走 `twseJson()` 排隊(不是證交所)。
+- 跟淨資產的關係:`assetId` 指到一個資產細項,`syncStockAsset()` 把它的金額設成總值(資產頁那欄唯讀);有美股但沒匯率時不動(不然淨資產掉一截)。
+  改代號時現價清掉,但資產跟每日紀錄等抓到新報價才更新。
+- `history` 每天一筆(同步,照日期合併,不記刪除);今天盤中每次更新的點只存在 localStorage `financeStockIntraday_v1`。
+- **每天的總值以隔天早上 6 點為準**(使用者要的):`finalizeStockHistory()`(開 app、`onForeground`,開著時計時器每 10 分鐘)
+  把 `stockFinalThrough()`(6 點以後 = 昨天,以前 = 前天)以前最近 14 天、不早於第一筆紀錄的,用鉅亨網日線
+  (`charting/history?resolution=D`,`from` 是較新的時間、`to` 較舊,`t` = 交易日 UTC 0 點)重算:每檔、匯率都取「日期 ≤ 那天」的最後收盤,
+  標 `f:true`,`maybeStockSnapshot()` 不再蓋。網頁沒開不會跑,沒辦法真的 6 點排程(GitHub Actions 讀不到使用者持股)。
+  用現在的股數算;缺一檔的收盤就那天不定案,但從沒抓到報價的代號(打錯)跳過;失敗 30 分鐘內不重試(`financeStockFinalTry`)。
+- 有進 `keyedLists()`(路徑 `stocks`)跟 `keepFieldsOldVersionsDrop()`(舊版寫回來沒有 `stocks` key 就補本機的)。
+  資料定義(`emptyStocks`/`normalizeStocks`)放在 `emptyState()` 前面:`let state = emptyState()` 載入時就跑,放後面會 TDZ。測試 `tests/stocks.js`(假的 fetch)。
+
 ## 跟網路銀行對帳(2026-10,使用者要的)
 
 `leverage.bankCheck {date, balance, interest, appInterest}`:使用者填網路銀行顯示的借款餘額、下一期利息(`bankchk-*` 欄位),
