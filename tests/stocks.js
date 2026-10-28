@@ -91,6 +91,15 @@ await_(async () => {
   must(S().history.length === 1 && S().history[0].v === 2522000, '同一天更新成最後一次:' + JSON.stringify(S().history));
   must(A.stockIntraday().length === 2 && A.stockIntraday()[1][1] === 2522000, '盤中兩個點');
 
+  console.log('游標在欄位上時抓報價不整頁重畫');
+  // 改完代號點下一格(股數)就會抓報價:以前一開始就整頁重畫,剛點進去的股數欄位失焦,打的字全部不見(2026-10-28 使用者手機上)
+  A.currentTab = 'stocks';
+  document.activeElement = { tagName: 'INPUT', dataset: { k: 'sk-shares-' + tw.id } };
+  store.content = el('content'); store.content.innerHTML = 'KEEP';
+  await A.fetchStockQuotes();
+  must(store.content.innerHTML === 'KEEP', '打字中抓報價不能整頁重畫');
+  document.activeElement = null;
+
   console.log('抓不到時維持原本的數字');
   fetchImpl = async () => { throw new Error('offline'); };
   await A.fetchStockQuotes();

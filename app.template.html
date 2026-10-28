@@ -3701,7 +3701,8 @@ async function fetchStockQuotes(){
   if (!QUOTES_ENABLED || stockBusy) return;
   stockBusy = true;
   stockMsg = '更新報價中…';
-  renderAll();
+  // 改完代號點下一格(股數)就會觸發抓報價:這時整頁重畫,剛點進去的欄位會失焦,打的股數、成本全部不見(2026-10-28 使用者手機上「新增股票沒有成功」)
+  if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
   try{
     const codes = [...new Set(state.stocks.holdings.map(h => h.code).filter(stockCodeOk))];
     const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
@@ -3879,6 +3880,7 @@ function stockTrendChart(){
   return (today ? `<div class="muted" style="font-size:12px; margin-top:6px;">今天(這台裝置每次更新一個點)</div>${today}` : '')
     + (daily ? `<div class="muted" style="font-size:12px; margin-top:12px;">每天(最近 ${days.length} 天,收盤價;今天是最後一次更新)</div>${daily}` : '');
 }
+const stockNameText = h => esc(h.name) || (h.code ? (stockMarket(h.code) === 'TW' ? '台股' : '美股') : '');
 function renderStocks(){
   const S = state.stocks, t = stockTotals(), linked = stockAsset();
   const rowsHtml = t.rows.map(r => {
@@ -3887,7 +3889,7 @@ function renderStocks(){
       <div style="margin-bottom:14px;">
         <div class="erow">
           <input class="f-code" data-k="sk-code-${h.id}" value="${esc(h.code)}" placeholder="代號" autocapitalize="characters" spellcheck="false">
-          <span class="muted" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${esc(h.name) || (h.code ? (stockMarket(h.code) === 'TW' ? '台股' : '美股') : '')}</span>
+          <span class="muted" id="sk-name-${h.id}" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${stockNameText(h)}</span>
           ${xDel('del-stock', h.id)}
         </div>
         <div class="erow">
@@ -3944,6 +3946,7 @@ function refreshStocks(){
   set('sk-us', usdMoney(t.us) + ' ≈ ' + money(t.usTwd));
   t.rows.forEach(r => {
     const tx = stockRowText(r);
+    set('sk-name-' + r.h.id, stockNameText(r.h));
     set('sk-line-' + r.h.id, tx.line);
     set('sk-pnl-' + r.h.id, tx.pnl, tx.pnlCls);
   });
@@ -8138,8 +8141,14 @@ function init(){
     // 繳款日:打「1 → 15」途中的「1」不能先把本月的自動還本搬到 1 號,離開欄位才算數
     if (dk === 'lev-payDay'){ applyPayDay(e.target.value); renderAll(); return; }
     // 股票代號打完(離開欄位):重畫出名稱,能連線的順便抓報價
-    if (dk.startsWith('sk-code-') && QUOTES_ENABLED && !stockBusy){ fetchStockQuotes(); return; }
-    if (dk.startsWith('sk-') && dk !== 'sk-asset' && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
+    // change 比「焦點移到下一格」早發生:當下沒有欄位有焦點,馬上抓的話 fetchStockQuotes 會以為沒在打字、整頁重畫,
+    // 剛點進去的股數欄位就失焦了。等焦點移過去再抓(跟 focusout 處理一樣等 60ms 以上)
+    if (dk.startsWith('sk-code-') && QUOTES_ENABLED && !stockBusy){ setTimeout(fetchStockQuotes, 100); return; }
+    // 同一個道理:離開欄位當下還不知道是不是點了下一格,等焦點移過去,真的沒在打字才重畫(名稱、現價那幾行)
+    if (dk.startsWith('sk-') && dk !== 'sk-asset'){
+      setTimeout(() => { if (currentTab === 'stocks' && !(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll(); }, 100);
+      return;
+    }
     if ((dk.startsWith('lo-') || dk.startsWith('lr-') || dk.startsWith('lbc-')) && !(document.activeElement && document.activeElement.tagName === 'INPUT')){ renderAll(); return; }
     // 資產頁改過去月份的細項:離開欄位後重畫,圖跟每個月的增減才會跟著變
     if (e.target.dataset && String(e.target.dataset.k || '').startsWith('ih-') && !(document.activeElement && document.activeElement.tagName === 'INPUT')){
