@@ -27,7 +27,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   renderAll, renderStocks, renderAssets, stockTotals, fetchStockQuotes, keepFieldsOldVersionsDrop, keySets, netWorth, sampleData,
-  stockIntraday, stockDaysToFinalize, finalizeStockHistory, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
+  stockIntraday, chartData, stockDaysToFinalize, finalizeStockHistory, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -230,6 +230,11 @@ await_(async () => {
   histCalls = [];
   await A.finalizeStockHistory();
   must(histCalls.length === 0, '都定案了就不再抓');
+  // 每天那條線只畫定案的:10/26、10/27 兩天(今天 10/28 還沒定案的 333 不畫)
+  A.currentTab = 'stocks'; A.renderAll();
+  must(/每天\(最近 2 天/.test(store.content.innerHTML), '每天那條線只畫定案的 2 天:' + (store.content.innerHTML.match(/每天\([^)]*\)/) || [''])[0]);
+  const cd = A.chartData['stk-days'];
+  must(cd && cd.series[0].values.join(',') === [h26.v, h27.v].join(','), '線上的值是定案的那兩天:' + (cd && cd.series[0].values));
   // 定案過的不能被當天的更新蓋掉(手機時間被往回調的情況)
   simNow = new RealDate('2026-10-27T20:00:00').getTime();
   A.onField('sk-shares-a', { value: '5' });

@@ -3871,14 +3871,18 @@ function stockTrendChart(){
   const today = pts.length >= 2 ? lineChart('stk-today', pts.map(p => p[0]), [
     { name: '總值', color: 'var(--s1)', values: pts.map(p => p[1]) }
   ], { label: '今天的總值', height: 120, area: true, hint: '點圖上任一處看那次更新的總值' }) : '';
-  const days = hist.slice(-180);
+  // 每天那條線只畫隔天早上 6 點用收盤價定案的(f:true,見 finalizeStockHistory):今天、還沒定案的盤中數字不畫進去
+  // (2026-10-28 使用者:「折線圖應該只要每天早上 6 點的終值」),盤中的變化看上面「今天」那張
+  const days = hist.filter(h => h.f).slice(-180);
   const daily = days.length >= 2 ? lineChart('stk-days', days.map(h => dayLabel(h.d)), [
     { name: '總值', color: 'var(--s1)', values: days.map(h => h.v) },
     { name: '成本', color: 'var(--s2)', values: days.map(h => h.c) }
   ], { label: '每天的總值與成本', height: 130, hint: '點圖上任一處看那天的數字' }) : '';
-  if (!today && !daily) return `<div class="empty">按幾次「更新報價」之後這裡會畫出走勢:今天每次更新一個點,每天留最後一次。</div>`;
+  const dailyNote = daily ? '' : `<div class="empty" style="margin-top:12px;">每天的走勢只畫收盤價定案的總值:每天的數字在隔天早上 ${STOCK_FINAL_HOUR} 點以後打開 app 時定案,`
+    + (days.length ? `目前只有 ${days.length} 天,`  : '')
+    + `至少 2 天才畫得出線。</div>`;
   return (today ? `<div class="muted" style="font-size:12px; margin-top:6px;">今天(這台裝置每次更新一個點)</div>${today}` : '')
-    + (daily ? `<div class="muted" style="font-size:12px; margin-top:12px;">每天(最近 ${days.length} 天,收盤價;今天是最後一次更新)</div>${daily}` : '');
+    + (daily ? `<div class="muted" style="font-size:12px; margin-top:12px;">每天(最近 ${days.length} 天,隔天早上 ${STOCK_FINAL_HOUR} 點用收盤價定案)</div>${daily}` : dailyNote);
 }
 const stockNameText = h => esc(h.name) || (h.code ? (stockMarket(h.code) === 'TW' ? '台股' : '美股') : '');
 function renderStocks(){
@@ -4006,7 +4010,7 @@ function renderHelp(){
       <p>美股的台幣損益用<em>現在的匯率</em>換算成本,匯率本身的漲跌不另外算。手續費、稅不算在裡面,平均成本要含手續費的話自己填進去。</p>
       <p>這一塊<strong>跟槓桿頁完全分開</strong>:不算進曝險比例、訊號、部位市值。要算進淨資產,在「算進淨資產」選一個資產細項,
       它的金額就跟著總值更新(原本自己記股票市值的那一項直接選它,才不會算兩次)。</p>
-      <p>走勢:今天每按一次更新記一個點(只存在這台裝置)。每天的總值以<strong>隔天台灣時間早上 ${STOCK_FINAL_HOUR} 點</strong>為準:
+      <p>走勢:今天每按一次更新記一個點(只存在這台裝置)。「每天」那條線只畫定案過的總值,今天跟還沒定案的盤中數字不畫。每天的總值以<strong>隔天台灣時間早上 ${STOCK_FINAL_HOUR} 點</strong>為準:
       ${STOCK_FINAL_HOUR} 點以後第一次打開 app 時,用那天台股的收盤價、美股那天的收盤(台灣時間凌晨 4~5 點收的那盤)、那天的收盤匯率重算,
       盤中按更新記的數字會被換掉;幾天沒開的話補最近 ${STOCK_FINAL_DAYS} 天(用現在的股數,中間買賣過的那幾天會有落差)。
       app 沒打開不會自己跑,所以是「打開時補」,不是準時 ${STOCK_FINAL_HOUR} 點抓。最多留 ${STOCK_HIST_KEEP} 天;有美股但還沒有匯率時不記,也不更新資產細項。</p>
