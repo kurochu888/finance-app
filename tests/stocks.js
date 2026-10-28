@@ -27,7 +27,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   renderAll, renderStocks, renderAssets, stockTotals, fetchStockQuotes, keepFieldsOldVersionsDrop, keySets, netWorth, sampleData,
-  stockIntraday, chartData, stockDaysToFinalize, finalizeStockHistory, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
+  stockIntraday, chartData, maybeAutoStockQuotes, stockSessionDay, switchTab, get stockBusy(){return stockBusy}, stockDaysToFinalize, finalizeStockHistory, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -276,6 +276,44 @@ await_(async () => {
   fetchImpl = async url => hist(SERIES[decodeURIComponent(/symbol=([^&]+)/.exec(String(url))[1])] || []);
   await A.finalizeStockHistory();
   must(S().history.find(h => h.d === '2026-10-27').f, '打錯、從來沒抓到報價的代號不能卡住定案');
+
+  console.log('開盤中每分鐘自動抓一次');
+  const at = iso => { simNow = new RealDate(iso).getTime(); };
+  const settle = async () => { for (let i = 0; i < 50 && A.stockBusy; i++) await new Promise(r => setImmediate(r)); };
+  let quoteCalls = 0;
+  fetchImpl = async url => { if (!String(url).includes('cnyes')) throw new Error('offline'); quoteCalls++; return reply([quote('FX:USDTWD:FOREX', 32, 0, ''), quote('TWS:2330:STOCK', 2400 + quoteCalls, 1, '台積電'), quote('USS:AAPL:STOCK', 350, 1, '蘋果')])(); };
+  localStorage.removeItem('financeStockIntraday_v1');
+  A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1000, cost:1000 }, { id:'b', code:'AAPL', shares:10, cost:200 }], usd: 32 } });
+  const tryAuto = async (iso, force) => { at(iso); const r = A.maybeAutoStockQuotes(force); await settle(); return r; };
+  must(await tryAuto('2026-10-29T10:00:00') === true, '週四 10:00 台股開盤中要抓');
+  must(await tryAuto('2026-10-29T10:00:30') === false, '不到 1 分鐘不再抓');
+  must(await tryAuto('2026-10-29T10:01:05') === true, '過 1 分鐘再抓');
+  must(A.stockIntraday().length === 2, '每分鐘一個點:' + JSON.stringify(A.stockIntraday()));
+  must(await tryAuto('2026-10-29T15:00:00') === false, '15:00 台股收盤、美股(紐約 03:00)還沒開:不抓');
+  must(await tryAuto('2026-10-29T15:00:00', true) === true, '切到股票分頁(force)沒開盤也抓一次');
+  must(await tryAuto('2026-10-29T22:00:00') === true, '22:00 = 紐約 10:00(夏令),美股開盤中要抓');
+  at('2026-10-29T22:00:00');
+  must(A.stockIntraday().slice(-1)[0][0] === '22:00', '晚上的點記在同一天');
+  must(await tryAuto('2026-10-30T02:30:00') === true, '凌晨 2:30 = 紐約 14:30,還在開盤');
+  must(A.stockSessionDay() === '2026-10-29' && A.stockIntraday().some(p => p[0] === '22:00'), '凌晨還算前一天(6 點才換日)');
+  at('2026-10-30T06:30:00');
+  must(A.stockSessionDay() === '2026-10-30' && A.stockIntraday().length === 0, '6 點以後是新的一天,前一天的點不畫');
+  must(await tryAuto('2026-10-31T10:00:00') === false, '週六不抓');
+  must(await tryAuto('2026-11-02T22:00:00') === false, '冬令:22:00 = 紐約 09:00,美股還沒開');
+  must(await tryAuto('2026-11-02T22:31:00') === true, '冬令:22:31 = 紐約 09:31,開盤');
+  A.state.stocks.holdings = A.state.stocks.holdings.filter(h => h.code === '2330');
+  must(await tryAuto('2026-11-02T22:40:00') === false, '只有台股時晚上不抓');
+  A.state.stocks.holdings = [];
+  must(await tryAuto('2026-11-03T10:30:00', true) === false, '沒有股票不抓');
+  console.log('同一分鐘兩次只留一點');
+  A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1000, cost:1000 }], usd: 32 } });
+  localStorage.removeItem('financeStockIntraday_v1');
+  at('2026-11-03T11:00:05'); A.onClick({ dataset:{ act:'stock-quotes' } }); await settle();
+  at('2026-11-03T11:00:40'); A.onClick({ dataset:{ act:'stock-quotes' } }); await settle();
+  must(A.stockIntraday().length === 1 && A.stockIntraday()[0][1] === 1000 * (2400 + quoteCalls), '同一分鐘留後面那次:' + JSON.stringify(A.stockIntraday()));
+  at('2026-11-03T11:05:00'); quoteCalls = 0;
+  A.switchTab('stocks'); await settle();
+  must(quoteCalls === 1, '切到股票分頁自動抓一次');
 
   if (bugs.length){ console.log('發現 ' + bugs.length + ' 個問題:'); bugs.forEach(b => console.log('  ✗ ' + b)); process.exitCode = 1; }
   else console.log('股票分頁:沒有發現問題');

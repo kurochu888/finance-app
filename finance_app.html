@@ -507,7 +507,7 @@ const newInstruments = () => DEFAULT_INSTRUMENTS.map(x => Object.assign({ key: u
 /* 股票分頁的資料(說明見下面「股票(台股 + 美股)」那段):emptyState() 在載入時就會用到,要先定義 */
 const CNYES_QUOTE = 'https://ws.api.cnyes.com/ws/api/v1/quote/quotes/';
 const STOCK_HIST_KEEP = 1000;
-const STOCK_INTRADAY_KEY = 'financeStockIntraday_v1', STOCK_INTRADAY_MAX = 300;
+const STOCK_INTRADAY_KEY = 'financeStockIntraday_v1', STOCK_INTRADAY_MAX = 900;   // 台股 270 分鐘 + 美股 390 分鐘
 const STOCK_ASSET_NAME = '股票(台股+美股)';
 const emptyStocks = () => ({ holdings:[], usd:0, usdTime:'', assetId:'', history:[] });
 const stockMarket = code => /^\d/.test(String(code || '')) ? 'TW' : 'US';
@@ -824,8 +824,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-28 · c538cbacbf';
-const BUILD_HASH = 'c538cbacbf';
+const BUILD_VERSION = '2026-10-29 · 922c98d274';
+const BUILD_HASH = '922c98d274';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2952,6 +2952,7 @@ function renderAll(){
 }
 function switchTab(tab){
   currentTab = tab;
+  if (tab === 'stocks') maybeAutoStockQuotes(true);   // 切到股票分頁:超過 1 分鐘沒更新就先抓一次(沒開盤也抓,看得到最新收盤)
   editingTx = null;
   editingTrade = null;
   tradeError = '';
@@ -3698,29 +3699,67 @@ function maybeStockSnapshot(){
   }
   return true;
 }
-/* 今天盤中每次按更新的總值(只存這台、只留今天):畫「今天」的走勢 */
+/* 今天盤中每次更新的總值(只存這台):畫「今天」的走勢。「今天」= 早上 6 點到隔天早上 6 點(跟每天總值定案的時間一樣),
+   晚上的美股盤(台灣 21:30~凌晨 4、5 點)才不會在午夜被切成兩張圖。同一分鐘更新兩次只留後面那次 */
+const STOCK_DAY_START_HOUR = 6;
+const stockSessionDay = () => { const d = new Date(Date.now() - STOCK_DAY_START_HOUR * 3600000); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
 function stockIntraday(){
   try{
     const x = JSON.parse(localStorage.getItem(STOCK_INTRADAY_KEY) || 'null');
-    if (x && x.d === todayISO() && Array.isArray(x.pts)) return x.pts.filter(p => Array.isArray(p) && typeof p[0] === 'string' && Number.isFinite(p[1]));
+    if (x && x.d === stockSessionDay() && Array.isArray(x.pts)) return x.pts.filter(p => Array.isArray(p) && typeof p[0] === 'string' && Number.isFinite(p[1]));
   }catch(e){}
   return [];
 }
 function recordStockIntraday(v){
-  const d = new Date(), pts = stockIntraday();
-  pts.push([pad2(d.getHours()) + ':' + pad2(d.getMinutes()), Math.round(v)]);
+  const d = new Date(), pts = stockIntraday(), t = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  if (pts.length && pts[pts.length - 1][0] === t) pts.pop();
+  pts.push([t, Math.round(v)]);
   if (pts.length > STOCK_INTRADAY_MAX) pts.splice(0, pts.length - STOCK_INTRADAY_MAX);
-  try{ localStorage.setItem(STOCK_INTRADAY_KEY, JSON.stringify({ d: todayISO(), pts })); }catch(e){}
+  try{ localStorage.setItem(STOCK_INTRADAY_KEY, JSON.stringify({ d: stockSessionDay(), pts })); }catch(e){}
+}
+/* 開盤中自動每分鐘更新(2026-10-29 使用者要的:「今天」的圖不用按,每 1 分鐘一個點)。只在畫面在前景、持有的市場有開盤時抓:
+   台股照這台的時間(使用者在台灣)週一到五 9:00~13:35、證交所休市日不抓;美股照紐約時間 9:30~16:05(夏令冬令 Intl 自己換),
+   美股休市日沒有清單,那幾天只是多幾個平的點。鎖螢幕、在背景時瀏覽器會停計時器,那段沒有點 */
+const STOCK_AUTO_MS = 60000;
+let stockLastFetch = 0;
+function twStockOpen(){
+  const d = new Date(), m = d.getHours() * 60 + d.getMinutes();
+  return !marketClosed(todayISO()) && m >= 9 * 60 && m <= 13 * 60 + 35;
+}
+function usStockOpen(){
+  try{
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+    const get = k => (parts.find(p => p.type === k) || {}).value;
+    if (['Sat', 'Sun'].includes(get('weekday'))) return false;
+    const m = Number(get('hour')) * 60 + Number(get('minute'));
+    return m >= 9 * 60 + 30 && m <= 16 * 60 + 5;
+  }catch(e){ return false; }
+}
+function stockMarketsOpen(){
+  const held = state.stocks.holdings.filter(h => stockCodeOk(h.code) && h.shares > 0);
+  return (held.some(h => stockMarket(h.code) === 'TW') && twStockOpen()) || (held.some(h => stockMarket(h.code) === 'US') && usStockOpen());
+}
+function maybeAutoStockQuotes(force = false){
+  if (!QUOTES_ENABLED || stockBusy || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return false;
+  if (!state.stocks.holdings.some(h => stockCodeOk(h.code))) return false;
+  if (Date.now() - stockLastFetch < STOCK_AUTO_MS - 5000) return false;
+  if (!force && !stockMarketsOpen()) return false;
+  fetchStockQuotes(true);
+  return true;
 }
 const unixToLocal = s => { const d = new Date(s * 1000); return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 let stockBusy = false, stockMsg = '';
 /* 鉅亨網一次查完:匯率 + 每一檔。查不到的代號回應裡直接沒有那一筆 */
-async function fetchStockQuotes(){
+async function fetchStockQuotes(auto = false){
   if (!QUOTES_ENABLED || stockBusy) return;
   stockBusy = true;
-  stockMsg = '更新報價中…';
-  // 改完代號點下一格(股數)就會觸發抓報價:這時整頁重畫,剛點進去的欄位會失焦,打的股數、成本全部不見(2026-10-28 使用者手機上「新增股票沒有成功」)
-  if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
+  stockLastFetch = Date.now();
+  // 自動每分鐘那種不閃「更新中」,抓完才重畫
+  if (auto !== true){
+    stockMsg = '更新報價中…';
+    // 改完代號點下一格(股數)就會觸發抓報價:這時整頁重畫,剛點進去的欄位會失焦,打的股數、成本全部不見(2026-10-28 使用者手機上「新增股票沒有成功」)
+    if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
+  }
   try{
     const codes = [...new Set(state.stocks.holdings.map(h => h.code).filter(stockCodeOk))];
     const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
@@ -3773,7 +3812,7 @@ async function fetchStockQuotes(){
   }
   stockBusy = false;
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){ if (currentTab === 'stocks') refreshStocks(); }
-  else renderAll();
+  else if (auto !== true || currentTab === 'stocks') renderAll();   // 自動更新時在別的分頁不用重畫(資產頁的數字下次切過去就是新的)
 }
 /* 前一天的總值用收盤價定案(2026-10-28 使用者要的:「以每天台灣時間早上 6 點為前一天總值的抓取時間」)。
    網頁沒打開不會跑,所以是「6 點以後第一次打開 / 切回前景(開著的話計時器每 10 分鐘)」時補:
@@ -3899,7 +3938,8 @@ function stockTrendChart(){
   const dailyNote = daily ? '' : `<div class="empty" style="margin-top:12px;">每天的走勢只畫收盤價定案的總值:每天的數字在隔天早上 ${STOCK_FINAL_HOUR} 點以後打開 app 時定案,`
     + (days.length ? `目前只有 ${days.length} 天,`  : '')
     + `至少 2 天才畫得出線。</div>`;
-  return (today ? `<div class="muted" style="font-size:12px; margin-top:6px;">今天(這台裝置每次更新一個點)</div>${today}` : '')
+  return (today ? `<div class="muted" style="font-size:12px; margin-top:6px;">今天(早上 ${STOCK_DAY_START_HOUR} 點起;開盤中 app 開著每分鐘自動一個點,只存在這台裝置)</div>${today}`
+      : `<div class="empty">開盤中 app 開著(在前景)會每分鐘自動抓一次報價,畫出今天的走勢,不用按。</div>`)
     + (daily ? `<div class="muted" style="font-size:12px; margin-top:12px;">每天(最近 ${days.length} 天,隔天早上 ${STOCK_FINAL_HOUR} 點用收盤價定案)</div>${daily}` : dailyNote);
 }
 const stockNameText = h => esc(h.name) || (h.code ? (stockMarket(h.code) === 'TW' ? '台股' : '美股') : '');
@@ -4028,7 +4068,9 @@ function renderHelp(){
       <p>美股的台幣損益用<em>現在的匯率</em>換算成本,匯率本身的漲跌不另外算。手續費、稅不算在裡面,平均成本要含手續費的話自己填進去。</p>
       <p>這一塊<strong>跟槓桿頁完全分開</strong>:不算進曝險比例、訊號、部位市值。要算進淨資產,在「算進淨資產」選一個資產細項,
       它的金額就跟著總值更新(原本自己記股票市值的那一項直接選它,才不會算兩次)。</p>
-      <p>走勢:今天每按一次更新記一個點(只存在這台裝置)。「每天」那條線只畫定案過的總值,今天跟還沒定案的盤中數字不畫。每天的總值以<strong>隔天台灣時間早上 ${STOCK_FINAL_HOUR} 點</strong>為準:
+      <p>走勢:「今天」那張從早上 ${STOCK_DAY_START_HOUR} 點算到隔天早上 ${STOCK_DAY_START_HOUR} 點(晚上的美股盤畫在同一張)。
+      app 開著、在前景,持有的市場開盤中(台股週一到五 9:00~13:30、遇證交所休市日不抓;美股紐約時間 9:30~16:00)就每分鐘自動抓一次、記一個點,
+      不用按;鎖螢幕或在背景時不會抓,那段沒有點。美股休市日沒有清單,那幾天會多幾個平的點。點只存在這台裝置。「每天」那條線只畫定案過的總值,今天跟還沒定案的盤中數字不畫。每天的總值以<strong>隔天台灣時間早上 ${STOCK_FINAL_HOUR} 點</strong>為準:
       ${STOCK_FINAL_HOUR} 點以後第一次打開 app 時,用那天台股的收盤價、美股那天的收盤(台灣時間凌晨 4~5 點收的那盤)、那天的收盤匯率重算,
       盤中按更新記的數字會被換掉;幾天沒開的話補最近 ${STOCK_FINAL_DAYS} 天(用現在的股數,中間買賣過的那幾天會有落差)。
       app 沒打開不會自己跑,所以是「打開時補」,不是準時 ${STOCK_FINAL_HOUR} 點抓。最多留 ${STOCK_HIST_KEEP} 天;有美股但還沒有匯率時不記,也不更新資產細項。</p>
@@ -8214,7 +8256,9 @@ function init(){
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') onForeground(); });
   // 桌機分頁可能一直開著、一直在前景,不會有 visibilitychange
   const fg = setInterval(() => { if (document.visibilityState !== 'hidden') onForeground(true); }, 10 * 60000);
+  const stk = setInterval(() => maybeAutoStockQuotes(), 15000);   // 股票開盤中每分鐘一個點(15 秒看一次,實際間隔由 STOCK_AUTO_MS 控制)
   if (fg && fg.unref) fg.unref();   // 瀏覽器回傳數字沒有 unref;node 跑測試時不讓計時器卡住結束
+  if (stk && stk.unref) stk.unref();
   if (UPDATE_CHECK_ENABLED){
     document.getElementById('updateBanner').addEventListener('click', applyUpdate);
     document.addEventListener('visibilitychange', () => {
