@@ -404,7 +404,8 @@ id 沿用舊值以確保重複呼叫不會飄動。
 ## 記帳頁固定收支、槓桿頁「今天要做什麼」(2026-10)
 
 - **`state.templates[]`** `{id, cat, desc, amount}`(金額帶正負號):記帳頁按「記到 X月」記一筆到正在看的月份,交易 id
-  `tp-<範本id>-YYYYMM`(`tplTxId()`)固定,一個月一次、兩台各按一次合併成一筆。**刻意不自動記**:自動記要重做一次房貸利息那套
+  `tp-<範本id>-YYYYMM-<亂數>`(`tplTxBase()` + `uid()`),每按一下一筆、一個月可以很多次(2026-10-30 使用者要的,同一種支出一個月可能好幾次),
+兩台各按一次就是兩筆;以前一個月一次、id 沒有亂數,`tplMonthCount()` 兩種都算進「已記 N 筆」。**刻意不自動記**:自動記要重做一次房貸利息那套
   (第一次用、沒開 app 的月份、刪掉不補回…)。有進 `keyedLists()`(刪除紀錄)跟 `keepFieldsOldVersionsDrop()`。測試 `tests/templates.js`。
 - **`renderTodo()`/`todoItems()`**:槓桿頁概況最上面,把收盤價太舊、分割、🔔、曝險要調整(`exposureTodo()`)、帳對不起來
   (`loanMismatch()`,設定頁的警告共用)、一週內扣款(`monthLoanDues()` 的 `date`)、一週內預定動用收成一張卡。

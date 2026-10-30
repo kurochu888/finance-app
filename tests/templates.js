@@ -1,4 +1,4 @@
-/* 固定收支範本:存範本、一個月只記一次、記到正在看的月份、刪除要確認,
+/* 固定收支範本:存範本、一個月可以記很多次、記到正在看的月份、刪除要確認,
    存檔往返、舊版分頁丟掉 templates 欄位時補回、刪掉的範本兩台同步不會又出現。 */
 const RealDate = Date;
 let simNow = new RealDate('2026-10-08T09:00:00').getTime();
@@ -46,13 +46,20 @@ A.draft = { date:'2026-10-08', type:'expense', cat:'其他', desc:'', amount:'',
 A.onClick({ dataset:{ act:'save-tpl' } });
 must(A.state.templates.length === 2 && /金額/.test(A.draftError), '沒填金額不能存');
 
-console.log('記到本月,一個月一次');
+console.log('記到本月,每按一下一筆');
 const [sal, ins] = A.state.templates;
 A.onClick({ dataset:{ act:'use-tpl', id: sal.id } });
 A.onClick({ dataset:{ act:'use-tpl', id: sal.id } });
-must(tx().length === 1, '同一個月按兩次只記一筆,得到 ' + tx().length);
-must(tx()[0].date === '2026-10-08' && tx()[0].amount === 120000 && tx()[0].cat === '薪資' && tx()[0].desc === '月薪', '本月記在今天、內容照範本');
-must(A.renderLedger().includes('10月已記'), '記過的要顯示已記');
+must(tx().length === 2 && tx()[0].id !== tx()[1].id, '同一個月按兩次要記兩筆,得到 ' + tx().length);
+must(tx().every(t => t.date === '2026-10-08' && t.amount === 120000 && t.cat === '薪資' && t.desc === '月薪'), '本月記在今天、內容照範本');
+must(A.renderLedger().includes('10月已記 2 筆'), '記過的要顯示這個月記了幾筆');
+must(A.renderLedger().includes('data-act="use-tpl" data-id="' + sal.id + '"'), '記過了還是要能再按');
+const backIds = A.normalize(JSON.parse(JSON.stringify(A.state))).transactions.map(t => t.id).join();
+must(backIds === tx().map(t => t.id).join(), '存檔再讀回來 id 不能變');
+A.state.transactions.push({ id:'tp-' + sal.id + '-202610', date:'2026-10-01', cat:'薪資', desc:'月薪', amount:120000 });
+must(A.renderLedger().includes('10月已記 3 筆'), '舊版固定 id 記的也要算進去');
+A.state.transactions = tx().filter(t => t.id !== 'tp-' + sal.id + '-202610');
+A.state.transactions.pop();
 
 console.log('記到正在看的過去月份');
 A.viewMonth = '2026-09';
@@ -65,6 +72,7 @@ console.log('刪掉那筆交易之後可以再記');
 A.state.transactions = tx().filter(t => t.amount !== 120000);
 A.onClick({ dataset:{ act:'use-tpl', id: sal.id } });
 must(tx().filter(t => t.amount === 120000).length === 1, '刪掉後再按要能記回來');
+must(A.normalize({ transactions:[tx()[0]] }).transactions[0].id === tx()[0].id, 'id 要過 safeId');
 
 console.log('刪除範本要按兩次,記過的交易不動');
 const n = tx().length;
@@ -105,6 +113,8 @@ must(bad.templates.length === 1 && bad.templates[0].cat === '其他' && /^[a-z0-
 const longId = A.normalize({ templates: [{ id: 'a'.repeat(64), cat:'x', amount: 1 }] });
 A.state = longId; A.viewMonth = '2026-10';
 A.onClick({ dataset:{ act:'use-tpl', id: 'a'.repeat(64) } });
+A.onClick({ dataset:{ act:'use-tpl', id: 'a'.repeat(64) } });
+must(A.renderLedger().includes('已記 2 筆'), '很長的範本 id 也要算得到次數');
 const t2 = A.normalize(JSON.parse(JSON.stringify(A.state))).transactions[0];
 must(t2 && t2.id === A.state.transactions[0].id, '很長的範本 id 記出來的交易 id 存檔後不能被換掉');
 

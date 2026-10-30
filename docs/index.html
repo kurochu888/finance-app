@@ -842,8 +842,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-30 · 7c5d7e0390';
-const BUILD_HASH = '7c5d7e0390';
+const BUILD_VERSION = '2026-10-30 · dfd400fdfc';
+const BUILD_HASH = 'dfd400fdfc';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3516,10 +3516,11 @@ function refreshTradeDraft(){
 }
 
 /* ===================== 記帳 ===================== */
-/* 固定收支範本:月薪、保險、房租這類每月一樣的,記帳頁按一下記到正在看的那個月。
+/* 固定收支範本:月薪、保險、加油這類金額常常一樣的,記帳頁按一下記到正在看的那個月。
    不自動記(自動記要處理第一次用、沒開 app 的月份、刪掉不補回…,房貸利息那套踩過的坑都會再來一次),
-   一個月只記一次:交易 id 照範本跟月份固定,兩台各按一次合併後還是同一筆,記過的顯示 ✓。 */
-const tplTxId = (t, m) => ('tp-' + t.id).slice(0, 50) + '-' + m.replace('-', '');   // id 上限 64 字(safeId),太長會在 normalize 被換掉
+   一個月可以記很多次(每按一下一筆):交易 id = tplTxBase() + 亂數,舊版一個月一次記的 id 就是 tplTxBase() 本身,一起算次數。 */
+const tplTxBase = (t, m) => ('tp-' + t.id).slice(0, 49) + '-' + m.replace('-', '');   // id 上限 64 字(safeId),太長會在 normalize 被換掉;後面還要接 - 跟 7 字亂數
+const tplMonthCount = (t, m) => { const b = tplTxBase(t, m); return state.transactions.filter(x => x.id === b || x.id.startsWith(b + '-')).length; };
 function renderTemplates(){
   const list = state.templates || [];
   const m = viewMonth;
@@ -3528,7 +3529,7 @@ function renderTemplates(){
     <div class="card">
       <h3>固定收支</h3>
       ${list.length ? list.map(t => {
-        const tx = state.transactions.find(x => x.id === tplTxId(t, m));
+        const n = tplMonthCount(t, m);
         // 調薪、保費調整:改範本只影響之後記的,已經記過的交易不動(過去的薪資還是當時的金額)
         if (t.id === editingTpl) return `
         <div class="tx-edit">
@@ -3550,14 +3551,13 @@ function renderTemplates(){
         <div class="erow">
           <div class="f-name" data-act="edit-tpl" data-id="${t.id}" style="cursor:pointer;">
             <div>${esc(t.cat)}${t.desc ? ` <span class="muted">· ${esc(t.desc)}</span>` : ''}</div>
-            <div class="${t.amount > 0 ? 'pos' : ''}" style="font-size:13px;">${t.amount > 0 ? '+' : '−'}${fmt(Math.abs(t.amount))}</div>
+            <div class="${t.amount > 0 ? 'pos' : ''}" style="font-size:13px;">${t.amount > 0 ? '+' : '−'}${fmt(Math.abs(t.amount))}${n ? ` <span class="muted">· ✓ ${esc(shortMonth(m))}已記 ${n} 筆</span>` : ''}</div>
           </div>
-          ${tx ? `<span class="badge gray" style="flex:0 0 auto;">✓ ${esc(shortMonth(m))}已記</span>`
-               : `<button class="btn quiet" style="flex:0 0 auto; width:auto; margin:0; padding:6px 12px;" data-act="use-tpl" data-id="${t.id}">記到${esc(shortMonth(m))}</button>`}
+          <button class="btn quiet" style="flex:0 0 auto; width:auto; margin:0; padding:6px 12px;" data-act="use-tpl" data-id="${t.id}">記到${esc(shortMonth(m))}</button>
           ${xDel('del-tpl', t.id)}
         </div>`; }).join('')
-      : `<div class="empty">還沒有固定收支。<br>在上面填好一筆(例如月薪、保險費),按「把上面填的存成固定收支」,之後每個月按一下就記好。</div>`}
-      ${list.length ? `<div class="muted" style="margin-top:8px;">記到上面月份切換正在看的那個月,一個月記一次;記錯了到下面交易紀錄點那筆改或刪。點範本可以改金額(例如調薪)。</div>` : ''}
+      : `<div class="empty">還沒有固定收支。<br>在上面填好一筆(例如月薪、保險費),按「把上面填的存成固定收支」,之後有這筆收支時按一下就記好。</div>`}
+      ${list.length ? `<div class="muted" style="margin-top:8px;">每按一下記一筆,記到上面月份切換正在看的那個月,同一個月可以記很多次;記錯了到下面交易紀錄點那筆改或刪。點範本可以改金額(例如調薪)。</div>` : ''}
     </div>`;
 }
 function renderLedger(){
@@ -4368,8 +4368,8 @@ function renderHelp(){
     <div class="sect">其他小功能</div>
     <div class="card doc">
       <ul>
-        <li><strong>固定收支</strong>(記帳頁)— 月薪、保險這類每月一樣的,存成範本,每月按「記到 X月」記一筆到正在看的月份,
-        一個月只會記一次。刻意不自動記:按了才算數,金額不一樣當月改那筆就好。點範本可以改金額/類別/說明,只影響之後記的。</li>
+        <li><strong>固定收支</strong>(記帳頁)— 月薪、保險這類每月一樣的,存成範本,有這筆收支時按「記到 X月」記一筆到正在看的月份,
+        每按一下一筆,一個月可以記很多次。刻意不自動記:按了才算數,金額不一樣當月改那筆就好。點範本可以改金額/類別/說明,只影響之後記的。</li>
         <li><strong>隱藏金額</strong>(頁首 👁)— 所有金額換成 ••••、輸入框模糊,在外面打開時用。每台裝置各自記。</li>
         <li><strong>年度總結</strong>(總覽)— 一年的收支、淨資產變化(去年 12 月的快照到今年最新)、投資進出、房貸利息與還本。</li>
         <li><strong>收盤後自動檢查</strong> — 每個交易日收盤後,GitHub Actions 用<em>預設</em>標的與<em>預設</em>訊號參數算一次均線訊號,
@@ -8079,12 +8079,11 @@ function onClick(el){
       state.templates.push(t);
       break;
     }
-    case 'use-tpl': {                       // 用範本記一筆到正在看的月份,一個月一次
+    case 'use-tpl': {                       // 用範本記一筆到正在看的月份,每按一下一筆
       const t = findById(state.templates || [], id);
       if (!t) break;
-      const m = viewMonth, txid = tplTxId(t, m);
-      if (state.transactions.some(x => x.id === txid)) break;
-      state.transactions.push({ id: txid, date: m === thisMonth() ? todayISO() : m + '-01', cat: t.cat, desc: t.desc, amount: t.amount });
+      const m = viewMonth;
+      state.transactions.push({ id: tplTxBase(t, m) + '-' + uid(), date: m === thisMonth() ? todayISO() : m + '-01', cat: t.cat, desc: t.desc, amount: t.amount });
       break;
     }
     case 'sum-year': summaryYear += Number(el.dataset.v) || 0; break;
