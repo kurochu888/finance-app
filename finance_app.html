@@ -826,8 +826,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-10-30 · dfd400fdfc';
-const BUILD_HASH = 'dfd400fdfc';
+const BUILD_VERSION = '2026-11-03 · 6c0f21dd50';
+const BUILD_HASH = '6c0f21dd50';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -5747,7 +5747,7 @@ function renderTrendTab(){
           <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast == null ? '—' : t.maFast.toFixed(2)} / ${t.maSlow == null ? '—' : t.maSlow.toFixed(2)}</span></div>
           <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
-            ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `再跌 ${t.cushionPct.toFixed(1)}% 就出場`}</span></div>`
+            ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `${t.exitLine.toFixed(2)}(再跌 ${t.cushionPct.toFixed(1)}% 就出場)`}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
         </div>`;
       }).join('')}

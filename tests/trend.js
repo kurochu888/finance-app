@@ -568,6 +568,7 @@ console.log('跌到出場線才賣的未實現');
   must(Math.abs(x.unrealized - exp) < 1e-6 && x.anyLine, `出場線賣出的未實現應該是 ${exp.toFixed(0)},得到 ${x.unrealized.toFixed(0)}`);
   must(x.unrealized < A.computePosition().unrealized, '跌到出場線的未實現應該比現在少');
   must(x.rows.length === 1 && Math.abs(x.rows[0].unrealized - exp) < 1e-6, '每檔各自的未實現要對:' + JSON.stringify(x.rows));
+  must(A.renderTrendTab().includes(`${t.exitLine.toFixed(2)}(再跌 ${t.cushionPct.toFixed(1)}% 就出場)`), '訊號卡的距出場線要同時列價位跟 %');
   A.levTab = 'overview';
   { const h = A.renderLeverage(), at = h.indexOf(sym + ' 出場線'), seg = h.slice(at, h.indexOf('</div>', at));
     must(at >= 0 && /class="val (pos|neg)">[+−]NT\$ [\d,]+/.test(seg), '每檔那一行要列金額:' + seg.replace(/<[^>]*>/g, ' ')); }

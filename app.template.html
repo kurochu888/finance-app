@@ -5729,7 +5729,7 @@ function renderTrendTab(){
           <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast == null ? '—' : t.maFast.toFixed(2)} / ${t.maSlow == null ? '—' : t.maSlow.toFixed(2)}</span></div>
           <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
-            ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `再跌 ${t.cushionPct.toFixed(1)}% 就出場`}</span></div>`
+            ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `${t.exitLine.toFixed(2)}(再跌 ${t.cushionPct.toFixed(1)}% 就出場)`}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
         </div>`;
       }).join('')}
