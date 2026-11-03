@@ -705,6 +705,9 @@ function normalize(raw){
       amount: Math.max(0, num(d.amount)),
       useDate: isoDate(d.useDate, ''),
       note: str(d.note),
+      // 用途(2026-11 使用者:理財型借了 300 萬拿去別的用途,沒進股市):'other' 照樣是借款、計息、還本、佔額度,
+      // 但不拿去跟房貸買進對帳、不算進部位的借款。一定寫出這個 key,舊版寫回來沒有就是舊版丟掉的
+      purpose: d.purpose === 'other' ? 'other' : 'invest',
       repayments: objs(d.repayments)
         .map(x => ({ id: safeId(x.id), date: isoDate(x.date, ''), amount: Math.max(0, num(x.amount)) }))
     });
@@ -808,8 +811,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-03 · 7a5fcfd018';
-const BUILD_HASH = '7a5fcfd018';
+const BUILD_VERSION = '2026-11-03 · 082cc6afec';
+const BUILD_HASH = '082cc6afec';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1371,6 +1374,12 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
     next.leverage.payDayFrom = JSON.parse(JSON.stringify(prev.leverage.payDayFrom));
     restored = true;
   }
+  // 動用的用途(2026-11 加):舊版分頁寫回來沒有 purpose,「其他用途」會變回買股用
+  const rawDraws = new Map((rawL && Array.isArray(rawL.draws) ? rawL.draws : []).filter(x => x && typeof x === 'object').map(x => [String(x.id), x]));
+  next.leverage.draws.forEach(d => {
+    const r = rawDraws.get(d.id), p = prev.leverage && (prev.leverage.draws || []).find(x => x.id === d.id);
+    if (r && !('purpose' in r) && p && p.purpose === 'other'){ d.purpose = 'other'; restored = true; }
+  });
   // 一般型房貸的參數放在負債細項的 loan 裡,舊版只留 id/name/amount
   const rawLiab = new Map((Array.isArray(raw.liabilities) ? raw.liabilities : []).filter(x => x && typeof x === 'object').map(x => [String(x.id), x]));
   next.liabilities.forEach(l => {
@@ -2415,6 +2424,7 @@ function effectiveRepayments(item){
     .filter(r => r.date && r.date >= item.useDate && r.date <= today)
     .sort((a, b) => a.date < b.date ? -1 : 1);
 }
+const investDraw = d => d.purpose !== 'other';   // 買股用的動用(預設);'other' = 其他用途
 const repaidOf = item => Math.min(item.amount, sum(effectiveRepayments(item), r => r.amount));
 function outstanding(item){
   // 動用日期在未來(先記下預定要借的)到那天才算借款——跟未來日期的還款一樣。以前當下就算進餘額,
@@ -2423,10 +2433,10 @@ function outstanding(item){
   return Math.max(0, item.amount - repaidOf(item));
 }
 
-/* 已動用的房貸,從動用日算到今天的累積利息 */
+/* 已動用的房貸,從動用日算到今天的累積利息。只算買股用的:其他用途那筆的利息不是投資的成本,不從投資損益扣 */
 function accruedInterest(){
   const L = state.leverage;
-  return sum(L.draws, t => accrue(t, L));
+  return sum(L.draws.filter(investDraw), t => accrue(t, L));
 }
 /* 某一天當下,這筆借款還欠多少 */
 function balanceAt(item, dateISO){
@@ -2460,7 +2470,7 @@ function cashFlows(merge = true){   // merge=false 回傳合併前的明細(測�
     else if (t.source !== 'loan') add(t.date, -(t.shares * t.price + t.fee));
   });
 
-  const loans = L.draws;
+  const loans = L.draws.filter(investDraw);   // 其他用途的借款、還款、利息不是這個部位的現金流
   loans.forEach(item => {
     if (!item.useDate) return;
     (item.repayments || []).forEach(r => {
@@ -2608,7 +2618,7 @@ function computePositionUncached(){
   // 還房貸本金是自己口袋出的錢:用房貸買的那部分持股慢慢變成自有的(跟 cashFlows() 的 XIRR 同一套看法)。
   // 只算今天以前的還款(未來日期的還沒發生);用賣股的錢還款時,賣出那邊已經扣過,這裡加回來剛好抵銷
   const today = todayISO();
-  const repaid = sum(state.leverage.draws, d => sum((d.repayments || []).filter(r => d.useDate && r.date && r.date >= d.useDate && r.date <= today), r => r.amount));
+  const repaid = sum(state.leverage.draws.filter(investDraw), d => sum((d.repayments || []).filter(r => d.useDate && r.date && r.date >= d.useDate && r.date <= today), r => r.amount));
   const ownIn = buyCash + repaid;
   // 賣出所得與配息是拿回來的錢,要從「還放在裡面的自有資金」扣掉
   const netCash = ownIn - sellNet - dividends;
@@ -2634,16 +2644,18 @@ function computeRisk(){
   const pv = p.hasData ? p.marketValue : r.totalValue;
   // 借款 = 已撥款的餘額 + 已經拿去買股票、還沒撥款的預定動用(股票已經在部位市值裡,借款也要算進來才對得上)
   const pendingLoan = r.pendingLoan;
-  const loan = r.usedAmount + pendingLoan;
+  // 其他用途的借款(otherLoan)不是部位的借款:不從部位市值扣,改從額度扣(那部分額度已經被用掉了,比例跟全部當部位借款一樣)
+  const otherLoan = r.otherLoan;
+  const loan = r.usedAmount - otherLoan + pendingLoan;
   const equity = pv - loan;
   const nw = netWorth();
   // 實質曝險:每檔各自乘上自己的槓桿倍數(正2 = 2,一般股票 = 1)
   const exposure = sum(r.holdings, h => h.value * (h.leverage || 1));
   // 分母 = 自己的錢 + 房貸總額度。用部位淨值而非部位市值,
   // 否則已動用的部分會同時被算進部位與額度裡,比例失真偏樂觀。
-  const capacity = equity + state.leverage.creditLimit;
+  const capacity = equity + state.leverage.creditLimit - otherLoan;
   return {
-    pv, loan, pendingLoan, equity, nw, exposure, capacity,
+    pv, loan, otherLoan, pendingLoan, equity, nw, exposure, capacity,
     creditLimit: state.leverage.creditLimit,
     invested: p.invested, pnl: p.total, hasTrades: p.hasData,
     leverage: equity > 0 ? pv / equity : 0,
@@ -2747,7 +2759,7 @@ function dailyAt(d){
     pv += lots[sym].shares * h.c; cost += lots[sym].cost;
   }
   const L = state.leverage;
-  const interest = sum(L.draws, t => accrue(t, L, d));
+  const interest = sum(L.draws.filter(investDraw), t => accrue(t, L, d));   // 跟 accruedInterest() 一樣:其他用途的利息不算投資損益
   const loan = sum(L.draws, t => balanceAt(t, d)) + pendingLoanFunding(d);
   return { pv: finNum(Math.round(pv)), loan: finNum(Math.round(loan)), pnl: finNum(Math.round(pv - cost + realized - interest)) };
 }
@@ -3630,7 +3642,7 @@ function syncStockAsset(){
   if (!a) return false;
   const t = stockTotals();
   if (t.noFx) return false;
-  const v = Math.round(finNum(t.twd));
+  const v = num(Math.round(finNum(t.twd)));   // 資產金額讀回來會被 num() 夾在 ±1 兆,寫的時候就夾,當下跟重新整理後才一樣
   if (a.amount === v) return false;
   a.amount = v;
   maybeSnapshot();
@@ -4083,6 +4095,8 @@ function renderHelp(){
 曝險比例     = 實質市場曝險 ÷ (部位淨值 + 房貸總額度)
 部位淨值     = 部位市值 − 借款餘額        自己的錢
 槓桿倍數     = 部位市值 ÷ 部位淨值</div>
+      <p>房貸動用的用途設成<strong>「其他用途」</strong>(借了沒拿來買股票)的那筆,不算部位的借款(部位淨值不扣),
+      改從額度扣掉:分母 = 部位淨值 + 房貸總額度 − 其他用途的借款。兩種算法曝險比例一樣,只是「自己的錢」不會被那筆錢壓低。</p>
       <h4>分母為什麼是這個</h4>
       <p>用「自己的錢 + 還能借的火力」當基準,不用淨資產 —— 房子和現金不會拿去接刀,
       真正的上限是額度。</p>
@@ -4356,15 +4370,17 @@ function computeLeverage(){
   }));
 
   const usedDraws = draws.filter(t => t.used);
-  const usedAmount = sum(draws, t => t.balance);   // 還欠銀行多少
-  const drawnAmount = sum(usedDraws, t => t.amount);
+  const usedAmount = sum(draws, t => t.balance);   // 還欠銀行多少(含其他用途)
+  // 其他用途的動用(purpose 'other'):還欠的佔額度、計息,但不是部位的借款
+  const otherLoan = sum(draws.filter(t => !investDraw(t)), t => t.balance);
+  const drawnAmount = sum(usedDraws.filter(investDraw), t => t.amount);   // 買股用的動用合計(跟房貸買進對帳)
 
   const monthlyInterest = usedAmount * (L.annualRate/100) / 12;
 
   /* 「自己的錢」(equityValue)給每日/每月快照記錄部位淨值走勢用,不能拿總市值代替:
        總市值含借來的錢,不能反映真正屬於自己的部分;
      自己的錢 = 市值 − 借款餘額 + 已取回的現金 − 已還款 − 動用後新投入的自有資金 */
-  const freezeDate = L.draws.filter(t => t.useDate).map(t => t.useDate).sort()[0] || '';
+  const freezeDate = L.draws.filter(t => t.useDate && investDraw(t)).map(t => t.useDate).sort()[0] || '';
   let cashBack = 0, ownAfter = 0;
   if (freezeDate){
     state.trades.forEach(t => {
@@ -4375,11 +4391,12 @@ function computeLeverage(){
     });
   }
   const repaidTotal = sum(L.draws, t => repaidOf(t));
+  const investRepaid = sum(L.draws.filter(investDraw), t => repaidOf(t));
   // 已經買進、還沒撥款的預定動用(pendingLoanFunding):股票已經在市值裡,借款也要扣,不然交割前兩天的快照自己的錢多算
   const pendingLoan = pendingLoanFunding();
-  const equityValue = totalValue - usedAmount - pendingLoan + cashBack - repaidTotal - ownAfter;
+  const equityValue = totalValue - (usedAmount - otherLoan) - pendingLoan + cashBack - investRepaid - ownAfter;
 
-  return { holdings, totalValue, draws, usedAmount, pendingLoan, drawnAmount, monthlyInterest,
+  return { holdings, totalValue, draws, usedAmount, otherLoan, pendingLoan, drawnAmount, monthlyInterest,
            equityValue, cashBack, ownAfter, repaidTotal };
 }
 
@@ -4691,7 +4708,7 @@ function ownExitCash(it, lev2, trends){
     return Math.max(0, value + sold - ownBoughtSince(start, [j]));
   };
   const xs = lev2.map(X), total = sum(xs, x => x), mine = xs[lev2.indexOf(it)] || 0;
-  const loanBefore = sum(L.draws.filter(d => d.useDate && d.useDate < start),
+  const loanBefore = sum(L.draws.filter(d => d.useDate && d.useDate < start && investDraw(d)),
     d => Math.max(0, d.amount - sum((d.repayments || []).filter(r => r.date && r.date >= d.useDate && r.date < start), r => r.amount)));
   const owed = loanBefore + pendingLoanFunding(start, false);
   const loanShare = total > 0 ? owed * mine / total : 0;
@@ -4717,12 +4734,12 @@ function captureOwnBase(){
     const c = ownExitCash(it, lev2, trends);
     if (legacy && legacy.exit <= t.exitDate && c.start <= legacy.exit){
       const amount = c.total > 0 ? Math.round(legacy.amount * c.value / c.total) : 0;
-      L.ownBases[it.key] = { exit: t.exitDate, amount, auto: legacy.auto };
+      L.ownBases[it.key] = { exit: t.exitDate, amount: num(amount), auto: legacy.auto };
       diag('接刀自有資金', `${it.id} ${t.exitDate} 出場,舊版整組記的 ${$n(legacy.amount)} 照市值比例分到 ${$n(amount)}`);
     } else {
       const bought = ownBoughtSince(t.exitDate, [it]);
       const fresh = bought < 1 && c.value > 0 && c.cash > 0;
-      L.ownBases[it.key] = { exit: t.exitDate, amount: fresh ? Math.round(c.cash) : 0, auto: true };
+      L.ownBases[it.key] = { exit: t.exitDate, amount: fresh ? num(Math.round(c.cash)) : 0, auto: true };
       diag('接刀自有資金', fresh ? `${it.id} ${t.exitDate} 出場,自動記下 ${$n(c.cash)}(出場時市值 ${$n(c.value)} − 按市值比例分到的房貸 ${$n(c.loanShare)},房貸 ${$n(c.owed)} × ${$n(c.value)} ÷ ${$n(c.total)})`
         : `${it.id} ${t.exitDate} 出場,記不到(出場後已經買過 ${$n(bought)}、或賣光了沒記賣出),請使用者自己填`);
     }
@@ -4748,7 +4765,7 @@ function computeExposurePlan(){
   const risk = computeRisk();
   const R = targetRatio / 100, L = 2;
   const denomCash = L - R;
-  const raw = R * (risk.equity + risk.creditLimit) - risk.exposure;   // 為負代表已經超過目標,該減碼
+  const raw = R * risk.capacity - risk.exposure;   // capacity = 自己的錢 + 額度 − 其他用途借款;為負代表已經超過目標,該減碼
   // HOLD 的目標(hold)只在「剛轉成 HOLD」時調整一次,之後續抱期間漲跌造成的曝險變化都不再平衡,
   // 等出場訊號。「剛轉成」= 使用者還沒確認過這次 HOLD(沿用狀態改變提醒的 lastSeenStatus,
   // 按提醒的「知道了」或曝險卡片的「已調整完成」都算確認)。
@@ -4910,11 +4927,12 @@ function renderRisk(){
       <div class="row" style="margin-top:12px;"><span class="label">部位市值</span><span class="val">NT$ ${fmt(k.pv)}</span></div>
       <div class="row"><span class="label">借款餘額</span><span class="val neg">−NT$ ${fmt(k.loan)}</span></div>
       ${k.pendingLoan > 0.5 ? `<div class="row sub"><span class="label">含預定動用(已經買進、還沒撥款)</span><span class="val">NT$ ${fmt(k.pendingLoan)}</span></div>` : ''}
+      ${k.otherLoan > 0.5 ? `<div class="row sub"><span class="label">不含其他用途的借款(從額度扣)</span><span class="val">NT$ ${fmt(k.otherLoan)}</span></div>` : ''}
       <div class="row total"><span class="label">自己的錢</span><span class="val ${k.equity < 0 ? 'neg' : ''}">${money(k.equity)}</span></div>
       ${k.capacity <= 0 ? `<div class="muted neg" style="margin-top:4px;">借款已經超過「部位市值 + 房貸額度」,曝險比例沒有意義(顯示 —):部位全部賣掉也還不清借款。</div>` : ''}
       <div class="row sub"><span class="label">實質市場曝險(正2 ×2)</span><span class="val">NT$ ${fmt(k.exposure)}</span></div>
       <div class="row sub"><span class="label">槓桿倍數</span><span class="val">${k.leverage ? k.leverage.toFixed(2) + ' 倍' : '—'}</span></div>
-      <div class="row sub"><span class="label">分母(自己的錢 + 額度 ${fmt(k.creditLimit)})</span><span class="val">${money(k.capacity)}</span></div>
+      <div class="row sub"><span class="label">分母(自己的錢 + 額度 ${fmt(k.creditLimit)}${k.otherLoan > 0.5 ? ' − 其他用途 ' + fmt(k.otherLoan) : ''})</span><span class="val">${money(k.capacity)}</span></div>
       <button class="why" data-act="go" data-v="help">曝險怎麼算 →</button>
       ${posChart ? `
       <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
@@ -5182,7 +5200,8 @@ function renderDrawRecords(){
           !t.useDate ? '未動用' : t.useDate > today ? '預定' : t.balance ? '動用中' : '已還清'}</span>`;
   // 尚欠那段帶 id,打字改還款時 refreshLeverage() 不用整頁重畫就能更新(展開或收起都看得到)
   const line = t => [t.useDate ? esc(t.useDate.slice(2).replace(/-/g, '/')) : '',
-    t.useDate && t.useDate <= today && t.amount ? `<span id="out-balance-${t.id}">${drawBalanceText(t)}</span>` : t.amount ? 'NT$ ' + fmt(t.amount) : ''].filter(Boolean).join(' · ');
+    t.useDate && t.useDate <= today && t.amount ? `<span id="out-balance-${t.id}">${drawBalanceText(t)}</span>` : t.amount ? 'NT$ ' + fmt(t.amount) : '',
+    t.purpose === 'other' ? '其他用途' : ''].filter(Boolean).join(' · ');
   const item = t => {
     const force = !t.useDate || !t.amount || pendingConfirm === 'del-draw:' + t.id;
     return `<div style="border-bottom:1px solid var(--line); padding:4px 0;">${fold('draw-' + t.id, esc(t.label || '(未命名)') + ' ' + badge(t), row(t), { sub: line(t), force })}</div>`;
@@ -5203,6 +5222,10 @@ function renderDrawRecords(){
         <div class="field"><label>動用日期${t.useDate ? '' : '(填了才算已動用)'}</label><input type="date" data-k="draw-date-${t.id}" value="${esc(t.useDate)}"></div>
         <div class="field"><label>動用金額</label><input type="number" inputmode="decimal" data-k="draw-amt-${t.id}" value="${t.amount || ''}"></div>
       </div>
+      <div class="field"><label>用途</label>
+        <div class="seg">${[['invest', '買股票'], ['other', '其他用途']].map(([v, txt]) =>
+          `<button class="seg-btn ${(t.purpose === 'other' ? 'other' : 'invest') === v ? 'on' : ''}" data-act="draw-purpose" data-id="${t.id}" data-v="${v}">${txt}</button>`).join('')}</div>
+        ${t.purpose === 'other' ? `<div class="muted" style="font-size:12px; margin-top:4px;">照樣算借款、計息、自動還本、佔額度;不跟房貸買進對帳,也不算部位的借款(「自己的錢」不扣,改從額度扣)。</div>` : ''}</div>
       <div class="field"><label>備註(買了什麼)</label><input data-k="draw-note-${t.id}" value="${esc(t.note || '')}" placeholder="00631L 27,000 股"></div>
       <button class="btn${pendingConfirm === 'del-draw:' + t.id ? ' danger' : ''}" data-act="del-draw" data-id="${t.id}" style="margin-top:8px;">${pendingConfirm === 'del-draw:' + t.id ? '⚠️ 有還款紀錄,再按一次刪除' : '刪除這筆'}</button>
     </div>`;
@@ -5309,7 +5332,7 @@ function trendBadge(status){
    房貸買進順便記動用時先用這筆,不夠的才新增(2026-10 使用者:動用整數 35 萬、買了 348,496,剩的下次先用)。
    exceptId:剛存進去的那筆買進不算 */
 function unusedLoanCash(exceptId){
-  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0);
+  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0 && investDraw(d));
   const drawn = sum(ds, d => d.amount);
   const owed = sum(ds, d => Math.max(0, d.amount - sum((d.repayments || []).filter(r => r.date && r.date >= d.useDate), r => r.amount)));
   const spent = sum(state.trades.filter(t => t.action === 'buy' && t.source === 'loan' && t.id !== exceptId), t => t.shares * t.price + t.fee);
@@ -6397,9 +6420,9 @@ function renderLeverage(){
             <div>
               <div class="at">兩邊的房貸金額對不起來</div>
               <div class="ad">
-                動用紀錄合計 NT$ ${fmt(r.drawnAmount)},但買賣紀錄裡標記「房貸借款」的買進只有 NT$ ${fmt(p.buyLoan)},
+                ${r.otherLoan > 0.5 || state.leverage.draws.some(d => !investDraw(d)) ? '買股用的動用' : '動用紀錄'}合計 NT$ ${fmt(r.drawnAmount)},但買賣紀錄裡標記「房貸借款」的買進只有 NT$ ${fmt(p.buyLoan)},
                 差 NT$ ${fmt(Math.abs(diff))}。${diff > 0
-                  ? '可能是借了還沒買進,或買進時忘了選「房貸借款」。'
+                  ? '可能是借了還沒買進、買進時忘了選「房貸借款」,或這筆錢拿去別的用途(到「紀錄」分頁把那筆動用的用途改成「其他用途」)。'
                   : '可能是買進標記成房貸的金額超過實際動用,或動用金額填少了。'}
                 利息與曝險以動用紀錄為準。
               </div>
@@ -6569,7 +6592,7 @@ function plannedDrawAmount(){
    只算「房貸買進合計 − 已撥款的動用合計」不夠的那部分,上限是預定動用合計;單純先記下來、還沒買的預定動用不算
    (錢還沒借也還沒花)。cut 那天以前(incl = 含那天)為準:今天(曝險)、或出場日前一刻(接刀自有資金) */
 function pendingLoanFunding(cut = todayISO(), incl = true){
-  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0);
+  const ds = state.leverage.draws.filter(d => d.useDate && d.amount > 0 && investDraw(d));
   const past = d => incl ? d.useDate <= cut : d.useDate < cut;
   const later = sum(ds.filter(d => !past(d)), d => d.amount);
   if (!(later > 0)) return 0;
@@ -6955,7 +6978,8 @@ function healthCheck(){
   }
   // 借款
   info(`借款:銀行已撥款 ${$n(r.usedAmount)}、已買進還沒撥款 ${$n(r.pendingLoan)}、預定動用合計 ${$n(plannedDrawAmount())}、額度 ${$n(L.creditLimit)}`);
-  info(`曝險 ${k.exposureRatio.toFixed(1)}% = 實質曝險 ${$n(k.exposure)} ÷(自己的錢 ${$n(k.equity)} + 額度 ${$n(L.creditLimit)})`);
+  if (r.otherLoan > 0.5) info(`其他用途的借款 ${$n(r.otherLoan)}(計息、佔額度,不算部位的借款)`);
+  info(`曝險 ${k.exposureRatio.toFixed(1)}% = 實質曝險 ${$n(k.exposure)} ÷(自己的錢 ${$n(k.equity)} + 額度 ${$n(L.creditLimit)}${r.otherLoan > 0.5 ? ' − 其他用途 ' + $n(r.otherLoan) : ''})`);
   if (k.capacity <= 0) warn('分母(自己的錢 + 額度)≤ 0,曝險比例沒有意義');
   if (loanLedgerMissing()) warn('有用房貸買進的紀錄,但一筆動用都沒有', true);
   const mm = loanMismatch();
@@ -7409,7 +7433,7 @@ function sampleData(){
   // 動用金額要跟「用房貸買的那筆」(00631L 10,000 股 @34.8,含手續費約 34.8 萬)對得上——
   // 以前寫 100 萬,多借的 65 萬沒買任何東西,範例一載入「自己的錢」就是負的,設定頁也跳金額對不起來的警告
   s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 350000,
-    useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', repayments: [] });
+    useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', purpose: 'invest', repayments: [] });
   s.instruments = [
     { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260), splits:[], splitsAcked:[] },
@@ -7649,6 +7673,11 @@ function onClick(el){
     case 'del-liab': { const l = findById(state.liabilities, id); if (l && (l.name || l.amount) && needsConfirm('del-liab:' + id)) return;
       state.liabilities = state.liabilities.filter(l => l.id !== id); break; }
     case 'item-hist': itemHistOpen = itemHistOpen === id ? '' : id; break;
+    case 'draw-purpose': {
+      const d = state.leverage.draws.find(x => x.id === id);
+      if (d){ d.purpose = el.dataset.v === 'other' ? 'other' : 'invest'; diag('動用', `「${d.label || d.id}」${$n(d.amount)} 用途改成${d.purpose === 'other' ? '其他用途' : '買股'}`); scheduleSave(); }
+      break;
+    }
     case 'draw-round': { const v = Number(el.dataset.v); state.leverage.drawRound = [1000, 10000].includes(v) ? v : 0; scheduleSave(); break; }
     case 'fold': { const k = el.dataset.v; if (openFolds.has(k)) openFolds.delete(k); else openFolds.add(k); break; }
     case 'del-rate':   // 刪掉一段過去的利率:那段期間改照下一段(或目前)的利率算
@@ -7688,7 +7717,7 @@ function onClick(el){
       break;
     }
     case 'add-draw':
-      state.leverage.draws.push({ id: uid(), label: '動用記錄', amount: 0, useDate: '', note: '', repayments: [] });
+      state.leverage.draws.push({ id: uid(), label: '動用記錄', amount: 0, useDate: '', note: '', purpose: 'invest', repayments: [] });
       break;
     case 'del-draw': {
       const d = findById(state.leverage.draws, id);
@@ -7788,7 +7817,7 @@ function onClick(el){
         if (need > 0){
           diag('自動記帳', `房貸買進 ${last.symbol} ${$n(loanAmt)},自動新增動用 ${$n(need)}(動用日 ${useDate}${unused ? `,先用掉之前沒用完的 ${$n(unused)}` : ''})`);
           state.leverage.draws.push({ id: uid(), label: last.symbol + ' 買進', amount: need, useDate,
-            note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, repayments: [] });
+            note: `${last.symbol} ${fmtRaw(last.shares)} 股 @ ${last.price}(${last.date} 成交,自動新增${unused ? `;先用掉之前沒用完的 ${fmtRaw(unused)}` : ''})`, purpose: 'invest', repayments: [] });
           tradeNote = mixNote + (unused
             ? `買進 NT$ ${fmt(loanAmt)} 先用掉之前借了沒用完的 NT$ ${fmt(unused)},另外新增一筆房貸動用 NT$ ${fmt(need)}`
             : `已同時新增一筆房貸動用 NT$ ${fmt(need)}`) + (need > short ? `(湊整到${unit === 10000 ? '萬' : '千'}元,多的 NT$ ${fmt(need - short)} 下次房貸買進先扣)` : '')

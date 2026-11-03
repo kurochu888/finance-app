@@ -448,6 +448,13 @@ id 沿用舊值以確保重複呼叫不會飄動。
   撥款那天借款變成整筆、自己的錢少 51,012(app 不算現金)。考慮過把 `unusedLoanCash()` 加回自己的錢,使用者選不改:
   金額小、下次房貸買進就先用掉;加回去的話錢轉去別處 app 不知道,反而高估。以後有人提,先看這段。
   設定頁「借款與利息」列出這個數字(「借了還沒用完(在交割戶)」,2026-10-12 使用者要的,只顯示、不算進任何比例;沒有房貸買進紀錄時不列)。
+- **動用的用途 `draws[].purpose`(`'invest'` 預設 / `'other'`,2026-11 使用者:理財型借 300 萬拿去別的用途,沒進股市)**:
+  `investDraw()` 判斷。其他用途的照樣算借款餘額(`usedAmount`)、利息(`levPeriodInterest`、自動利息)、自動還本、銀行對帳、佔額度;
+  但不跟房貸買進對帳(`loanMismatch()` 的 `drawnAmount` 只算買股用)、不算進 `unusedLoanCash()`/`pendingLoanFunding()`/`ownExitCash()`(接刀自有資金的出場前借款),
+  也不算投資損益的利息跟 XIRR 現金流(`accruedInterest()`、`cashFlows()`、`computePosition()` 的已還本金)。
+  曝險:`computeRisk()` 的 loan 不含它(`otherLoan` 另外回傳),分母改成「自己的錢 + 額度 − otherLoan」——比例跟全部當部位借款一樣,
+  只是「自己的錢」不被那筆壓低;`computeExposurePlan()` 用同一個分母。年度總結的利息照樣含它(是真的付的利息)。
+  `normalize()` 一定寫出 purpose,`keepFieldsOldVersionsDrop()` 靠「沒有 key = 舊版寫的」補回 'other'。測試 `tests/extras.js`。
 
 ## 股票分頁(台股 + 美股,2026-10-28 使用者要的)
 

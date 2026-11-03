@@ -147,6 +147,62 @@ console.log('預定動用:剩餘可動用先扣掉,並列出網路銀行現在�
   A.state = keep;
 }
 
+console.log('動用用途「其他用途」:借了沒進股市(2026-11 使用者:理財型借 300 萬拿去別的用途)');
+{
+  const keep = A.state;
+  const mk = purpose => {
+    const s = A.normalize(A.emptyState());
+    Object.assign(s.leverage, { creditLimit: 8000000, annualRate: 2.58, rateHistory: [] });
+    s.leverage.draws = [
+      { id:'iv', label:'買股', amount:3239000, useDate:'2026-09-01', note:'', repayments:[] },
+      { id:'ot', label:'別的用途', amount:3000000, useDate:'2026-09-15', note:'', repayments:[], purpose },
+    ];
+    s.trades = [{ id:'lb', date:'2026-09-01', symbol:'00631L', action:'buy', source:'loan', shares:1, price:3238584, amount:0, fee:0, note:'' }];
+    s.instruments.forEach(it => { it.price = it.id === '00631L' ? 3238584 * 1.1 : 0; });
+    return A.normalize(s);
+  };
+  A.state = mk('invest');
+  const before = { risk: A.computeRisk(), mm: A.loanMismatch(), unused: A.unusedLoanCash(), int: A.nextLevInterest().amount };
+  must(before.mm && Math.round(before.mm.diff) === 3000416, '買股用時要警告差 3,000,416:' + (before.mm && before.mm.diff));
+  A.state = mk('other');
+  must(A.state.leverage.draws[1].purpose === 'other' && A.state.leverage.draws[0].purpose === 'invest', 'normalize 要留住用途、預設買股');
+  const k = A.computeRisk(), lev = A.computeLeverage();
+  must(!A.loanMismatch(), '其他用途不跟房貸買進對帳');
+  must(!A.healthCheck().some(x => /動用合計跟房貸買進合計差/.test(x.t)), '健康檢查也不能再說對不起來');
+  must(A.unusedLoanCash() === 416, '借了沒用完只算買股用的:' + A.unusedLoanCash());
+  // 投資損益、報酬率不扣其他用途那筆的利息(跟沒有那筆時一樣)
+  const pOther = A.computePosition();
+  const saved = A.state; A.state = mk('other'); A.state.leverage.draws.pop();
+  const pNone = A.computePosition(); A.state = saved;
+  must(pOther.interest > 0 && Math.abs(pOther.interest - pNone.interest) < 0.01 && Math.abs(pOther.total - pNone.total) < 0.01,
+    '投資損益不扣其他用途的利息:' + pOther.interest + ' vs ' + pNone.interest);
+  must(String(pOther.xirr) === String(pNone.xirr) || Math.abs((pOther.xirr || 0) - (pNone.xirr || 0)) < 1e-9, '報酬率也不受影響');
+  must(lev.usedAmount === 6239000 && lev.otherLoan === 3000000, '借款餘額(還欠銀行)照樣含 300 萬:' + lev.usedAmount);
+  must(A.nextLevInterest().amount === before.int, '利息照樣算 300 萬:' + A.nextLevInterest().amount + ' vs ' + before.int);
+  must(k.loan === 3239000 && Math.abs(k.equity - (before.risk.equity + 3000000)) < 1, '自己的錢不扣其他用途的 300 萬:' + k.equity);
+  must(Math.abs(k.capacity - before.risk.capacity) < 1 && Math.abs(k.exposureRatio - before.risk.exposureRatio) < 1e-9, '分母跟曝險比例不變(改從額度扣)');
+  // 下一筆房貸買進:只先扣 416,不能拿 300 萬當成「沒用完」
+  A.tradeDraft = { date:'2026-10-07', symbol:'00631L', action:'buy', source:'loan', shares:'1', price:'100000', amount:'', fee:'0', note:'', loanAmt:'', autoDraw:true };
+  A.onClick({ dataset:{ act:'add-trade' } });
+  const nd = A.state.leverage.draws.find(d => !['iv', 'ot'].includes(d.id));
+  must(nd && nd.amount === 99584 && nd.purpose === 'invest', '自動新增的動用 = 100,000 − 416:' + JSON.stringify(nd));
+  // 在畫面上切換用途
+  A.onClick({ dataset:{ act:'draw-purpose', id:'ot', v:'invest' } });
+  must(A.state.leverage.draws.find(d => d.id === 'ot').purpose === 'invest', '可以改回買股');
+  A.onClick({ dataset:{ act:'draw-purpose', id:'ot', v:'other' } });
+  must(A.state.leverage.draws.find(d => d.id === 'ot').purpose === 'other', '可以改成其他用途');
+  // 舊版分頁(不認得 purpose)寫回來:要補回其他用途
+  const prev = JSON.parse(JSON.stringify(A.state)), raw = JSON.parse(JSON.stringify(A.state));
+  raw.leverage.draws.forEach(d => delete d.purpose);
+  const next = A.normalize(raw);
+  must(next.leverage.draws.find(d => d.id === 'ot').purpose === 'invest', '(前提)舊版寫回來會變回買股');
+  must(A.keepFieldsOldVersionsDrop(prev, raw, next) && next.leverage.draws.find(d => d.id === 'ot').purpose === 'other', '舊版寫回來要補回其他用途');
+  A.levTab = 'overview';
+  const t = A.renderLeverage().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  must(/不含其他用途的借款\(從額度扣\) NT\$ 3,000,000/.test(t), '曝險卡要列出其他用途的借款');
+  A.state = keep;
+}
+
 console.log('隱藏金額');
 A.state = A.sampleData();
 A.viewMonth = '2026-10';
