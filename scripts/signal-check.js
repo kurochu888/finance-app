@@ -3,7 +3,7 @@
 
    - 規則不另外寫一份:直接載入 docs/index.html 裡的 app 程式,用同一個 computeTrend、mergeHistory(分割還原)、
      twseJson(證交所節流);跟測試同一套手法(eval 最長的 <script>)。
-   - 用預設的標的(00631L/00675L)跟預設的訊號參數:使用者的資料在 Firebase/手機裡,這裡拿不到,也不該放進 public repo。
+   - 用預設的標的(00631L/00675L,加上 KNOWN_INSTRUMENTS 裡 2 倍的 00685L)跟預設的訊號參數:使用者的資料在 Firebase/手機裡,這裡拿不到,也不該放進 public repo。
      在 app 裡改過訊號參數的話,這裡的結果會跟 app 不一樣。
    - 不存狀態:拿「到最後一個交易日」跟「到前一個交易日」各算一次,不一樣就是那天改變了。
      issue 標題帶那天的日期,同一個標題開過就不再開(連假、一天跑兩次都不會重複通知)。
@@ -33,7 +33,7 @@ global.localStorage = { _d:{ financeQuoteFetchedAt: String(Date.now()) }, get le
   getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=String(v);}, removeItem(k){delete this._d[k];} };
 const src = fs.readFileSync(path.join(__dirname, '..', 'docs', 'index.html'), 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
-eval(appJs + `;globalThis.A = { emptyState, computeTrend, trendHistoryGap, mergeHistory, closedRows, twseJson, monthParam,
+eval(appJs + `;globalThis.A = { emptyState, KNOWN_INSTRUMENTS, defaultTrendParams, uid, computeTrend, trendHistoryGap, mergeHistory, closedRows, twseJson, monthParam,
   trendAlertText, TwseBlocked, TWSE_STOCK, BACKFILL_MONTHS, PRICE_HIST_KEEP };`);
 
 const plain = t => String(t).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
@@ -42,6 +42,10 @@ const describe = t => t.status === 'WAIT_RECOVER' ? `${STATUS[t.status]},已加�
 
 async function main(){
   const instruments = A.emptyState().instruments.filter(it => it.auto && it.id);
+  // 預設兩檔以外,認得的 2 倍標的(00685L)也檢查,用正2 預設參數
+  A.KNOWN_INSTRUMENTS.filter(k => k.leverage === 2 && !instruments.some(it => it.id === k.id)).forEach(k => instruments.push({
+    key: A.uid(), id: k.id, name: k.name, leverage: 2, price: 0, shares: 0, auto: true,
+    trend: A.defaultTrendParams(2), priceHistory: [], splits: [], splitsAcked: [] }));
   const alerts = [], problems = [];
   for (const it of instruments){
     // 跟 app 的 backfillHistory 一樣:逐月往回抓,依序排隊、每次隔 2 秒(twseJson 管)

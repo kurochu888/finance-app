@@ -15,7 +15,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
 eval(blocks.sort((a,b)=>b.length-a.length)[0] + `
 globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
-  renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
+  renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage, defaultTrendParams,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
   cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot, rateAt: (typeof rateAt === "function" ? rateAt : () => NaN),
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
@@ -424,6 +424,22 @@ check('標的改代號:舊代號「看過的狀態」要清掉;代號格式不�
   A.currentTab = 'leverage'; A.levTab = 'signal'; A.renderAll();
   const h = document.getElementById('content').innerHTML;
   if (!h.includes('3~8 碼英數字')) return '代號不是證交所格式時沒有說明';
+  return '';
+});
+
+check('新增標的打認得的代號(00685L):自動帶入名稱、2 倍、正2 參數;填過的列不動', () => {
+  A.state = A.emptyState();
+  A.onClick({ dataset:{ act:'add-instrument' } });
+  const it = A.state.instruments[A.state.instruments.length - 1];
+  for (const v of ['0', '006', '00685', '00685L']) A.onField('in-id-' + it.key, { value: v });
+  const d2 = A.defaultTrendParams(2);
+  if (it.name !== '群益臺灣加權正2' || it.leverage !== 2) return '沒帶入名稱/倍數:' + it.name + ' ' + it.leverage;
+  if (it.trend.maFast !== d2.maFast || it.trend.exitBuffer !== d2.exitBuffer || it.trend.pyramidLevels !== d2.pyramidLevels) return '參數不是正2 預設:' + JSON.stringify(it.trend);
+  A.onClick({ dataset:{ act:'add-instrument' } });
+  const b = A.state.instruments[A.state.instruments.length - 1];
+  A.onField('in-name-' + b.key, { value: '我自己的' });
+  A.onField('in-id-' + b.key, { value: '0050' });
+  if (b.name !== '我自己的') return '已經填了名稱還被蓋掉';
   return '';
 });
 

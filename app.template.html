@@ -483,6 +483,14 @@ const DEFAULT_INSTRUMENTS = [
   { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] },
   { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] }
 ];
+/* 認得的代號:新增一列、代號打這幾個時自動帶入名稱、倍數跟那個倍數的預設訊號參數(2026-11-04 使用者要加 00685L,參數跟正2 一樣)。
+   不放進 DEFAULT_INSTRUMENTS:已存的資料不會自動多一檔(使用者自己決定要不要加),新資料預設還是兩檔。
+   signal-check 照這張表把 2 倍的都檢查(使用者資料拿不到,多檢查一檔沒持有的也無妨)。 */
+const KNOWN_INSTRUMENTS = [
+  ...DEFAULT_INSTRUMENTS.map(x => ({ id: x.id, name: x.name, leverage: x.leverage })),
+  { id:'00685L', name:'群益臺灣加權正2', leverage:2 },
+  { id:'0050',   name:'元大台灣50',     leverage:1 }
+];
 // trend/priceHistory 是巢狀物件,Object.assign 只會淺拷貝參照 —— 每個新 instrument
 // 都要有自己獨立的 trend/priceHistory,不能共用同一份 DEFAULT_INSTRUMENTS 底下的物件,
 // 不然改一個標的的均線參數會意外改到共用預設值,下次重置資料就跑掉。
@@ -1975,7 +1983,7 @@ const HISTORY_GAP_DAYS = 16;   // 比農曆年封關(約 9-10 天)還寬鬆,不�
 /* 已知分割的公告比例。偵測到的比例是「分割前一天 → 分割當天」的收盤價比,會把分割當天
    的真實漲跌一起吃掉(那天在還原後的序列裡漲跌變 0);比例對得上公告值(差距在正2 單日
    漲跌範圍內)就改用公告值,分割當天的漲跌就保留下來。只寫比例不寫日期——日期還是靠偵測。 */
-const KNOWN_SPLIT_RATIOS = { '00631L': 1 / 22 };
+const KNOWN_SPLIT_RATIOS = { '00631L': 1 / 22, '00685L': 1 / 24 };   // 00685L 2026-07-07 1 拆 24(使用者提供)
 function exactSplitRatio(id, observed){
   const k = KNOWN_SPLIT_RATIOS[id];
   return k && Math.abs(observed / k - 1) < 0.25 ? k : observed;
@@ -7199,6 +7207,16 @@ function onField(key, el){
             splits: it.splits, splitsAcked: it.splitsAcked, lastSeenStatus: it.trend.lastSeenStatus, lastSeenLayers: it.trend.lastSeenLayers, lastSeenDate: it.trend.lastSeenDate })));
           const back = idEditStash.get(it.key);
           it.id = next;
+          // 剛新增、還沒動過的列(沒名稱、1 倍、1 倍預設參數)打了認得的代號:帶入名稱、倍數、那個倍數的預設參數。
+          // 已經填過名稱/倍數/參數的不動(使用者自己設的)
+          const known = KNOWN_INSTRUMENTS.find(k => k.id === next);
+          const d1 = defaultTrendParams(1);
+          if (known && !it.name && it.leverage === 1 && ['maFast','maSlow','exitBuffer','recoverSlopeThreshold','recoverStrongRebound','pyramidGap','pyramidLevels'].every(f => it.trend[f] === d1[f])){
+            it.name = known.name;
+            it.leverage = known.leverage;
+            it.trend = Object.assign(defaultTrendParams(known.leverage), { lastSeenStatus: it.trend.lastSeenStatus, lastSeenLayers: it.trend.lastSeenLayers, lastSeenDate: it.trend.lastSeenDate });
+            structural = true;
+          }
           if (back.id === next){
             it.priceHistory = back.priceHistory; it.splits = back.splits; it.splitsAcked = back.splitsAcked;
             Object.assign(it.trend, { lastSeenStatus: back.lastSeenStatus, lastSeenLayers: back.lastSeenLayers, lastSeenDate: back.lastSeenDate });
