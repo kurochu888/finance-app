@@ -17,7 +17,7 @@ globalThis.A = {
   get state(){return state}, set state(v){state=v}, set currentTab(v){currentTab=v}, set levTab(v){levTab=v}, set chartRange(v){chartRange=v},
   renderAll, sampleData, emptyState, normalize, onClick, onField, computeLeverage,
   computePosition, computeRisk, heldShares, findInstrument, accrue, outstanding, netWorth,
-  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, computeStress, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot, rateAt: (typeof rateAt === "function" ? rateAt : () => NaN),
+  cashFlows, accruedInterest, stateCSV, renderTrades, fetchQuotes, trendChanges, renderTrendTab, closedRows, renderExposurePlanCard, maybePostInterest, todayISO, renderExposurePlanCard, maybeSnapshot, maybeDailySnapshot, rateAt: (typeof rateAt === "function" ? rateAt : () => NaN),
   get tradeDraft(){return tradeDraft}, get tradeError(){return tradeError}, get quoteBusy(){return quoteBusy||backfillBusy}
 };`);
 
@@ -318,11 +318,10 @@ check('預設標的刪掉後記一筆買賣:選單畫面上是第一檔,要記�
   return '';
 });
 
-check('兩列同代號:壓力測試、CSV 持股不能把同一批持股算兩次,重複列要刪得掉', () => {
+check('兩列同代號:市值、CSV 持股不能把同一批持股算兩次,重複列要刪得掉', () => {
   A.state = A.normalize({ instruments:[{ key:'a', id:'00631L', leverage:2, price:100 }, { key:'b', id:'00631L', leverage:2, price:100 }],
     trades:[{ id:'t', date:'2026-01-01', symbol:'00631L', action:'buy', shares:1000, price:90, fee:0, source:'cash' }] });
-  const st = A.computeStress(20);
-  if (Math.round(st.newPv) !== 60000) return '跌 20%(2 倍)後市值應該是 60000,實際 ' + st.newPv + '(loss ' + st.loss + ')';
+  if (Math.round(A.computeRisk().pv) !== 100000) return '部位市值應該是 100000,實際 ' + A.computeRisk().pv;
   const csv = A.stateCSV();
   const rows = csv.split('# 持股')[1].split('\n\n')[0].split('\n').filter(l => l.startsWith('00631L'));
   const total = rows.reduce((s, l) => s + Number(l.split(',')[5]), 0);
@@ -464,14 +463,13 @@ check('事後在清單上把還款改成超過尚欠、或把日期清空:要標
   return '';
 });
 
-check('借款超過「市值 + 額度」:曝險比例顯示 —、壓力測試不能說「還在目標之內」、負的金額寫 −NT$', () => {
+check('借款超過「市值 + 額度」:曝險比例顯示 —、負的金額寫 −NT$', () => {
   A.state = A.emptyState();
   A.state.instruments[0].price = 10; A.state.instruments[0].shares = 10000;
   A.state.leverage.creditLimit = 0;
   A.state.leverage.draws = [{ id:'d', label:'x', amount:500000, useDate:'2025-01-01', note:'', repayments:[] }];
   A.currentTab = 'leverage'; A.levTab = 'signal'; A.renderAll();
   const h = document.getElementById('content').innerHTML.replace(/<[^>]+>/g, ' ');
-  if (/還在目標之內/.test(h)) return '借款超過市值 + 額度,壓力測試卻說「還在目標之內」';
   if (/NT\$ -\d/.test(h)) return '負的金額寫成「NT$ -…」';
   if (/加碼第|方案B/.test(h)) return '分母是負的還給加碼/減碼金額';
   A.levTab = 'overview'; A.renderAll();

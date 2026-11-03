@@ -67,8 +67,8 @@ must(where.log.includes('房貸動用記錄'), '說明說房貸動用記錄在�
 must(!where.signal.includes('房貸動用記錄'), '房貸動用記錄不該出現在「訊號」分頁');
 must(where.setup.includes('持股與報價'), '說明說持股與報價在「設定」分頁,實際找不到');
 must(where.setup.includes('曝險目標設定'), '說明說曝險目標設定在「設定」分頁,實際找不到');
-must(where.signal.includes('均線趨勢訊號') && where.signal.includes('正2 曝險目標') && where.signal.includes('壓力測試'),
-     '說明說訊號分頁該有趨勢訊號/曝險目標/壓力測試,實際找不到');
+must(where.signal.includes('均線趨勢訊號') && where.signal.includes('正2 曝險目標'),
+     '說明說訊號分頁該有趨勢訊號/曝險目標,實際找不到');
 console.log('  說明提到的分頁位置都對得上 ✓');
 
 // 提醒文案要與實際訊息一致

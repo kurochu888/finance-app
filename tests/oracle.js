@@ -1,6 +1,5 @@
 /* 「照 app 的建議實際做一次,再讓 app 重算」的核對測試(oracle):
    - 曝險目標:照方案A(現金)或方案B(房貸)的金額,兩檔正2 各半買進,買完曝險比例要剛好等於目標。
-   - 壓力測試:把每檔股價照自己的槓桿倍數真的調降,app 重算的曝險比例要跟壓力測試預測的一樣。
    用隨機的額度、借款、股價、持股跑很多組,抓的是公式跟實際計算接錯線(例如漏算 1 倍標的、手續費、重複代號)。 */
 const el = (id) => ({ id, innerHTML:'', textContent:'', value:'', style:{}, dataset:{}, scrollTop:0,
   classList:{toggle(){},add(){},remove(){},contains(){return false;}}, addEventListener(){}, closest(){return null;} });
@@ -14,7 +13,7 @@ const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, sampleData, normalize, computeExposurePlan, computeRisk,
-  computeStress, todayISO };`);
+  todayISO };`);
 
 const bugs = [];
 const must = (c, m) => { if (!c && bugs.length < 12) bugs.push(m); };
@@ -57,22 +56,6 @@ for (let k = 0; k < 300; k++){
 }
 must(tested > 30, `(測試本身)應該要有夠多組是「該加碼」的情況,只有 ${tested} 組`);
 console.log(`  ok(驗了 ${tested} 組)`);
-
-console.log('壓力測試:把股價照槓桿倍數真的調降之後,app 重算的曝險比例要跟預測的一樣(隨機 300 組)');
-for (let k = 0; k < 300; k++){
-  const base = randomState();
-  const d = Math.round(rnd() * 60);
-  A.state = clone(base);
-  const st = A.computeStress(d);
-  if (!st) continue;
-  A.state = clone(base);
-  A.state.instruments.forEach(it => { it.price = it.price * Math.max(0, 1 - d * (it.leverage || 1) / 100); });
-  const after = A.computeRisk();
-  must(Math.abs(after.pv - st.newPv) < 1e-6 * Math.max(1, st.newPv), `組 ${k} 跌 ${d}%:預測市值 ${st.newPv} ≠ 實際 ${after.pv}`);
-  must(Math.abs(after.exposureRatio - st.newRatio) < 1e-6, `組 ${k} 跌 ${d}%:預測曝險 ${st.newRatio.toFixed(4)}% ≠ 實際重算 ${after.exposureRatio.toFixed(4)}%`);
-  must(Math.abs(after.equity - st.newEquity) < 1e-6 * Math.max(1, Math.abs(st.newEquity)), `組 ${k} 跌 ${d}%:預測淨值 ${st.newEquity} ≠ 實際 ${after.equity}`);
-}
-console.log('  ok');
 
 console.log();
 console.log(bugs.length ? '發現 ' + bugs.length + ' 個問題:\n' + bugs.map((b, i) => '  ' + (i + 1) + '. ' + b).join('\n') : '沒有發現問題');

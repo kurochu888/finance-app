@@ -826,8 +826,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-03 · 6c0f21dd50';
-const BUILD_HASH = '6c0f21dd50';
+const BUILD_VERSION = '2026-11-03 · 7a5fcfd018';
+const BUILD_HASH = '7a5fcfd018';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2540,7 +2540,7 @@ function xirr(flows){
   return (lo + hi) / 2;
 }
 
-/* 一次重畫會呼叫 computePosition 三到四次(損益卡、曝險、買賣紀錄、壓力測試),
+/* 一次重畫會呼叫 computePosition 三到四次(損益卡、曝險、買賣紀錄),
    每次都要跑一遍 XIRR 的二分法。資料多了以後很有感,所以記住上一次的結果;
    靠下面 posSignature() 判斷資料有沒有變,不用在重畫/存檔時清。整份 state 被換掉(雲端同步)時才清。 */
 let posMemo = null, posMemoKey = '';
@@ -2736,34 +2736,6 @@ function maybeSnapshot(){
   }
   scheduleSave();
   return true;
-}
-
-/* 壓力測試:大盤跌 d% 時,各標的照自己的槓桿倍數換算 */
-function computeStress(d){
-  const decline = num(d);
-  const k = computeRisk();
-  const r = computeLeverage();
-  const L = state.leverage;
-  if (!(k.pv > 0) || !decline) return null;
-
-  // 用 holdings 算好的 value:代號重複的那列 computeLeverage 已經算成 0 股,這裡自己重算 heldShares 的話
-  // 會把同一批持股算兩次(以前兩列同代號時,跌 20% 反而顯示賺錢)
-  let newPv = 0, newExposure = 0;
-  r.holdings.forEach(h => {
-    const drop = decline * (h.leverage || 1) / 100;
-    const v = h.value * Math.max(0, 1 - drop);
-    newPv += v;
-    newExposure += v * (h.leverage || 1);
-  });
-  const loss = k.pv - newPv;
-  const newEquity = newPv - k.loan;
-  const newCapacity = newEquity + L.creditLimit;
-
-  return {
-    decline, pv: k.pv, newPv, loss, equity: k.equity, newEquity,
-    ratio: k.exposureRatio, newRatio: newCapacity > 0 ? newExposure / newCapacity * 100 : 0,
-    capacity: k.capacity, newCapacity    // ≤ 0 時比例沒有意義(借款已經超過市值 + 額度),畫面要另外說明
-  };
 }
 
 /* 每日快照:每天第一次開啟(或按更新報價)記一筆,同一天會更新到最新。
@@ -4145,7 +4117,7 @@ function renderHelp(){
       <p>槓桿頁分成四個小分頁,上方可以切換:</p>
       <ul>
         <li><strong>概況</strong> — 每天看這頁就好:最上面「今天要做什麼」把要處理的事列成一張卡(收盤價太舊、訊號改變、曝險要調整、分割、帳對不起來、一週內的扣款與預定動用、健康檢查有要注意的地方);每一項前面可以打勾,勾了劃掉但留著、處理完也留到當天結束,隔天清空,點了帶到對的分頁;沒事就不出現。下面是整體損益、年化報酬、曝險,以及兩張走勢圖</li>
-        <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標、壓力測試,一次看完;最下面「回測與研究」(策略回測、加權指數模擬 2000/2008、指定期間)平常收著,點了才展開</li>
+        <li><strong>訊號</strong> — 今天該不該動:均線趨勢訊號、正2 曝險目標,一次看完;最下面「回測與研究」(策略回測、加權指數模擬 2000/2008、指定期間)平常收著,點了才展開</li>
         <li><strong>紀錄</strong> — 買賣、房貸動用、還款,記完就走</li>
         <li><strong>設定</strong> — 很少要動的:持股代號與報價、均線趨勢參數、曝險目標、房貸額度與利率</li>
       </ul>
@@ -4309,14 +4281,6 @@ function renderHelp(){
       <p><em>股數不會自動抓。</em>有買賣紀錄的話由紀錄自動加總,沒有的話要自己填。</p>
     </div>
 
-    <div class="sect">壓力測試</div>
-    <div class="card doc">
-      <p>輸入假設的大盤跌幅,各標的<strong>依自己的槓桿倍數</strong>換算(正2 跌兩倍),
-      算出部位市值、部位淨值、曝險比例的前後對照,並拿這個情境下的曝險比例對照目前正2 曝險目標的目標值,
-      看是還在目標之內還是會超過。</p>
-      <p><em>沒有計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常比這裡算的更差。</em></p>
-    </div>
-
     <div class="sect">資料存在哪</div>
     <div class="card doc">
       <p>${STORAGE_NOTE}</p>
@@ -4433,13 +4397,8 @@ function computeLeverage(){
   const pendingLoan = pendingLoanFunding();
   const equityValue = totalValue - usedAmount - pendingLoan + cashBack - repaidTotal - ownAfter;
 
-  const positionDeclinePct = L.stressDeclinePct * 2;
-  const lossAmount = totalValue * positionDeclinePct/100;
-
   return { holdings, totalValue, draws, usedAmount, pendingLoan, drawnAmount, monthlyInterest,
-           equityValue, cashBack, ownAfter, repaidTotal,
-           positionDeclinePct, lossAmount,
-           remainingNetWorth: netWorth() - lossAmount };
+           equityValue, cashBack, ownAfter, repaidTotal };
 }
 
 /* ===================== 均線趨勢訊號 =====================
@@ -5354,26 +5313,6 @@ function repayRows(rows){
 
 
 
-/* 壓力測試的內容獨立成函式,輸入跌幅時可以只更新這一塊 */
-function stressBody(){
-  const L = state.leverage;
-  const st = computeStress(L.stressDeclinePct);
-  if (!st) return `<div class="empty">先填入持股與股價,或記幾筆買賣,才算得出來。</div>`;
-  const plan = computeExposurePlan();
-  return `
-  <div class="big-num neg">−NT$ ${fmt(st.loss)}</div>
-  <div class="big-sub">部位市值 ${fmt(st.pv)} → ${fmt(st.newPv)}</div>
-  <div class="row"><span class="label">部位淨值(自己的錢)</span>
-    <span class="val ${st.newEquity >= 0 ? '' : 'neg'}">${money(st.equity)} → ${money(st.newEquity)}</span></div>
-  <div class="row"><span class="label" style="font-weight:700;">曝險比例</span>
-    <span class="val" style="font-weight:800;">${st.capacity > 0 ? st.ratio.toFixed(0) + '%' : '—'} → ${st.newCapacity > 0 ? st.newRatio.toFixed(0) + '%' : '—'}</span></div>
-  ${st.newCapacity <= 0 ? `<div class="muted neg" style="margin-top:4px;">跌完之後借款會超過「部位市值 + 房貸額度」,曝險比例已經沒有意義——
-    部位全部賣掉也還不清借款,這是最危險的狀態。</div>`
-  : plan ? `<div class="row sub"><span class="label">對照目前正2曝險目標(${plan.targetRatio}%)</span>
-    <span class="val">${st.newRatio > plan.targetRatio ? '會超過目標,是加碼還是減碼自己判斷' : '還在目標之內'}</span></div>` : ''}
-  <details class="tip"><summary>試算怎麼算的</summary><div class="body">各標的用自己的槓桿倍數換算(正2 跌兩倍)。未計入正2 ETF 的波動耗損與追蹤誤差,實際下跌時通常更差。</div></details>`;
-}
-
 /* 均線趨勢訊號 + 正2 曝險目標,「訊號」分頁的內容。純顯示,不會自動下單——
    買賣還是要自己到「紀錄」分頁記一筆。 */
 function trendBadge(status){
@@ -6142,7 +6081,7 @@ function renderBacktestResult(r){
       `;
 }
 /* 回測、加權指數模擬、指定期間都是偶爾研究用的,收在訊號分頁最下面一個「回測與研究」裡(2026-10:以前攤開佔了訊號分頁一大段,
-   每天要看的曝險目標、訊號、壓力測試反而被夾在中間)。正在抓歷史的時候強制打開,才看得到進度。 */
+   每天要看的曝險目標、訊號反而被夾在中間)。正在抓歷史的時候強制打開,才看得到進度。 */
 function renderBacktestCard(){
   return `
     <div class="card">
@@ -6316,11 +6255,6 @@ function renderLeverage(){
       ${renderRisk()}
     ` : levTab === 'signal' ? `
       ${renderTrendTab()}
-      <div class="card">
-        <h3>壓力測試</h3>
-        <div class="field"><label>假設大盤下跌(%)</label><input type="number" inputmode="decimal" data-k="lev-stressDeclinePct" value="${L.stressDeclinePct || ''}"></div>
-        <div id="stress-body">${stressBody()}</div>
-      </div>
       ${renderBacktestCard()}
     ` : levTab === 'log' ? `
       ${renderTrades()}
@@ -6521,8 +6455,6 @@ function refreshLeverage(){
   set('out-monthlyInterest', 'NT$ ' + fmt(nextLevInterest().amount));
   set('out-nextInterestLabel', nextLevInterest().label);
   { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))); }
-  const stress = document.getElementById('stress-body');
-  if (stress) stress.innerHTML = stressBody();
   const recon = document.getElementById('bankrecon-out');
   if (recon) recon.innerHTML = bankReconResult();
 }

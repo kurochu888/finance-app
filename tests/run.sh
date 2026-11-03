@@ -58,7 +58,7 @@ echo
 echo "=== 收盤後自動檢查訊號(不連網) ==="
 node signalcheck.js || fail=1
 echo
-echo "=== 照建議實際操作再重算(曝險目標、壓力測試) ==="
+echo "=== 照建議實際操作再重算(曝險目標) ==="
 node oracle.js || fail=1
 echo
 echo "=== 照策略嚴格執行 1000 天(提醒不漏、照卡片做完回到目標) ==="
@@ -99,7 +99,6 @@ node help.js | tail -2 || fail=1
 echo
 echo "=== id 與樣板完整性 ==="
 node ids.js | tail -2 || fail=1
-node stress-live.js | tail -1 || fail=1
 echo
 echo "=== 15 年長期使用 ==="
 node longrun.js | tail -10 || fail=1

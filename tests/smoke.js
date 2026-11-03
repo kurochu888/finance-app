@@ -47,7 +47,7 @@ globalThis.A = {
   get backupList(){return backupList},
   maybePostInterest, maybeBackup, loadBackups, restoreBackup, localBackupApi,
   computePosition, heldShares, defaultFee, accruedInterest, computeRisk, maybeSnapshot, lineChart,
-  computeStress, knownCats, accrue, outstanding, stateCSV, chartCaption, pickChartPoint,
+  knownCats, accrue, outstanding, stateCSV, chartCaption, pickChartPoint,
   monthlyHistory, writeLocal, maybeBackup, shiftMonth, xirr, cashFlows, balanceAt,
   maybeDailySnapshot, dailySlice, set chartRange(v){chartRange=v},
   set levTab(v){levTab=v}, get levTab(){return levTab},
@@ -611,21 +611,6 @@ console.log('  部位市值', Math.round(RK.pv), '| 實質曝險', Math.round(RK
 if (Math.round(RK.pv) !== 600000) throw new Error('多標的市值加總錯誤');
 if (Math.round(RK.exposure) !== 400000*2 + 200000*1) throw new Error('各標的沒用自己的槓桿倍數');
 console.log('  正2 算 ×2、0050 算 ×1 ✓');
-
-console.log('壓力測試');
-A.state.leverage.creditLimit = 5000000;
-let ST = A.computeStress(10);   // 大盤跌 10%,目前沒有借款(loan=0)
-console.log('  部位', Math.round(ST.pv), '→', Math.round(ST.newPv), '| 曝險比例', ST.ratio.toFixed(2) + '%', '→', ST.newRatio.toFixed(2) + '%');
-// 00631L 槓桿2 → 跌20% → 400000×0.8 = 320000;0050 槓桿1 → 跌10% → 180000
-if (Math.round(ST.newPv) !== 320000 + 180000) throw new Error('各標的沒依自己的槓桿倍數換算');
-console.log('  正2 跌兩倍、一般股跌一倍 ✓');
-// 沒有借款時,分母(部位淨值+房貸總額度)裡的房貸總額度不會跟著縮水,
-// 部位下跌反而讓分母縮得比分子慢,曝險比例是降的,不是升的——
-// 曝險比例 = 100萬/560萬=17.86% → 82萬/550萬=14.91%
-const expRatio = 1000000/5600000*100, expNewRatio = 820000/5500000*100;
-if (Math.abs(ST.ratio - expRatio) > 0.01 || Math.abs(ST.newRatio - expNewRatio) > 0.01)
-  throw new Error('曝險比例算錯,預期 ' + expRatio.toFixed(2) + '% → ' + expNewRatio.toFixed(2) + '%');
-console.log('  沒有借款時,下跌後曝險比例反而下降(分母的額度沒縮水)✓');
 
 console.log('記帳類別');
 A.state = A.emptyState();
