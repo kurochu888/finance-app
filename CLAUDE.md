@@ -384,8 +384,8 @@ id 沿用舊值以確保重複呼叫不會飄動。
    用 `twseJson`/`mergeHistory` 抓 14 個月、`computeTrend` 算「到最後一天」跟「到前一天」,不一樣就開 GitHub issue(@ 擁有者,GitHub 寄通知)。
    不存狀態(跟 computeTrend 無狀態重算同一個想法);issue 標題帶日期,同標題開過不再開。**只用預設標的與預設訊號參數**
    (使用者資料不在 repo 裡),app 裡改過參數就會不一致。本機試跑 `node scripts/signal-check.js --dry [--fake]`。
-   改 `computeTrend`/`trendAlertText` 的介面時要一起看這支。續抱中「再跌幾 % 就出場」掉進 5%(`WARN_PCT`)以內的那天另外預警一次
-   (前一天還在範圍外才發)。判斷在 `evaluate()`,`tests/signalcheck.js` 不連網餵假歷史測。
+   改 `computeTrend`/`trendAlertText` 的介面時要一起看這支。續抱中「再跌幾 % 就出場」、接刀中「再跌幾 % 就加碼」(同一層才比)掉進 5%(`WARN_PCT`)以內的那天另外預警一次
+   (前一天還在範圍外才發)。訊號卡接刀中顯示的加碼線/強反彈線/站穩條件是 `computeTrend()` 回傳的 `addLine`/`reboundLine`/`aboveFast`/`slopeOk`(用今天的均線估明天)。判斷在 `evaluate()`,`tests/signalcheck.js` 不連網餵假歷史測。
 
 15. **預設參數調整(2026-10-30,使用者決定)**——在 twbt repo 做了參數穩健性掃描(`scripts/robustness.py`:熱力圖、
    1990~2009 / 2010~ 樣本內外排名相關、每 5 年重挑的 walk-forward,含上市前模擬),`defaultTrendParams()` 改成:

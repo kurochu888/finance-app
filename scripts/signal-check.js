@@ -17,7 +17,7 @@ const path = require('path');
 const DRY = process.argv.includes('--dry');
 const FAKE = process.argv.includes('--fake');
 const APP_URL = 'https://kurochu888.github.io/finance-app/';
-// 續抱中「再跌幾 % 就出場」掉進這個範圍的那天先預警一次(前一天還在範圍外才發,同一段不會天天發)
+// 續抱中「再跌幾 % 就出場」、接刀中「再跌幾 % 就加碼」掉進這個範圍的那天先預警一次(前一天還在範圍外才發,同一段不會天天發)
 const WARN_PCT = 5;
 
 // ---- 載入 app(DOM 用假的,localStorage 記成「剛抓過報價」,啟動時才不會自己去抓) ----
@@ -82,7 +82,9 @@ function evaluate(it, fake = false){
   {
     const prev = A.computeTrend({ ...it, priceHistory: hist.slice(0, -1) });
     console.log(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${describe(t)}(前一天 ${describe(prev)})`
-      + (t.exitLine ? `,出場線 ${t.exitLine.toFixed(2)}、再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''));
+      + (t.exitLine ? `,出場線 ${t.exitLine.toFixed(2)}、再跌 ${t.cushionPct.toFixed(1)}% 出場` : '')
+      + (t.addLine ? `,加碼線 ${t.addLine.toFixed(2)}、再跌 ${t.addPct.toFixed(1)}% 加碼` : '')
+      + (t.reboundLine ? `,強反彈線 ${t.reboundLine.toFixed(2)}` : ''));
     const changed = prev.status !== t.status || (t.status === 'WAIT_RECOVER' && prev.pyramidCount !== t.pyramidCount);
     const nearExit = t.status === 'HOLD' && prev.status === 'HOLD' && t.cushionPct != null && t.cushionPct < WARN_PCT
       && !(prev.cushionPct != null && prev.cushionPct < WARN_PCT);
@@ -99,6 +101,26 @@ function evaluate(it, fake = false){
           `app:${APP_URL}`,
           '',
           `<sub>續抱中距離出場線掉進 ${WARN_PCT}% 以內的那天發一次;GitHub Actions 用預設參數自動算的(scripts/signal-check.js)。</sub>`,
+        ].join('\n'),
+      });
+    }
+    // 接刀中離下一層加碼線掉進 WARN_PCT 以內的那天也預警一次(2026-11-04 使用者要的)。
+    // 同一層才比:剛加碼完基準換成新的收盤,加碼線跳回 15% 外,換層那天由 🔔 通知,不另外預警
+    const nearAdd = t.status === 'WAIT_RECOVER' && prev.status === 'WAIT_RECOVER' && prev.pyramidCount === t.pyramidCount
+      && t.addPct != null && t.addPct < WARN_PCT && !(prev.addPct != null && prev.addPct < WARN_PCT);
+    if (nearAdd){
+      alerts.push({
+        title: `⚠️ ${t.lastDate} ${it.id} 再跌 ${t.addPct.toFixed(1)}% 就加碼第 ${t.pyramidCount + 1} 層`,
+        body: [
+          `**${it.id} ${t.lastDate}** 收盤 ${t.lastClose},加碼線 ${t.addLine.toFixed(2)}`
+            + `(上次出場/加碼收盤 ${t.basePrice} 跟慢線 ${t.maSlow.toFixed(2)} 取低 × ${(1 - it.trend.pyramidGap).toFixed(2)}),`
+            + `再跌 ${t.addPct.toFixed(1)}% 收盤跌破就是加碼訊號。`,
+          '',
+          '還不用動,只是先準備:加碼要買多少、用哪筆錢,先在 app 的「正2 曝險目標」卡看好。真的跌破會再發一次 🔔。',
+          '',
+          `app:${APP_URL}`,
+          '',
+          `<sub>接刀中距離下一層加碼線掉進 ${WARN_PCT}% 以內的那天發一次;GitHub Actions 用預設參數自動算的(scripts/signal-check.js)。</sub>`,
         ].join('\n'),
       });
     }

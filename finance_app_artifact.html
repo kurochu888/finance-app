@@ -819,8 +819,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-04 · 6fdd170e4e';
-const BUILD_HASH = '6fdd170e4e';
+const BUILD_VERSION = '2026-11-04 · d8d9fbb59c';
+const BUILD_HASH = 'd8d9fbb59c';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -4478,8 +4478,25 @@ function computeTrend(it){
     // 收盤高出場線很多時會高估能跌的空間:顯示 +67.9% 其實跌 40% 就出場(2000-02 模擬正2 那次)
     cushionPct = lastClose > 0 && exitLine > 0 ? (1 - exitLine / lastClose) * 100 : null;
   }
+  // 接刀中/觀望:明天的加碼線、強反彈線,跟「站穩」條件現在的狀態(2026-11-04 使用者要的,跟距出場線一樣給價位跟 %)。
+  // 用今天的快慢線估明天的線(明天的均線會再動一點,240 日慢線一天動得很少),判斷式跟上面迴圈同一套。
+  // addLine:基準(上次出場/加碼的收盤,沒有就今天收盤)跟慢線取低 × (1 − 間距);層數加滿是 null。
+  // reboundLine:快線 × 強反彈,明天收盤高過它就轉回續抱。另一條路是「連兩天站上快線 + 快線斜率夠」:
+  // aboveFast = 今天已經站上(明天也站上就算兩天),slopeOk = 今天快線 ≥ 昨天 × 轉回斜率(明天的斜率再看)
+  let addLine = null, addPct = null, reboundLine = null, reboundPct = null, aboveFast = null, slopeOk = null;
+  if (status !== 'HOLD' && fLast && sLast && lastClose > 0){
+    if (pyramidCount < p.pyramidLevels){
+      addLine = Math.min(basePrice > 0 ? basePrice : lastClose, sLast) * (1 - p.pyramidGap);
+      addPct = (1 - addLine / lastClose) * 100;
+    }
+    reboundLine = fLast * p.recoverStrongRebound;
+    reboundPct = (reboundLine / lastClose - 1) * 100;
+    aboveFast = lastClose > fLast;
+    slopeOk = maF[last - 1] != null && fLast >= maF[last - 1] * p.recoverSlopeThreshold;
+  }
   return { ...base, status, pyramidCount, basePrice,
-           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine, exitDate, recoverDate };
+           maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine, exitDate, recoverDate,
+           addLine, addPct, reboundLine, reboundPct, aboveFast, slopeOk };
 }
 const computeAllTrends = () => state.instruments.map(computeTrend);
 
@@ -5670,7 +5687,7 @@ function renderTrendTab(){
     ${renderExposurePlanCard()}
     <div class="card">
       <h3>均線趨勢訊號</h3>
-      <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「已加碼層數」跟「距出場線」自己決定要不要動作,實際買賣一樣記在「紀錄」分頁。</div></details>
+      <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「距出場線」(續抱中)或「下一層加碼」「轉回續抱」(接刀中)的價位自己決定要不要動作。價位是用今天的均線估明天的,均線每天會再動一點,實際買賣一樣記在「紀錄」分頁。</div></details>
       ${trends.map(t => {
         const it = findInstrumentByKey(t.key);
         if (!it) return '';
@@ -5700,7 +5717,10 @@ function renderTrendTab(){
           <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
           ${t.status === 'HOLD'
             ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `${t.exitLine.toFixed(2)}(再跌 ${t.cushionPct.toFixed(1)}% 就出場)`}</span></div>`
-            : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>`}
+            : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>
+              <div class="row sub"><span class="label">下一層加碼</span><span class="val">${t.reboundLine == null ? '—' : t.addLine == null ? '已加滿' : `${t.addLine.toFixed(2)}(再跌 ${t.addPct.toFixed(1)}%)`}</span></div>
+              <div class="row sub"><span class="label">轉回續抱</span><span class="val">${t.reboundLine == null ? '—' : `${t.reboundLine.toFixed(2)}(再漲 ${Math.max(0, t.reboundPct).toFixed(1)}%)`}</span></div>
+              ${t.reboundLine == null ? '' : `<div class="row sub"><span class="label">或連兩天站上快線 ${t.maFast.toFixed(2)}</span><span class="val">今天${t.aboveFast ? '已站上 ✓' : '還沒 ✗'}・快線${t.slopeOk ? '沒往下 ✓' : '還在往下 ✗'}</span></div>`}`}
         </div>`;
       }).join('')}
       ${QUOTES_ENABLED ? fold('backfill', '歷史價格補不齊?', `

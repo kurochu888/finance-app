@@ -31,13 +31,35 @@ for (let n = 250; n <= 420; n++){
 }
 console.log = log;
 sent.forEach(x => console.log('  ' + x.title));
-const warns = sent.filter(x => x.title.startsWith('⚠️')), exits = sent.filter(x => /跌破出場線/.test(x.title));
+const warns = sent.filter(x => x.title.startsWith('⚠️') && /就出場/.test(x.title)), exits = sent.filter(x => /跌破出場線/.test(x.title));
 must(exits.length >= 1, '要發跌破出場線的 🔔');
 must(warns.length >= 1 && warns[0].n < exits[0].n, '預警要在跌破之前');
 must(warns.every(w => { const m = w.title.match(/再跌 ([\d.]+)%/); return m && Number(m[1]) < WARN_PCT; }), `預警時要在 ${WARN_PCT}% 以內`);
 // 每一次預警的前一天都不在範圍內(同一段不天天發)
 const warnDays = new Set(warns.map(w => w.n));
 must(![...warnDays].some(n => warnDays.has(n - 1)), '連續兩天都預警了');
+// 接刀中快到下一層加碼線:預警在加碼 🔔 之前、在範圍內、同一段不連兩天
+const addWarns = sent.filter(x => x.title.startsWith('⚠️') && /就加碼/.test(x.title)), adds = sent.filter(x => /加碼第/.test(x.title) && x.title.startsWith('🔔'));
+must(adds.length >= 1, '這段假歷史出場後一路跌,要發加碼的 🔔');
+must(addWarns.length >= 1 && addWarns[0].n < adds[0].n, '加碼預警要在加碼之前:' + JSON.stringify(addWarns.concat(adds)));
+must(addWarns.every(w => { const m = w.title.match(/再跌 ([\d.]+)%/); return m && Number(m[1]) < WARN_PCT; }), `加碼預警時要在 ${WARN_PCT}% 以內`);
+const addWarnDays = new Set(addWarns.map(w => w.n));
+must(![...addWarnDays].some(n => addWarnDays.has(n - 1)), '加碼預警連續兩天都發了');
+// 卡片顯示的加碼線/強反彈線(用今天的均線估明天)要對得上隔天真的發生的事:跌破加碼線那天加碼、沒跌破的不加碼
+{
+  let miss = [];
+  for (let n = 300; n < 420; n++){
+    const t0 = A.computeTrend({ ...it, priceHistory: days.slice(0, n).map((d, i) => ({ d, c: closes[i] })) });
+    const t1 = A.computeTrend({ ...it, priceHistory: days.slice(0, n + 1).map((d, i) => ({ d, c: closes[i] })) });
+    if (t0.status !== 'WAIT_RECOVER' || t1.status !== 'WAIT_RECOVER' || t0.addLine == null) continue;
+    const c = closes[n], added = t1.pyramidCount > t0.pyramidCount;
+    // 慢線一天會動一點,離線 0.5% 以內的不算
+    if (Math.abs(c / t0.addLine - 1) > 0.005 && added !== (c < t0.addLine)) miss.push(days[n] + ' 收 ' + c + ' 線 ' + t0.addLine.toFixed(2) + (added ? ' 加碼了' : ' 沒加碼'));
+  }
+  must(!miss.length, '加碼線跟隔天的結果對不上:' + miss.slice(0, 3).join('、'));
+  const t = A.computeTrend({ ...it, priceHistory: days.slice(0, 360).map((d, i) => ({ d, c: closes[i] })) });
+  must(t.status === 'HOLD' || (t.reboundLine > 0 && t.reboundPct != null && typeof t.aboveFast === 'boolean' && typeof t.slopeOk === 'boolean'), '接刀中要有強反彈線跟站穩條件');
+}
 must(new Set(sent.map(x => x.title)).size === sent.length, '標題重複(同一天同一件事只能一個標題)');
 
 // 開 issue(假的 GitHub API):同標題開過就不開;查已開的 issue 失敗時要報錯、不能當成沒開過而重複開。
