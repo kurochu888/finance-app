@@ -837,8 +837,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-04 · d8d9fbb59c';
-const BUILD_HASH = 'd8d9fbb59c';
+const BUILD_VERSION = '2026-11-06 · 0b37747c70';
+const BUILD_HASH = '0b37747c70';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -6324,8 +6324,9 @@ function renderLeverage(){
         const hasCost = lot && lot.shares > 0;
         const avgCost = hasCost ? lot.cost / lot.shares : 0;
         const gain = hasCost ? h.value - lot.cost : 0;
-        // 沒持股、沒買賣紀錄的(例如預設的 0050,只拿來看訊號)收成一行,2026-10 以前一樣佔一整塊
-        const idle = !h.shares && !lot && !h.dup && it.id && pendingConfirm !== 'del-instrument:' + it.key;
+        // 沒持股的(預設的 0050 只拿來看訊號、或已經賣光)收成一行,2026-10 以前一樣佔一整塊;
+        // 2026-11 以前有買賣紀錄的不收,賣光之後還是攤開一整塊
+        const idle = !h.shares && !hasCost && !h.dup && it.id && pendingConfirm !== 'del-instrument:' + it.key;
         const body = `
           <div class="erow" style="margin-top:0;">
             <input class="f-code" data-k="in-id-${it.key}" value="${esc(it.id)}" placeholder="代號">
@@ -6365,7 +6366,7 @@ function renderLeverage(){
           </details>`;
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
-          ${idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: '沒有持股' }) : body}
+          ${idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: lot ? '已賣光' : '沒有持股' }) : body}
         </div>`;
       }).join(''); })()}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}

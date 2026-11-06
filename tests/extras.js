@@ -147,6 +147,24 @@ console.log('預定動用:剩餘可動用先扣掉,並列出網路銀行現在�
   A.state = keep;
 }
 
+console.log('設定頁「持股與報價」:賣光的標的收成一行(2026-11 使用者回報:賣掉之後沒有縮起來)');
+{
+  const keep = A.state;
+  A.state = A.normalize(A.emptyState());
+  const it = A.state.instruments[0];
+  A.state.trades = [
+    { id:'s1', date:'2026-10-01', symbol:it.id, action:'buy', source:'cash', shares:1000, price:20, amount:0, fee:0, note:'' },
+    { id:'s2', date:'2026-10-02', symbol:it.id, action:'sell', source:'cash', shares:1000, price:21, amount:0, fee:0, note:'' }];
+  A.levTab = 'settings';
+  const html = A.renderLeverage();
+  must(!html.includes('data-k="in-price-' + it.key + '"'), '賣光的標的要收起來');
+  must(html.includes('已賣光'), '收起來那行要寫「已賣光」');
+  A.state.trades.pop();
+  must(A.renderLeverage().includes('data-k="in-price-' + it.key + '"'), '還有持股的照樣攤開');
+  A.levTab = 'overview';
+  A.state = keep;
+}
+
 console.log('動用用途「其他用途」:借了沒進股市(2026-11 使用者:理財型借 300 萬拿去別的用途)');
 {
   const keep = A.state;
