@@ -52,6 +52,10 @@ A.onClick({ dataset:{ act:'use-tpl', id: sal.id } });
 A.onClick({ dataset:{ act:'use-tpl', id: sal.id } });
 must(tx().length === 2 && tx()[0].id !== tx()[1].id, '同一個月按兩次要記兩筆,得到 ' + tx().length);
 must(tx().every(t => t.date === '2026-10-08' && t.amount === 120000 && t.cat === '薪資' && t.desc === '月薪'), '本月記在今天、內容照範本');
+// 固定收支平常收著,標題列顯示幾筆、本月記了幾種;展開才看得到每一筆
+must(!A.renderLedger().includes('data-act="use-tpl"'), '有範本時預設要收著');
+must(A.renderLedger().includes('2 筆 · 10月已記 1 種'), '收著時標題列要顯示幾筆、本月記了幾種');
+A.onClick({ dataset:{ act:'fold', v:'tpl' } });
 must(A.renderLedger().includes('10月已記 2 筆'), '記過的要顯示這個月記了幾筆');
 must(A.renderLedger().includes('data-act="use-tpl" data-id="' + sal.id + '"'), '記過了還是要能再按');
 const backIds = A.normalize(JSON.parse(JSON.stringify(A.state))).transactions.map(t => t.id).join();

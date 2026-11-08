@@ -837,8 +837,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-06 · 0b37747c70';
-const BUILD_HASH = '0b37747c70';
+const BUILD_VERSION = '2026-11-09 · 0aeff78572';
+const BUILD_HASH = '0aeff78572';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3501,9 +3501,9 @@ function renderTemplates(){
   const list = state.templates || [];
   const m = viewMonth;
   const cats = knownCats();
-  return `
-    <div class="card">
-      <h3>固定收支</h3>
+  // 平常收著(2026-11 使用者要的,範本多了占一大塊);還沒有範本、正在改某一筆時攤開
+  const done = list.filter(t => tplMonthCount(t, m)).length;
+  const body = () => `
       ${list.length ? list.map(t => {
         const n = tplMonthCount(t, m);
         // 調薪、保費調整:改範本只影響之後記的,已經記過的交易不動(過去的薪資還是當時的金額)
@@ -3533,7 +3533,12 @@ function renderTemplates(){
           ${xDel('del-tpl', t.id)}
         </div>`; }).join('')
       : `<div class="empty">還沒有固定收支。<br>在上面填好一筆(例如月薪、保險費),按「把上面填的存成固定收支」,之後有這筆收支時按一下就記好。</div>`}
-      ${list.length ? `<div class="muted" style="margin-top:8px;">每按一下記一筆,記到上面月份切換正在看的那個月,同一個月可以記很多次;記錯了到下面交易紀錄點那筆改或刪。點範本可以改金額(例如調薪)。</div>` : ''}
+      ${list.length ? `<div class="muted" style="margin-top:8px;">每按一下記一筆,記到上面月份切換正在看的那個月,同一個月可以記很多次;記錯了到下面交易紀錄點那筆改或刪。點範本可以改金額(例如調薪)。</div>` : ''}`;
+  return `
+    <div class="card">
+      ${fold('tpl', '固定收支', body, {
+        sub: list.length ? `${list.length} 筆 · ${esc(shortMonth(m))}已記 ${done} 種` : '',
+        force: !list.length || list.some(t => t.id === editingTpl) })}
     </div>`;
 }
 function renderLedger(){
