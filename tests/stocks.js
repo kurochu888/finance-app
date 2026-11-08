@@ -27,7 +27,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   renderAll, renderStocks, renderAssets, stockTotals, fetchStockQuotes, keepFieldsOldVersionsDrop, keySets, netWorth, sampleData,
-  stockIntraday, chartData, maybeAutoStockQuotes, stockSessionDay, switchTab, get stockBusy(){return stockBusy}, stockDaysToFinalize, finalizeStockHistory, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
+  stockIntraday, chartData, maybeAutoStockQuotes, stockSessionDay, switchTab, get stockBusy(){return stockBusy}, stockDaysToFinalize, finalizeStockHistory, reorderList, renderLeverage, set levTab(v){levTab=v}, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -314,6 +314,25 @@ await_(async () => {
   at('2026-11-03T11:05:00'); quoteCalls = 0;
   A.switchTab('stocks'); await settle();
   must(quoteCalls === 1, '切到股票分頁自動抓一次');
+
+  console.log('拖拉排序:股票持股、持股與報價');
+  A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1 }, { id:'b', code:'AAPL', shares:1 }, { id:'c', code:'0050', shares:1 }], usd: 32 } });
+  const order = () => S().holdings.map(h => h.id).join();
+  must(A.renderStocks().split('data-drag="stocks"').length - 1 === 3, '每一檔股票都有拖拉把手');
+  must(A.reorderList('stocks', ['c', 'a', 'b']) === true && order() === 'c,a,b', '照拖完的順序排:' + order());
+  must(A.reorderList('stocks', ['c', 'a', 'b']) === false, '順序沒變回傳 false(不存檔)');
+  must(A.reorderList('stocks', ['b', 'zz']) === true && order() === 'b,c,a', '沒列到的照原本順序接在後面、不認得的 id 不管:' + order());
+  must(S().holdings.find(h => h.id === 'a').code === '2330', '排序不動內容');
+  must(A.normalize(JSON.parse(JSON.stringify(A.state))).stocks.holdings.map(h => h.id).join() === 'b,c,a', '存檔再讀回來順序不變');
+  A.state.stocks.holdings = A.state.stocks.holdings.slice(0, 1);
+  must(!A.renderStocks().includes('data-drag='), '只有一檔不用把手');
+  A.state = A.normalize(A.emptyState());
+  const keys = A.state.instruments.map(it => it.key);
+  A.levTab = 'settings';
+  must(A.renderLeverage().split('data-drag="inst"').length - 1 === keys.length, '持股與報價每一檔都有拖拉把手');
+  must(A.reorderList('inst', keys.slice().reverse()) === true && A.state.instruments.map(it => it.key).join() === keys.slice().reverse().join(), '標的照 key 重排');
+  const levHtml = A.renderLeverage();
+  must(levHtml.indexOf('data-drag-row="' + keys[keys.length - 1] + '"') < levHtml.indexOf('data-drag-row="' + keys[0] + '"'), '畫面照新順序');
 
   if (bugs.length){ console.log('發現 ' + bugs.length + ' 個問題:'); bugs.forEach(b => console.log('  ✗ ' + b)); process.exitCode = 1; }
   else console.log('股票分頁:沒有發現問題');

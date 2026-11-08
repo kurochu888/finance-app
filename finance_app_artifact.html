@@ -293,6 +293,12 @@
     cursor:pointer; text-align:left; padding:6px 0;}
   .fold-head .ft{font-size:14px; font-weight:700; white-space:nowrap; flex:0 0 auto; max-width:62%; overflow:hidden; text-overflow:ellipsis;}
   .fold-head .fs{font-size:12px; color:var(--sub); flex:1 1 0; min-width:0;}
+  /* 拖拉排序(股票持股、持股與報價):按住 ⠿ 上下拉 */
+  .drag-row{display:flex; gap:4px; align-items:flex-start;}
+  .drag-row > .drag-body{flex:1 1 auto; min-width:0;}
+  .drag-h{flex:0 0 auto; padding:9px 4px 9px 0; color:var(--sub); cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none; font-size:18px; line-height:1;}
+  .drag-row.dragging{opacity:.75; background:var(--accent-soft); border-radius:8px;}
+  .drag-row.dragging .drag-h{cursor:grabbing; color:var(--accent);}
   .fold-head .fi{font-size:12px; color:var(--sub); flex:0 0 auto; margin-left:auto;}
   .fold-body{margin-top:6px;}
   .update-banner{
@@ -819,8 +825,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-09 · 0aeff78572';
-const BUILD_HASH = '0aeff78572';
+const BUILD_VERSION = '2026-11-09 · 27a4493906';
+const BUILD_HASH = '27a4493906';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1602,6 +1608,29 @@ function fold(key, title, body, { sub = '', force = false } = {}){
   return `<button class="fold-head" data-act="fold" data-v="${esc(key)}"><span class="ft">${title}</span>${sub ? `<span class="fs">${sub}</span>` : ''}<span class="fi">${open ? (force ? '' : '收起 ▾') : '展開 ▸'}</span></button>
     ${open ? `<div class="fold-body">${typeof body === 'function' ? body() : body}</div>` : ''}`;
 }
+/* 拖拉排序(2026-11 使用者要的):股票分頁的持股、槓桿設定的持股與報價。
+   畫面上按住 ⠿ 上下拉(init 的 pointerdown/move/up),放開時照畫面上的順序呼叫 reorderList() 存起來。
+   只改陣列順序,不動任何一筆的內容;合併時(merge3)雲端那邊沒改這份清單就照本機的順序。 */
+const DRAG_LISTS = {
+  stocks: { get: () => state.stocks.holdings, id: x => x.id },
+  inst:   { get: () => state.instruments,     id: x => x.key },
+};
+function dragRow(list, id, body, show){
+  return show ? `<div class="drag-row" data-drag-row="${esc(id)}"><span class="drag-h" data-drag="${list}" aria-label="按住上下拉,改順序" title="按住上下拉,改順序">⠿</span><div class="drag-body">${body}</div></div>`
+    : `<div>${body}</div>`;
+}
+/* 照 ids 的順序重排(不在 ids 裡的留在後面、原本的相對順序不變),有變才回傳 true */
+function reorderList(name, ids){
+  const L = DRAG_LISTS[name]; if (!L) return false;
+  const arr = L.get(), pos = new Map(ids.map((id, i) => [String(id), i]));
+  const at = x => pos.has(String(L.id(x))) ? pos.get(String(L.id(x))) : ids.length;
+  const sorted = arr.map((x, i) => [x, i]).sort((a, b) => at(a[0]) - at(b[0]) || a[1] - b[1]).map(a => a[0]);
+  if (sorted.every((x, i) => x === arr[i])) return false;
+  arr.splice(0, arr.length, ...sorted);
+  diag('排序', `${name === 'stocks' ? '股票持股' : '持股與報價'}改了順序`);
+  return true;
+}
+let dragging = null;   // 拖拉中:{ name, row, box, pid }
 let repayDraft = { target:'', date: todayISO(), amount:'' };
 let repayError = '';
 let chartRange = 90;          // 每日走勢圖顯示最近幾個交易日,0 = 全部
@@ -2914,6 +2943,7 @@ function seedTrendBaselines(){
 }
 
 function renderAll(){
+  if (dragging) return;   // 拖拉中不重畫(報價計時器、雲端同步),不然手上那列被換掉;放開時 endDrag 會重畫
   if (seedTrendBaselines()) scheduleSave();   // 畫面每次重畫前都檢查一次,報價/回補/同步之後都會經過這裡
   if (captureOwnBase()) scheduleSave();       // 接刀只用自有資金:出場時記下接刀用的錢
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
@@ -3929,8 +3959,8 @@ function renderStocks(){
   const rowsHtml = t.rows.map(r => {
     const h = r.h, tx = stockRowText(r);
     return `
-      <div style="margin-bottom:14px;">
-        <div class="erow">
+      <div style="margin-bottom:14px;">${dragRow('stocks', h.id, `
+        <div class="erow" style="margin-top:0;">
           <input class="f-code" data-k="sk-code-${h.id}" value="${esc(h.code)}" placeholder="代號" autocapitalize="characters" spellcheck="false">
           <span class="muted" id="sk-name-${h.id}" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;">${stockNameText(h)}</span>
           ${xDel('del-stock', h.id)}
@@ -3941,7 +3971,7 @@ function renderStocks(){
           ${QUOTES_ENABLED ? '' : `<input class="f-amt" type="number" inputmode="decimal" data-k="sk-price-${h.id}" value="${h.price || ''}" placeholder="現價" aria-label="現價">`}
         </div>
         <div class="muted" style="font-size:12px; margin-top:6px;" id="sk-line-${h.id}">${tx.line}</div>
-        <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>
+        <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>`, t.rows.length > 1)}
       </div>`;
   }).join('');
   const assetOpts = [`<option value="">不算進資產頁</option>`]
@@ -3973,7 +4003,7 @@ function renderStocks(){
 
     <div class="card">
       <h3>持股</h3>
-      <div class="muted" style="font-size:12px;">代號數字開頭是台股(新台幣,上市上櫃都可以,例如 2330、00631L),英文是美股(美元,例如 AAPL、BRK.B)。成本填每股平均成本。</div>
+      <div class="muted" style="font-size:12px;">代號數字開頭是台股(新台幣,上市上櫃都可以,例如 2330、00631L),英文是美股(美元,例如 AAPL、BRK.B)。成本填每股平均成本。${t.rows.length > 1 ? '按住左邊的 ⠿ 上下拉可以改順序。' : ''}</div>
       ${rowsHtml || `<div class="empty">還沒有股票。</div>`}
       <button class="btn" data-act="add-stock">＋ 新增股票</button>
     </div>`;
@@ -6353,7 +6383,7 @@ function renderLeverage(){
           </details>`;
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
-          ${idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: lot ? '已賣光' : '沒有持股' }) : body}
+          ${dragRow('inst', it.key, idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: lot ? '已賣光' : '沒有持股' }) : body, r.holdings.length > 1)}
         </div>`;
       }).join(''); })()}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
@@ -8219,6 +8249,39 @@ function init(){
     // 等著「再按一次確認」時點空白處 = 取消;點輸入框不算(重畫會把游標弄掉)
     else if (pendingConfirm && !e.target.closest('input, select, textarea, label, summary')){ pendingConfirm = null; renderAll(); }
   });
+  // 拖拉排序:按住 ⠿ 上下拉,經過的列中線就換位置,放開時照畫面上的順序存
+  content.addEventListener('pointerdown', e => {
+    const h = e.target.closest && e.target.closest('[data-drag]');
+    const row = h && h.closest('[data-drag-row]');
+    if (!row || dragging) return;
+    e.preventDefault();
+    dragging = { name: h.dataset.drag, row, box: row.parentElement.parentElement, pid: e.pointerId };
+    diagLastAct = 'drag ' + dragging.name;
+    if (h.setPointerCapture) try { h.setPointerCapture(e.pointerId); } catch (_){}
+    row.classList.add('dragging');
+  });
+  content.addEventListener('pointermove', e => {
+    if (!dragging || e.pointerId !== dragging.pid) return;
+    e.preventDefault();
+    const { row, box } = dragging, item = row.parentElement, y = e.clientY;
+    const items = [...box.children].filter(c => c !== item && c.querySelector(':scope > [data-drag-row]'));
+    const next = items.find(c => { const b = c.getBoundingClientRect(); return y < b.top + b.height / 2; });
+    if (next){ if (item.nextElementSibling !== next) box.insertBefore(item, next); }
+    else if (items.length){ const last = items[items.length - 1]; if (last.nextElementSibling !== item) last.after(item); }
+    // 拉到畫面邊緣時跟著捲
+    if (y < 60) window.scrollBy(0, -12); else if (y > window.innerHeight - 60) window.scrollBy(0, 12);
+  });
+  const endDrag = e => {
+    if (!dragging || e.pointerId !== dragging.pid) return;
+    const { name, row, box } = dragging;
+    dragging = null;
+    row.classList.remove('dragging');
+    const ids = [...box.querySelectorAll(':scope > * > [data-drag-row]')].map(c => c.dataset.dragRow);
+    if (reorderList(name, ids)) scheduleSave();
+    renderAll();
+  };
+  content.addEventListener('pointerup', endDrag);
+  content.addEventListener('pointercancel', endDrag);
   content.addEventListener('focusout', () => {
     setTimeout(() => {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;

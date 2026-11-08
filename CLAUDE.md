@@ -423,6 +423,9 @@ id 沿用舊值以確保重複呼叫不會飄動。
   年度總結的類別、設定頁沒持股的標的。開關記在 `openFolds`,**不要改用 `<details>`**:抓報價、跑回測途中會整頁重畫,
   `<details>` 一重畫就收回去。`force` 用在「要看的東西不能被藏起來」:還沒填完、刪除待確認、有錯誤的還款、正在抓歷史。
   測試要看收著的內容時先 `onClick({dataset:{act:'fold', v:key}})`。
+- **拖拉排序**(2026-11 使用者要的):股票分頁的持股、槓桿設定的持股與報價,按住 ⠿ 上下拉(`dragRow()` 畫把手,
+  init 的 pointerdown/move/up 搬畫面上的列,放開時 `reorderList()` 照畫面順序重排陣列)。只改陣列順序;拖拉中 `renderAll()` 直接 return。
+  新增可排序的清單:加進 `DRAG_LISTS`、每列外面包一層 div 再用 `dragRow()`(拖的是外層那個 div)。測試 `tests/stocks.js`。
 - **總覽「房貸要繳」理財型列算式**(`monthLoanDues()` 的 `lines`):最低還本 = 餘額 × 千分之幾(`leverageMonthPrincipal()` 的 `base`,
   已經自動記的用扣之前的餘額)、利息 = 上次繳款日~這次繳款日(`levPeriodFrom()`)逐日計息。本月自己記過還款的不列算式(對不上)。
 - **證交所休市日**(`refreshHolidays()`/`marketClosed()`,2026-10):抓報價時順便問證交所 `holidaySchedule`(有清單 30 天、還沒公布 3 天問一次,
