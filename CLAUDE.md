@@ -482,6 +482,9 @@ id 沿用舊值以確保重複呼叫不會飄動。
   (`charting/history?resolution=D`,`from` 是較新的時間、`to` 較舊,`t` = 交易日 UTC 0 點)重算:每檔、匯率都取「日期 ≤ 那天」的最後收盤,
   標 `f:true`,`maybeStockSnapshot()` 不再蓋。網頁沒開不會跑,沒辦法真的 6 點排程(GitHub Actions 讀不到使用者持股)。
   用現在的股數算;缺一檔的收盤就那天不定案,但從沒抓到報價的代號(打錯)跳過;失敗 30 分鐘內不重試(`financeStockFinalTry`)。
+- **定位值 `holdings[].ref`**(2026-11 使用者要的,判斷進出用):每股價位、原幣別,0 = 沒填。`stockRefText()` 顯示「現價比定位值 高/低 差額(%)」,
+  % = (現價 − 定位值) ÷ 定位值。只是參考,不進總值、紀錄、資產。舊版分頁(認得 stocks 不認得 ref)寫回來那檔沒有 `ref` key 時
+  `keepFieldsOldVersionsDrop()` 補本機的。
 - 有進 `keyedLists()`(路徑 `stocks`)跟 `keepFieldsOldVersionsDrop()`(舊版寫回來沒有 `stocks` key 就補本機的)。
   資料定義(`emptyStocks`/`normalizeStocks`)放在 `emptyState()` 前面:`let state = emptyState()` 載入時就跑,放後面會 TDZ。測試 `tests/stocks.js`(假的 fetch)。
 

@@ -315,6 +315,28 @@ await_(async () => {
   A.switchTab('stocks'); await settle();
   must(quoteCalls === 1, '切到股票分頁自動抓一次');
 
+  console.log('定位值:現價比它高低多少');
+  A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1000, cost:1000, price:1100 }, { id:'b', code:'AAPL', shares:10, cost:200, price:180 }], usd: 32 } });
+  const twdBefore = A.stockTotals().twd;
+  must(!A.renderStocks().includes('現價比定位值'), '沒填定位值不顯示比較');
+  field('sk-ref-a', '1000');
+  field('sk-ref-b', '200');
+  must(S().holdings[0].ref === 1000 && S().holdings[1].ref === 200, '定位值存起來');
+  must(A.stockTotals().twd === twdBefore, '定位值不影響總值');
+  let sh = A.renderStocks();
+  must(sh.includes('現價比定位值 1,000 高 100(+10.0%)') || sh.includes('現價比定位值 1000 高 100(+10.0%)'), '高於定位值:差額跟 %:' + (sh.match(/現價比定位值[^<]*/) || [''])[0]);
+  must(sh.includes('現價比定位值 200 低 20(-10.0%)'), '低於定位值:差額跟 %:' + (sh.match(/現價比定位值 200[^<]*/) || [''])[0]);
+  field('sk-ref-a', '-5');
+  must(S().holdings[0].ref === 0, '負數當成沒填');
+  field('sk-ref-a', '1000');
+  must(A.normalize(JSON.parse(JSON.stringify(A.state))).stocks.holdings[0].ref === 1000, '存檔再讀回來定位值還在');
+  const oldRaw = JSON.parse(JSON.stringify(A.state)); oldRaw.stocks.holdings.forEach(h => delete h.ref);
+  const nx = A.normalize(oldRaw);
+  must(A.keepFieldsOldVersionsDrop(A.state, oldRaw, nx) === true && nx.stocks.holdings[0].ref === 1000 && nx.stocks.holdings[1].ref === 200, '舊版分頁寫回來把定位值丟掉要補回');
+  const clearedRaw = JSON.parse(JSON.stringify(A.state)); clearedRaw.stocks.holdings[0].ref = 0;
+  const nx2 = A.normalize(clearedRaw); A.keepFieldsOldVersionsDrop(A.state, clearedRaw, nx2);
+  must(nx2.stocks.holdings[0].ref === 0, '別台清掉定位值(有 key、值是 0)不能補回來');
+
   console.log('拖拉排序:股票持股、持股與報價');
   A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1 }, { id:'b', code:'AAPL', shares:1 }, { id:'c', code:'0050', shares:1 }], usd: 32 } });
   const order = () => S().holdings.map(h => h.id).join();

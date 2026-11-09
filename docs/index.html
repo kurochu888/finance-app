@@ -554,6 +554,7 @@ function normalizeStocks(v){
     name: str(h.name).slice(0, 60),
     shares: Math.max(0, num(h.shares)),
     cost: Math.max(0, num(h.cost)),
+    ref: Math.max(0, num(h.ref)),       // 定位值(每股,原幣別;0 = 沒填):現價比它高低多少,自己拿來判斷進出
     price: Math.max(0, num(h.price)),
     chg: num(h.chg),
     qt: str(h.qt).slice(0, 16)          // 報價時間 'YYYY-MM-DD HH:MM'(交易所當地時間換成這台的時間)
@@ -859,8 +860,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-09 · 27a4493906';
-const BUILD_HASH = '27a4493906';
+const BUILD_VERSION = '2026-11-09 · 5ae6d1e169';
+const BUILD_HASH = '5ae6d1e169';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1367,6 +1368,14 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   if (!('stocks' in raw) && prev.stocks && (prev.stocks.holdings.length || prev.stocks.assetId || prev.stocks.history.length)){
     next.stocks = JSON.parse(JSON.stringify(prev.stocks));
     restored = true;
+  }
+  // 股票定位值(2026-11 加):舊版分頁(認得 stocks 不認得 ref)寫回來,那一檔沒有 ref 這個 key 就補本機的
+  if (raw.stocks && Array.isArray(raw.stocks.holdings) && prev.stocks && next.stocks){
+    const rawHas = new Map(raw.stocks.holdings.filter(h => h && typeof h === 'object').map(h => [String(h.id), 'ref' in h]));
+    const prevRef = new Map(prev.stocks.holdings.filter(h => h.ref > 0).map(h => [h.id, h.ref]));
+    next.stocks.holdings.forEach(h => {
+      if (rawHas.get(h.id) === false && prevRef.has(h.id)){ h.ref = prevRef.get(h.id); restored = true; }
+    });
   }
   if (!Array.isArray(raw.templates) && (prev.templates || []).length){
     next.templates = JSON.parse(JSON.stringify(prev.templates));
@@ -3960,13 +3969,20 @@ const signMoney = v => (v > 0 ? '+' : v < 0 ? '−' : '') + 'NT$ ' + fmt(Math.ab
 const pnlClass = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
 function stockRowText(r){
   const h = r.h, cur = r.us ? usdMoney : money;
-  if (!h.code) return { line: '先填代號', pnl: '', pnlCls: '' };
-  if (!(h.price > 0)) return { line: QUOTES_ENABLED ? '還沒有現價,按上面「更新報價」' : '填現價', pnl: '', pnlCls: '' };
+  if (!h.code) return { line: '先填代號', pnl: '', pnlCls: '', ref: '', refCls: '' };
+  if (!(h.price > 0)) return { line: QUOTES_ENABLED ? '還沒有現價,按上面「更新報價」' : '填現價', pnl: '', pnlCls: '', ...stockRefText(h) };
   const chgPct = h.price - h.chg > 0 ? h.chg / (h.price - h.chg) * 100 : 0;
   const line = `現價 ${fmtPx(h.price)}${h.chg ? `(${h.chg > 0 ? '+' : ''}${fmtPx(h.chg)},${fmtPct(chgPct)})` : ''} · 市值 ${cur(r.value)}`
     + (r.us ? (r.noFx ? '(沒有匯率,沒算進總值)' : ` ≈ ${money(r.twd)}`) : '');
   const pnl = r.cost > 0 ? `損益 ${r.us ? (r.pnl < 0 ? '−' : '+') + 'US$ ' + fmt(Math.abs(r.pnl)) : signMoney(r.pnl)}(${fmtPct(r.pnlPct)})` : '';
-  return { line, pnl, pnlCls: pnlClass(r.pnl) };
+  return { line, pnl, pnlCls: pnlClass(r.pnl), ...stockRefText(h) };
+}
+/* 定位值:現價比使用者填的價位高低多少(2026-11 使用者要的,拿來判斷進出)。% = (現價 − 定位值) ÷ 定位值 */
+function stockRefText(h){
+  if (!(h.ref > 0) || !(h.price > 0)) return { ref: h.ref > 0 ? `定位值 ${fmtPx(h.ref)}` : '', refCls: '' };
+  const d = h.price - h.ref, pct = d / h.ref * 100;
+  return { ref: d === 0 ? `現價剛好在定位值 ${fmtPx(h.ref)}`
+      : `現價比定位值 ${fmtPx(h.ref)} ${d > 0 ? '高' : '低'} ${fmtPx(Math.abs(d))}(${fmtPct(pct)})`, refCls: pnlClass(d) };
 }
 function stockTrendChart(){
   const pts = stockIntraday(), hist = state.stocks.history;
@@ -4005,7 +4021,12 @@ function renderStocks(){
           ${QUOTES_ENABLED ? '' : `<input class="f-amt" type="number" inputmode="decimal" data-k="sk-price-${h.id}" value="${h.price || ''}" placeholder="現價" aria-label="現價">`}
         </div>
         <div class="muted" style="font-size:12px; margin-top:6px;" id="sk-line-${h.id}">${tx.line}</div>
-        <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>`, t.rows.length > 1)}
+        <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>
+        <div class="erow" style="margin-top:6px;">
+          <label class="muted" for="sk-ref-in-${h.id}" style="flex:1 1 auto; font-size:13px;">定位值(每股${r.us ? ',美元' : ''})</label>
+          <input class="f-amt" id="sk-ref-in-${h.id}" type="number" inputmode="decimal" data-k="sk-ref-${h.id}" value="${h.ref || ''}" placeholder="不填也可以" aria-label="定位值">
+        </div>
+        <div style="font-size:13px; margin-top:2px;" id="sk-refline-${h.id}" class="${tx.refCls}">${tx.ref}</div>`, t.rows.length > 1)}
       </div>`;
   }).join('');
   const assetOpts = [`<option value="">不算進資產頁</option>`]
@@ -4056,6 +4077,7 @@ function refreshStocks(){
     set('sk-name-' + r.h.id, stockNameText(r.h));
     set('sk-line-' + r.h.id, tx.line);
     set('sk-pnl-' + r.h.id, tx.pnl, tx.pnlCls);
+    set('sk-refline-' + r.h.id, tx.ref, tx.refCls);
   });
 }
 /* 股票分頁的欄位:sk-<欄位>-<id>、sk-usd、sk-asset */
@@ -4084,6 +4106,7 @@ function onStockField(rest, el){
     }
     else if (what === 'shares') h.shares = Math.max(0, num(el.value));
     else if (what === 'cost') h.cost = Math.max(0, num(el.value));
+    else if (what === 'ref'){ h.ref = Math.max(0, num(el.value)); refreshStocks(); return; }   // 只是參考價位,不動總值跟紀錄
     else if (what === 'price'){ h.price = Math.max(0, num(el.value)); h.chg = 0; }   // 手動改的現價沒有「比昨天」
     else return;
   }
@@ -7551,8 +7574,8 @@ function sampleData(){
       trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[], splitsAcked:[] }
   ];
   s.stocks = { holdings: [
-      { id:uid(), code:'2330', name:'台積電', shares:200, cost:980, price:2400, chg:15, qt:'' },
-      { id:uid(), code:'AAPL', name:'蘋果', shares:30, cost:185.5, price:347.1, chg:3.19, qt:'' }
+      { id:uid(), code:'2330', name:'台積電', shares:200, cost:980, ref:2200, price:2400, chg:15, qt:'' },
+      { id:uid(), code:'AAPL', name:'蘋果', shares:30, cost:185.5, ref:0, price:347.1, chg:3.19, qt:'' }
     ], usd:32.45, usdTime:'', assetId:'', history:[] };
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
@@ -7773,7 +7796,7 @@ function onClick(el){
     // 刪資產/負債/每月紀錄/標的要再按一次確認(以前按一下 ✕ 就刪,手機捲動時很容易誤觸);剛新增還沒填的空白列直接刪
     case 'del-asset': { const a = findById(state.assets, id); if (a && (a.name || a.amount) && needsConfirm('del-asset:' + id)) return;
       state.assets = state.assets.filter(a => a.id !== id); if (state.stocks.assetId === id) state.stocks.assetId = ''; break; }
-    case 'add-stock': state.stocks.holdings.push({ id:uid(), code:'', name:'', shares:0, cost:0, price:0, chg:0, qt:'' }); break;
+    case 'add-stock': state.stocks.holdings.push({ id:uid(), code:'', name:'', shares:0, cost:0, ref:0, price:0, chg:0, qt:'' }); break;
     case 'del-stock': { const h = findById(state.stocks.holdings, id); if (h && (h.code || h.shares) && needsConfirm('del-stock:' + id)) return;
       state.stocks.holdings = state.stocks.holdings.filter(h => h.id !== id); syncStockAsset(); maybeStockSnapshot(); break; }
     case 'stock-quotes': fetchStockQuotes(); return;
