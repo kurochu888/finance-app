@@ -27,7 +27,7 @@ const src = fs.readFileSync(__dirname + '/../docs/index.html', 'utf8');
 const appJs = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).sort((a, b) => b.length - a.length)[0];
 eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}, emptyState, normalize, onField, onClick,
   renderAll, renderStocks, renderAssets, stockTotals, fetchStockQuotes, keepFieldsOldVersionsDrop, keySets, netWorth, sampleData,
-  stockIntraday, chartData, maybeAutoStockQuotes, stockSessionDay, switchTab, get stockBusy(){return stockBusy}, stockDaysToFinalize, finalizeStockHistory, reorderList, renderLeverage, set levTab(v){levTab=v}, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
+  stockIntraday, chartData, maybeAutoStockQuotes, stockSessionDay, switchTab, get stockBusy(){return stockBusy}, stockDaysToFinalize, finalizeStockHistory, reorderList, renderLeverage, parseEtfNav, fetchEtfNav, etfNavText, get etfNavMsg(){return etfNavMsg}, get etfNav(){return etfNav}, get navUrlBad(){return navUrlBad}, set levTab(v){levTab=v}, set currentTab(v){currentTab=v}, get stockMsg(){return stockMsg}, get pendingConfirm(){return pendingConfirm} };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -336,6 +336,54 @@ await_(async () => {
   const clearedRaw = JSON.parse(JSON.stringify(A.state)); clearedRaw.stocks.holdings[0].ref = 0;
   const nx2 = A.normalize(clearedRaw); A.keepFieldsOldVersionsDrop(A.state, clearedRaw, nx2);
   must(nx2.stocks.holdings[0].ref === 0, '別台清掉定位值(有 key、值是 0)不能補回來');
+
+  console.log('ETF 即時折溢價(經過使用者的 Worker 轉送證交所 all_etf.txt)');
+  // 證交所真實回應的樣子(2026-11-09 抓的):數字有時是字串、有千分位
+  const etfBody = { a1: [
+    { msgArray: [{ a:'00675L', b:'富邦臺灣加權正2', c:'119,786,000', d:'2,000,000', e:'238.30', f:'237.84', g:'0.19', h:'225.86', i:'20261109', j:'09:02:59', k:'1' }], refURL:'x' },
+    { msgArray: [{ a:'0050', b:'元大台灣50', c:24797000000, d:523500000, e:95.0, f:94.97, g:0.03, h:'92.3000', i:'20261109', j:'09:03:00', k:'1' },
+                 { a:'00631L', b:'元大台灣50正2', e:27.5, f:27.9, g:-1.43, h:'26.28', i:'20261106', j:'13:30:00' },
+                 { a:'BAD', f:'-', g:'-' }, null, 'x'] },
+    null ] };
+  const m = A.parseEtfNav(etfBody);
+  must(m.size === 3 && m.get('00675L').nav === 237.84 && m.get('00675L').pct === 0.19 && m.get('00675L').d === '2026-11-09' && m.get('00675L').t === '09:02', '解析證交所格式(字串、千分位、壞資料跳過):' + JSON.stringify([...m]));
+  must(A.parseEtfNav(null).size === 0 && A.parseEtfNav({ a1: 'x' }).size === 0, '壞回應不出錯');
+  at('2026-11-09T09:05:00');
+  A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'00675L', shares:1000, cost:200 }, { id:'b', code:'00631L', shares:1000, cost:20 }, { id:'c', code:'AAPL', shares:1, cost:1 }], usd: 32 } });
+  const workerUrl = 'https://etf-nav.someone.workers.dev';
+  let workerHits = 0;
+  fetchImpl = async url => {
+    if (String(url).startsWith(workerUrl)){ workerHits++; return { ok: true, status: 200, json: async () => etfBody }; }
+    return { ok: true, status: 200, json: async () => ({ statusCode: 200, data: [quote('FX:USDTWD:FOREX', 32, 0, 'x'), quote('TWS:00675L:STOCK', 238.3, 1, '富邦臺灣加權正2'), quote('TWS:00631L:STOCK', 27.5, 1, '元大台灣50正2'), quote('USS:AAPL:STOCK', 300, 1, '蘋果')] }) };
+  };
+  await A.fetchStockQuotes();
+  must(workerHits === 0, '沒設網址不抓');
+  field('sk-navurl', 'http://evil.example/x');
+  must(S().navUrl === '' && A.navUrlBad, '不是 https 的不存');
+  field('sk-navurl', 'https://x.dev/"><img src=x onerror=alert(1)>');
+  must(S().navUrl === '', '有引號角括號的不存');
+  field('sk-navurl', '  ' + workerUrl + '  ');
+  must(S().navUrl === workerUrl && !A.navUrlBad, '合格的網址去空白存起來');
+  await A.fetchStockQuotes();
+  must(workerHits === 1, '設了網址,抓報價時一起抓折溢價');
+  let sh2 = A.renderStocks();
+  must(sh2.includes('預估淨值 237.84 · 溢價 +0.19%(09:02)'), '今天的顯示時間:' + (sh2.match(/預估淨值 237[^<]*/) || [''])[0]);
+  must(sh2.includes('預估淨值 27.9 · 折價 -1.43%(11/6 13:30) ⚠ 偏離較大'), '不是今天的標日期、偏離 1% 以上標 ⚠:' + (sh2.match(/預估淨值 27[^<]*/) || [''])[0]);
+  must(!/AAPL[\s\S]*預估淨值/.test(sh2.slice(sh2.indexOf('sk-code-c'))), '美股不顯示折溢價');
+  must(sh2.includes('ETF 即時折溢價') && sh2.includes('已設定') && !sh2.includes('data-k="sk-navurl"'), '設好了平常收著,標題寫已設定');
+  A.onClick({ dataset:{ act:'fold', v:'etf-nav' } });
+  must(A.renderStocks().includes('有抓到,共 3 檔'), '展開後顯示抓到幾檔');
+  fetchImpl = async url => { if (String(url).startsWith(workerUrl)) return { ok: false, status: 500, json: async () => ({}) }; throw new Error('offline'); };
+  await A.fetchStockQuotes();
+  must(/折溢價抓不到/.test(A.etfNavMsg) && A.renderStocks().includes('折溢價抓不到'), 'Worker 出錯要說:' + A.etfNavMsg);
+  must(A.renderStocks().includes('預估淨值 237.84'), '抓不到時留著上次的數字');
+  must(A.normalize(JSON.parse(JSON.stringify(A.state))).stocks.navUrl === workerUrl, '存檔再讀回來網址還在');
+  const oldRaw2 = JSON.parse(JSON.stringify(A.state)); delete oldRaw2.stocks.navUrl;
+  const nx3 = A.normalize(oldRaw2);
+  must(A.keepFieldsOldVersionsDrop(A.state, oldRaw2, nx3) === true && nx3.stocks.navUrl === workerUrl, '舊版分頁寫回來把網址丟掉要補回');
+  must(A.normalize({ stocks: { navUrl: 'javascript:alert(1)' } }).stocks.navUrl === '', '匯入的壞網址清掉');
+  field('sk-navurl', '');
+  must(S().navUrl === '' && A.etfNav === null && !A.renderStocks().includes('預估淨值 2'), '清掉網址就不顯示');
 
   console.log('拖拉排序:股票持股、持股與報價');
   A.state = A.normalize({ stocks: { holdings: [{ id:'a', code:'2330', shares:1 }, { id:'b', code:'AAPL', shares:1 }, { id:'c', code:'0050', shares:1 }], usd: 32 } });

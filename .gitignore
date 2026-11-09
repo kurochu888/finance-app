@@ -5,3 +5,5 @@ investment-policy.md
 00675L.TW.csv
 0050.TW.csv
 TWII_index.csv
+# Cloudflare wrangler 部署時產生的暫存
+.wrangler/

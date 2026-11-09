@@ -507,7 +507,9 @@ const CNYES_QUOTE = 'https://ws.api.cnyes.com/ws/api/v1/quote/quotes/';
 const STOCK_HIST_KEEP = 1000;
 const STOCK_INTRADAY_KEY = 'financeStockIntraday_v1', STOCK_INTRADAY_MAX = 900;   // 台股 270 分鐘 + 美股 390 分鐘
 const STOCK_ASSET_NAME = '股票(台股+美股)';
-const emptyStocks = () => ({ holdings:[], usd:0, usdTime:'', assetId:'', history:[] });
+const emptyStocks = () => ({ holdings:[], usd:0, usdTime:'', assetId:'', navUrl:'', history:[] });
+// ETF 即時折溢價的轉送網址(使用者自己的 Cloudflare Worker,見 tools/ETF_NAV.md):只收 https、不能有引號角括號(會進 fetch 跟 value 屬性)
+const cleanNavUrl = v => { const u = String(v || '').trim(); return u.length <= 300 && /^https:\/\/[^\s"'<>`]+$/.test(u) ? u : ''; };
 const stockMarket = code => /^\d/.test(String(code || '')) ? 'TW' : 'US';
 const stockCodeOk = code => /^[0-9A-Z][0-9A-Z.\-]{0,11}$/.test(code);
 function normalizeStocks(v){
@@ -537,6 +539,7 @@ function normalizeStocks(v){
     usd: Math.max(0, num(S.usd)),
     usdTime: str(S.usdTime).slice(0, 16),
     assetId: typeof S.assetId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(S.assetId) ? S.assetId : '',
+    navUrl: cleanNavUrl(S.navUrl),
     history
   };
 }
@@ -826,8 +829,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-09 · 5ae6d1e169';
-const BUILD_HASH = '5ae6d1e169';
+const BUILD_VERSION = '2026-11-09 · 98c24c52af';
+const BUILD_HASH = '98c24c52af';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1333,6 +1336,11 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
   // 股票分頁(2026-10 加):舊版分頁寫回來沒有 stocks 這個 key
   if (!('stocks' in raw) && prev.stocks && (prev.stocks.holdings.length || prev.stocks.assetId || prev.stocks.history.length)){
     next.stocks = JSON.parse(JSON.stringify(prev.stocks));
+    restored = true;
+  }
+  // ETF 折溢價的轉送網址(2026-11 加):舊版分頁寫回來 stocks 裡沒有 navUrl 這個 key
+  if (raw.stocks && typeof raw.stocks === 'object' && !('navUrl' in raw.stocks) && prev.stocks && prev.stocks.navUrl && next.stocks){
+    next.stocks.navUrl = prev.stocks.navUrl;
     restored = true;
   }
   // 股票定位值(2026-11 加):舊版分頁(認得 stocks 不認得 ref)寫回來,那一檔沒有 ref 這個 key 就補本機的
@@ -3769,6 +3777,50 @@ function maybeAutoStockQuotes(force = false){
 }
 const unixToLocal = s => { const d = new Date(s * 1000); return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 let stockBusy = false, stockMsg = '';
+/* ETF 即時折溢價(2026-11 使用者要的):證交所 mis 的 all_etf.txt(盤中約 15 秒更新,市價 e、預估淨值 f、折溢價% g、前一天淨值 h、日期 i、時間 j),
+   證交所沒開 CORS,經過使用者自己的 Cloudflare Worker 轉送(state.stocks.navUrl,tools/etf-nav-worker.js)。
+   跟著 fetchStockQuotes 一起抓(手動、開盤中每分鐘),結果只放記憶體:每次開 app 會再抓,不進 state、不同步。 */
+let etfNav = null;        // { map: Map(代號 → {price, nav, pct, prev, d, t}) }
+let etfNavMsg = '';
+let navUrlBad = false;    // 剛貼的轉送網址不合格(沒存)
+function parseEtfNav(body){
+  const map = new Map();
+  const n = v => { const x = Number(String(v == null ? '' : v).replace(/,/g, '')); return Number.isFinite(x) ? x : NaN; };
+  (body && Array.isArray(body.a1) ? body.a1 : []).forEach(g => (g && Array.isArray(g.msgArray) ? g.msgArray : []).forEach(x => {
+    if (!x || typeof x !== 'object') return;
+    const code = String(x.a || '').trim().toUpperCase(), nav = n(x.f), pct = n(x.g);
+    if (!stockCodeOk(code) || !(nav > 0) || !Number.isFinite(pct)) return;
+    const d = /^\d{8}$/.test(String(x.i)) ? String(x.i).replace(/^(\d{4})(\d\d)(\d\d)$/, '$1-$2-$3') : '';
+    map.set(code, { price: n(x.e), nav, pct: Math.max(-100, Math.min(100, pct)), prev: n(x.h), d, t: /^\d\d:\d\d/.test(String(x.j)) ? String(x.j).slice(0, 5) : '' });
+  }));
+  return map;
+}
+async function fetchEtfNav(){
+  const url = state.stocks.navUrl;
+  if (!QUOTES_ENABLED || !url || !state.stocks.holdings.some(h => stockCodeOk(h.code) && stockMarket(h.code) === 'TW')) return;
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 10000) : null;
+  try{
+    const res = await fetch(url, ctl ? { signal: ctl.signal } : undefined);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const map = parseEtfNav(await res.json());
+    if (!map.size) throw new Error('回應裡沒有 ETF 淨值');
+    etfNav = { map };
+    etfNavMsg = '';
+  }catch(e){
+    const was = etfNavMsg;
+    etfNavMsg = '折溢價抓不到(' + (e && e.name === 'AbortError' ? '逾時' : (e && e.message || e)) + '),先用瀏覽器打開轉送網址看看';
+    if (etfNavMsg !== was) diag('股票', etfNavMsg);
+  }finally{ if (timer) clearTimeout(timer); }
+}
+/* 每檔下面那行:預估淨值 27.73 · 溢價 +0.18%(09:03);不是今天的標日期 */
+function etfNavText(h){
+  const q = etfNav && stockMarket(h.code) === 'TW' ? etfNav.map.get(h.code) : null;
+  if (!q) return '';
+  const when = q.d && q.d !== todayISO() ? Number(q.d.slice(5, 7)) + '/' + Number(q.d.slice(8)) + (q.t ? ' ' + q.t : '') : q.t;
+  const kind = q.pct > 0 ? '溢價' : q.pct < 0 ? '折價' : '平價';
+  return `預估淨值 ${fmtPx(q.nav)} · ${kind} ${q.pct >= 0 ? '+' : ''}${q.pct.toFixed(2)}%${when ? `(${esc(when)})` : ''}${Math.abs(q.pct) >= 1 ? ' ⚠ 偏離較大' : ''}`;
+}
 /* 鉅亨網一次查完:匯率 + 每一檔。查不到的代號回應裡直接沒有那一筆 */
 async function fetchStockQuotes(auto = false){
   if (!QUOTES_ENABLED || stockBusy) return;
@@ -3780,6 +3832,7 @@ async function fetchStockQuotes(auto = false){
     // 改完代號點下一格(股數)就會觸發抓報價:這時整頁重畫,剛點進去的欄位會失焦,打的股數、成本全部不見(2026-10-28 使用者手機上「新增股票沒有成功」)
     if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll();
   }
+  const navJob = fetchEtfNav();   // 跟報價同時抓,下面重畫前等它
   try{
     const codes = [...new Set(state.stocks.holdings.map(h => h.code).filter(stockCodeOk))];
     const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
@@ -3830,6 +3883,7 @@ async function fetchStockQuotes(auto = false){
     stockMsg = '抓不到報價(可能沒有網路),維持原本的數字';
     diag('股票', '抓報價失敗:' + (e && e.message || e));
   }
+  await navJob;
   stockBusy = false;
   if (document.activeElement && document.activeElement.tagName === 'INPUT'){ if (currentTab === 'stocks') refreshStocks(); }
   else if (auto !== true || currentTab === 'stocks') renderAll();   // 自動更新時在別的分頁不用重畫(資產頁的數字下次切過去就是新的)
@@ -3988,6 +4042,7 @@ function renderStocks(){
         </div>
         <div class="muted" style="font-size:12px; margin-top:6px;" id="sk-line-${h.id}">${tx.line}</div>
         <div style="font-size:13px; margin-top:2px;" id="sk-pnl-${h.id}" class="${tx.pnlCls}">${tx.pnl}</div>
+        <div class="muted" style="font-size:12px; margin-top:2px;" id="sk-nav-${h.id}">${etfNavText(h)}</div>
         <div class="erow" style="margin-top:6px;">
           <label class="muted" for="sk-ref-in-${h.id}" style="flex:1 1 auto; font-size:13px;">定位值(每股${r.us ? ',美元' : ''})</label>
           <input class="f-amt" id="sk-ref-in-${h.id}" type="number" inputmode="decimal" data-k="sk-ref-${h.id}" value="${h.ref || ''}" placeholder="不填也可以" aria-label="定位值">
@@ -4027,6 +4082,17 @@ function renderStocks(){
       <div class="muted" style="font-size:12px;">代號數字開頭是台股(新台幣,上市上櫃都可以,例如 2330、00631L),英文是美股(美元,例如 AAPL、BRK.B)。成本填每股平均成本。${t.rows.length > 1 ? '按住左邊的 ⠿ 上下拉可以改順序。' : ''}</div>
       ${rowsHtml || `<div class="empty">還沒有股票。</div>`}
       <button class="btn" data-act="add-stock">＋ 新增股票</button>
+      ${QUOTES_ENABLED ? `<div style="margin-top:10px;">${fold('etf-nav', 'ETF 即時折溢價', () => `
+        <div class="muted" style="font-size:12px;">台股 ETF 下面顯示證交所的預估淨值跟折溢價(盤中約 15 秒更新,跟著報價每分鐘抓)。
+          證交所不讓網頁直接讀,要經過你自己的 Cloudflare Worker 轉送(免費,設定一次),
+          步驟見 <a href="https://github.com/kurochu888/finance-app/blob/main/tools/ETF_NAV.md" target="_blank" rel="noopener" style="color:var(--accent);">設定說明</a>。
+          網址會跟著資料同步到其他裝置。</div>
+        <div class="field" style="margin-top:8px;"><label>Worker 網址</label>
+          <input data-k="sk-navurl" value="${esc(S.navUrl)}" placeholder="https://etf-nav.你的帳號.workers.dev" autocapitalize="off" spellcheck="false" inputmode="url"></div>
+        ${navUrlBad ? `<div class="muted neg" style="font-size:12px;">網址要是 https:// 開頭,這個沒存起來。</div>` : ''}
+        ${etfNavMsg ? `<div class="muted neg" style="font-size:12px;">${esc(etfNavMsg)}</div>`
+          : S.navUrl && etfNav ? `<div class="muted" style="font-size:12px;">✓ 有抓到,共 ${etfNav.map.size} 檔 ETF。</div>` : ''}`,
+        { sub: S.navUrl ? (etfNavMsg ? '⚠ 抓不到' : '已設定') : '要設定', force: navUrlBad || !!etfNavMsg })}</div>` : ''}
     </div>`;
 }
 /* 打字時只更新數字,不整頁重畫(整頁重畫會讓正在打的欄位失焦) */
@@ -4044,12 +4110,19 @@ function refreshStocks(){
     set('sk-line-' + r.h.id, tx.line);
     set('sk-pnl-' + r.h.id, tx.pnl, tx.pnlCls);
     set('sk-refline-' + r.h.id, tx.ref, tx.refCls);
+    set('sk-nav-' + r.h.id, etfNavText(r.h));
   });
 }
 /* 股票分頁的欄位:sk-<欄位>-<id>、sk-usd、sk-asset */
 function onStockField(rest, el){
   const S = state.stocks;
   if (rest === 'usd'){ S.usd = Math.max(0, num(el.value)); }
+  else if (rest === 'navurl'){
+    const raw = String(el.value || '').trim(), u = cleanNavUrl(raw);
+    navUrlBad = !!raw && !u;
+    if (!navUrlBad && u !== S.navUrl){ S.navUrl = u; etfNav = null; etfNavMsg = ''; }
+    return;
+  }
   else if (rest === 'asset'){
     const v = String(el.value || '');
     if (v === 'new'){
@@ -7542,7 +7615,7 @@ function sampleData(){
   s.stocks = { holdings: [
       { id:uid(), code:'2330', name:'台積電', shares:200, cost:980, ref:2200, price:2400, chg:15, qt:'' },
       { id:uid(), code:'AAPL', name:'蘋果', shares:30, cost:185.5, ref:0, price:347.1, chg:3.19, qt:'' }
-    ], usd:32.45, usdTime:'', assetId:'', history:[] };
+    ], usd:32.45, usdTime:'', assetId:'', navUrl:'', history:[] };
   const back = n => shiftMonth(m, -n) + '-05';
   s.trades = [
     { id:uid(), date:back(5), symbol:'00631L', action:'buy', shares:10000, price:31.2,  amount:0, fee:445, source:'cash', note:'定期投入' },
@@ -8249,6 +8322,8 @@ function init(){
     // change 比「焦點移到下一格」早發生:當下沒有欄位有焦點,馬上抓的話 fetchStockQuotes 會以為沒在打字、整頁重畫,
     // 剛點進去的股數欄位就失焦了。等焦點移過去再抓(跟 focusout 處理一樣等 60ms 以上)
     if (dk.startsWith('sk-code-') && QUOTES_ENABLED && !stockBusy){ setTimeout(fetchStockQuotes, 100); return; }
+    // 貼完轉送網址:馬上試抓一次折溢價,讓使用者知道設對了沒
+    if (dk === 'sk-navurl'){ setTimeout(async () => { await fetchEtfNav(); if (currentTab === 'stocks' && !(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll(); else refreshStocks(); }, 100); return; }
     // 同一個道理:離開欄位當下還不知道是不是點了下一格,等焦點移過去,真的沒在打字才重畫(名稱、現價那幾行)
     if (dk.startsWith('sk-') && dk !== 'sk-asset'){
       setTimeout(() => { if (currentTab === 'stocks' && !(document.activeElement && document.activeElement.tagName === 'INPUT')) renderAll(); }, 100);

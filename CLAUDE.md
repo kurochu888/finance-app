@@ -485,6 +485,12 @@ id 沿用舊值以確保重複呼叫不會飄動。
 - **定位值 `holdings[].ref`**(2026-11 使用者要的,判斷進出用):每股價位、原幣別,0 = 沒填。`stockRefText()` 顯示「現價比定位值 高/低 差額(%)」,
   % = (現價 − 定位值) ÷ 定位值。只是參考,不進總值、紀錄、資產。舊版分頁(認得 stocks 不認得 ref)寫回來那檔沒有 `ref` key 時
   `keepFieldsOldVersionsDrop()` 補本機的。
+- **ETF 即時折溢價**(2026-11 使用者要的):證交所 `mis.twse.com.tw/stock/data/all_etf.txt`(市價 e、預估淨值 f、折溢價% g、日期 i、時間 j)
+  沒開 CORS,鉅亨網沒有淨值欄位(`TWS:xxx:NAV` 的走勢其實是市價),證交所 OpenAPI、投信網站也都沒開(2026-11-09 用 curl 帶 Origin 試過)。
+  所以經過使用者自己的 Cloudflare Worker(`tools/etf-nav-worker.js`,只轉這一個網址;設定步驟 `tools/ETF_NAV.md`),
+  網址存 `stocks.navUrl`(同步,`cleanNavUrl()` 只收 https、不能有引號角括號;舊版寫回來沒有 key 時補本機的)。
+  `fetchEtfNav()` 跟 `fetchStockQuotes()` 同時抓,結果 `etfNav` 只放記憶體;`etfNavText()` 用證交所算好的 g(市價跟淨值同一時間點),
+  不是今天的標日期、|g| ≥ 1% 標 ⚠。已部署在 `https://etf-nav.kurochu888.workers.dev`(2026-11-09,Cloudflare 連證交所是通的);重新部署見 `tools/ETF_NAV.md`「用指令部署」。
 - 有進 `keyedLists()`(路徑 `stocks`)跟 `keepFieldsOldVersionsDrop()`(舊版寫回來沒有 `stocks` key 就補本機的)。
   資料定義(`emptyStocks`/`normalizeStocks`)放在 `emptyState()` 前面:`let state = emptyState()` 載入時就跑,放後面會 TDZ。測試 `tests/stocks.js`(假的 fetch)。
 

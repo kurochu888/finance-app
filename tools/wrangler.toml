@@ -1,0 +1,5 @@
+# 用指令部署 ETF 折溢價轉送程式(見 ETF_NAV.md):在 tools/ 裡跑 npx wrangler deploy
+name = "etf-nav"
+main = "etf-nav-worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
