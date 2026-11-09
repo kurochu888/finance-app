@@ -109,6 +109,17 @@
     margin:0 0 12px; font-size:12px; color:var(--sub); font-weight:700;
     letter-spacing:.06em; padding-bottom:9px; border-bottom:1px solid var(--line);
   }
+  /* 整張卡片收合(cardOpen):點標題收起/展開,收著時只剩標題 + 摘要 */
+  .card > h3.cf-h{display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; -webkit-user-select:none;}
+  .cf-h .cf-t{flex:0 1 auto; min-width:0;}
+  .cf-h .cf-sub{display:none; flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; letter-spacing:0;}
+  .cf-h .cf-i{margin-left:auto; flex:0 0 auto; font-weight:400; letter-spacing:0;}
+  .cf-h .cf-i::after{content:'▾';}
+  .card.cf-closed{padding-top:12px; padding-bottom:12px;}
+  .card.cf-closed > h3.cf-h{margin-bottom:0; padding-bottom:0; border-bottom:none;}
+  .card.cf-closed > h3.cf-h .cf-sub{display:block;}
+  .card.cf-closed > h3.cf-h .cf-i::after{content:'展開 ▸';}
+  .card.cf-closed > :not(h3.cf-h){display:none !important;}
   /* 三層數字:主答案 → 次要指標 → 明細 */
   .big-num{font-size:28px; font-weight:800; margin:2px 0; letter-spacing:-.025em; line-height:1.15;}
   .mid-num{font-size:19px; font-weight:700; margin:2px 0; letter-spacing:-.015em;}
@@ -847,8 +858,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-09 · 98c24c52af';
-const BUILD_HASH = '98c24c52af';
+const BUILD_VERSION = '2026-11-09 · 72c96d6a05';
+const BUILD_HASH = '72c96d6a05';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1642,6 +1653,31 @@ function fold(key, title, body, { sub = '', force = false } = {}){
   const open = force || openFolds.has(key);
   return `<button class="fold-head" data-act="fold" data-v="${esc(key)}"><span class="ft">${title}</span>${sub ? `<span class="fs">${sub}</span>` : ''}<span class="fi">${open ? (force ? '' : '收起 ▾') : '展開 ▸'}</span></button>
     ${open ? `<div class="fold-body">${typeof body === 'function' ? body() : body}</div>` : ''}`;
+}
+/* 整張卡片收合(2026-11 使用者要的:「各頁檢查哪些縮起來比較精簡」)。點標題收起/展開,記在這台裝置(localStorage,不同步:
+   手機跟電腦螢幕大小不同,想收的不一樣)。收著時內容照樣畫、只用 CSS 藏起來(.cf-closed),打字時靠 id 局部更新的數字照常運作。
+   def:'closed' = 預設收著(很少用、或越來越長的清單),force = 這時候一定要看到(填到一半、待確認刪除、有錯誤)。
+   收著時標題旁邊顯示 sub(摘要)。卡片裡的區塊收合用 fold(),那個收合狀態不記。 */
+const CARD_FOLDS_KEY = 'financeCardFolds_v1';
+let cardFolds = (() => {
+  try{ const o = JSON.parse(localStorage.getItem(CARD_FOLDS_KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; }
+  catch(_){ return {}; }
+})();
+const cardShown = {};   // 每張卡片上次畫出來是不是收著(點標題時沒有 DOM 可看就用這個,例如測試)
+const cardClosed = (key, def) => Object.prototype.hasOwnProperty.call(cardFolds, key) ? cardFolds[key] === 1 : def === 'closed';
+function cardOpen(key, title, { sub = '', def = 'open', force = false } = {}){
+  const closed = !force && cardClosed(key, def);
+  cardShown[key] = closed;
+  return `<div class="card${closed ? ' cf-closed' : ''}" data-cf="${key}">
+      <h3 class="cf-h" data-act="cfold" data-v="${key}"><span class="cf-t">${title}</span>${sub ? `<span class="cf-sub">${sub}</span>` : ''}<span class="cf-i"></span></h3>`;
+}
+function toggleCardFold(key, el){
+  const card = el && typeof el.closest === 'function' ? el.closest('.card') : null;
+  const closed = card ? !card.classList.contains('cf-closed') : !cardShown[key];
+  cardFolds[key] = closed ? 1 : 0;
+  try{ localStorage.setItem(CARD_FOLDS_KEY, JSON.stringify(cardFolds)); }catch(_){}
+  if (card){ card.classList.toggle('cf-closed', closed); return false; }   // 直接切 class,不用整頁重畫
+  return true;
 }
 /* 拖拉排序(2026-11 使用者要的):股票分頁的持股、槓桿設定的持股與報價。
    畫面上按住 ⠿ 上下拉(init 的 pointerdown/move/up),放開時照畫面上的順序呼叫 reorderList() 存起來。
@@ -3107,10 +3143,10 @@ function renderYearCard(){
   const row = (label, val, cls = '') => `<div class="row"><span class="label">${label}</span><span class="val ${cls}">${val}</span></div>`;
   const sub = (label, val) => `<div class="row sub"><span class="label">${label}</span><span class="val">${val}</span></div>`;
   return `
-    <div class="card">
+    ${cardOpen('ov-year', '年度總結', { sub: summaryYear + ' 年' })}
       <div class="row" style="margin-bottom:6px;">
         <button class="xbtn step" data-act="sum-year" data-v="-1" ${summaryYear <= yr.min ? 'disabled' : ''} aria-label="前一年">◀</button>
-        <h3 style="margin:0; flex:1 1 auto; text-align:center;">${summaryYear} 年總結${s.isNow ? `(到 ${todayISO().slice(5).replace('-', '/')})` : ''}</h3>
+        <h3 style="margin:0; flex:1 1 auto; text-align:center; border-bottom:none; padding-bottom:0;">${summaryYear} 年總結${s.isNow ? `(到 ${todayISO().slice(5).replace('-', '/')})` : ''}</h3>
         <button class="xbtn step" data-act="sum-year" data-v="1" ${summaryYear >= yr.max ? 'disabled' : ''} aria-label="後一年">▶</button>
       </div>
       ${!s.hasData ? `<div class="empty">這一年沒有紀錄。</div>` : `
@@ -3219,8 +3255,7 @@ function renderOverview(){
       if (!dues.length) return '';
       const total = sum(dues, d => d.principal + d.interest);
       return `
-    <div class="card">
-      <h3>${monthLabel(thisMonth())}房貸要繳</h3>
+    ${cardOpen('ov-dues', `${monthLabel(thisMonth())}房貸要繳`, {})}
       ${dues.map(d => `
       <div class="row"><span class="label">${esc(d.name)}</span><span class="val">NT$ ${fmt(d.principal + d.interest)}</span></div>
       ${d.lines ? d.lines.map(t => `<div class="row sub"><span class="label">${esc(t)}</span><span class="val"></span></div>`).join('')
@@ -3236,8 +3271,7 @@ function renderOverview(){
       const cls = p.total >= 0 ? 'pos' : 'neg';
       const sign = (p.total >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(p.total));
       return `
-      <div class="card">
-        <h3>投資部位</h3>
+      ${cardOpen('ov-invest', `投資部位`, {})}
         <div class="big-num ${cls}">${sign}</div>
         <div class="big-sub">整體損益(已扣借款利息)</div>
         ${xirrRow(p)}
@@ -3251,8 +3285,7 @@ function renderOverview(){
       </div>`;
     })()}
 
-    <div class="card">
-      <h3>${esc(monthLabel(viewMonth))}收支</h3>
+    ${cardOpen('ov-month', `${esc(monthLabel(viewMonth))}收支`, {})}
       <div class="row"><span class="label">收入</span><span class="val pos">NT$ ${fmt(flow.income)}</span></div>
       <div class="row"><span class="label">支出</span><span class="val">NT$ ${fmt(flow.expense)}</span></div>
       <div class="row"><span class="label">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}">${money(flow.balance)}</span></div>
@@ -3261,8 +3294,7 @@ function renderOverview(){
     </div>
 
     ${catList.length ? `
-    <div class="card">
-      <h3>支出類別</h3>
+    ${cardOpen('ov-cats', `支出類別`, {})}
       ${catList.map(e => {
         const pct = flow.expense ? e.amount / flow.expense * 100 : 0;
         return `<div class="row"><span class="label">${esc(e.name)}</span><span class="val">NT$ ${fmt(e.amount)}(${pct.toFixed(0)}%)</span></div>
@@ -3272,8 +3304,7 @@ function renderOverview(){
 
     ${renderYearCard()}
 
-    <div class="card">
-      <h3>資料</h3>
+    ${cardOpen('ov-data', `資料`, { def:'closed', force: !!dataMsg || !!diagText || ['clear-all', 'diag-clear'].includes(pendingConfirm) })}
       ${storageMode === 'cloud' && cloudKind !== 'firebase' ? `<div class="muted" id="dataSyncStatus" style="margin-bottom:8px;">${esc(storageStatusText())}</div>` : ''}
       ${cloudKind === 'firebase' ? (authUser ? `
         <div class="row"><span class="label">雲端同步</span><span class="val pos">${privacy ? '已登入' : esc(authUser.email)}</span></div>
@@ -3424,8 +3455,7 @@ function renderAssets(){
       <div class="row"><span class="label">總負債</span><span class="val neg" id="l-total">NT$ ${fmt(tL)}</span></div>
     </div>
 
-    <div class="card">
-      <h3>資產配置</h3>
+    ${cardOpen('as-alloc', `資產配置`, {})}
       ${state.assets.length ? state.assets.map((a, i) => {
         const pct = tA ? a.amount / tA * 100 : 0;
         return `
@@ -3443,8 +3473,7 @@ function renderAssets(){
       <button class="btn" data-act="add-asset">＋ 新增資產</button>
     </div>
 
-    <div class="card">
-      <h3>負債</h3>
+    ${cardOpen('as-liab', `負債`, {})}
       ${state.liabilities.length ? state.liabilities.map(l => `
         <div style="margin-bottom:10px;">
         <div class="erow">
@@ -3598,8 +3627,7 @@ function renderLedger(){
   const cats = knownCats();
   return `
     ${monthNav()}
-    <div class="card">
-      <h3>新增一筆</h3>
+    ${cardOpen('lg-add', `新增一筆`, {})}
       <div class="seg">
         <button class="seg-btn ${draft.type === 'expense' ? 'on' : ''}" data-act="draft-type" data-v="expense">支出</button>
         <button class="seg-btn ${draft.type === 'income' ? 'on' : ''}" data-act="draft-type" data-v="income">收入</button>
@@ -3645,8 +3673,7 @@ function renderLedger(){
       <div class="row"><span class="label" style="font-weight:700;">結餘</span><span class="val ${flow.balance >= 0 ? 'pos' : 'neg'}" style="font-weight:800;">${money(flow.balance)}</span></div>
     </div>
 
-    <div class="card">
-      <h3>交易紀錄</h3>
+    ${cardOpen('lg-tx', `交易紀錄`, { sub: state.transactions.filter(t => t.date.slice(0, 7) === viewMonth).length + ' 筆', force: !!editingTx })}
       ${tx.length ? tx.map(t => t.id === editingTx ? `
         <div class="tx-edit">
           <div class="grid2">
@@ -4090,13 +4117,11 @@ function renderStocks(){
       <div class="muted" style="font-size:12px;">${linked ? `資產頁的「${esc(linked.name || '(沒有名稱)')}」跟著這裡的總值自動更新。` : '選一個資產細項,它的金額就會跟著這裡的總值更新;原本自己記股票市值的那一項直接選它,才不會算兩次。'}</div>
     </div>
 
-    <div class="card">
-      <h3>走勢</h3>
+    ${cardOpen('sk-trend', `走勢`, {})}
       ${stockTrendChart()}
     </div>
 
-    <div class="card">
-      <h3>持股</h3>
+    ${cardOpen('sk-hold', `持股`, { sub: state.stocks.holdings.length + ' 檔' })}
       <div class="muted" style="font-size:12px;">代號數字開頭是台股(新台幣,上市上櫃都可以,例如 2330、00631L),英文是美股(美元,例如 AAPL、BRK.B)。成本填每股平均成本。${t.rows.length > 1 ? '按住左邊的 ⠿ 上下拉可以改順序。' : ''}</div>
       ${rowsHtml || `<div class="empty">還沒有股票。</div>`}
       <button class="btn" data-act="add-stock">＋ 新增股票</button>
@@ -5093,8 +5118,7 @@ function renderRisk(){
       ], { label:'部位市值與借款', height:120 });
 
   return `
-    <div class="card">
-      <h3>曝險</h3>
+    ${cardOpen('lv-risk', `曝險`, {})}
       <div class="mid-num ${heavy ? 'neg' : ''}">${k.capacity > 0 ? k.exposureRatio.toFixed(0) + '%' : '—'}</div>
       <div class="big-sub">實質市場曝險 ÷(部位淨值 + 房貸總額度)</div>
       <div class="bar-track"><div class="bar-fill ${heavy ? 'over' : ''}" style="width:${expPct.toFixed(1)}%"></div></div>
@@ -5193,16 +5217,14 @@ function renderPnL(){
   const p = computePosition();
   if (!p.hasData){
     return `
-      <div class="card">
-        <h3>部位損益</h3>
+      ${cardOpen('lv-pnl', `部位損益`, {})}
         <div class="empty">還沒有買賣紀錄,所以算不出賺賠。<br>在下面「買賣紀錄」記下每次進場,這裡就會顯示成本與損益。</div>
       </div>`;
   }
   const sign = n => (n >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(n));
   const cls = n => n >= 0 ? 'pos' : 'neg';
   return `
-    <div class="card">
-      <h3>整體損益</h3>
+    ${cardOpen('lv-total', `整體損益`, {})}
       <div class="big-num ${cls(p.total)}">${sign(p.total)}</div>
       <div class="big-sub">已扣掉借款利息</div>
       ${xirrRow(p)}
@@ -5228,8 +5250,7 @@ function renderPnL(){
       ${pnlChartBlock()}
     </div>
 
-    <div class="card">
-      <h3>投入的錢</h3>
+    ${cardOpen('lv-in', `投入的錢`, {})}
       <div class="mid-num">${money(p.netCash)}</div>
       <div class="big-sub">淨投入 —— 還放在裡面的自有資金</div>
       <div class="row"><span class="label">用房貸買進</span><span class="val">NT$ ${fmt(p.buyLoan)}</span></div>
@@ -5247,6 +5268,18 @@ function renderPnL(){
     </div>`;
 }
 
+/* 記錄頁卡片收著時標題旁的摘要 */
+function tradesSub(){
+  if (!state.trades.length) return '還沒有紀錄';
+  const last = state.trades.reduce((a, t) => t.date >= a.date ? t : a);
+  return `${state.trades.length} 筆 · 最近 ${esc(last.date.slice(2).replace(/-/g, '/'))} ${last.action === 'sell' ? '賣' : last.action === 'dividend' ? '配息' : '買'} ${esc(last.symbol)}`;
+}
+function drawsSub(){
+  const r = computeLeverage();
+  return `${state.leverage.draws.length} 筆 · 借款餘額 NT$ ${fmt(r.usedAmount)}`;
+}
+// 動用記錄有沒填完、或待確認刪除的:整張卡片打開(裡面那筆本來就會展開)
+const drawsNeedAttention = () => state.leverage.draws.some(t => !t.useDate || !t.amount || pendingConfirm === 'del-draw:' + t.id);
 function renderTrades(){
   const trades = state.trades.slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   const d = tradeDraft;
@@ -5255,8 +5288,7 @@ function renderTrades(){
   if (!findInstrument(d.symbol) && state.instruments.length) d.symbol = state.instruments[0].id;
   const gross = num(d.shares) * draftPrice(d);
   return `
-    <div class="card">
-      <h3>記一筆買賣</h3>
+    ${cardOpen('lv-addtrade', `記一筆買賣`, { force: !!(tradeDraft.shares || tradeDraft.amount || tradeError) })}
       <div class="field"><label>標的</label>
         <select data-k="pd-symbol">
           ${state.instruments.map(it => `<option value="${esc(it.id)}" ${d.symbol === it.id ? 'selected' : ''}>${esc(it.id)}${it.name ? ' ' + esc(it.name) : ''}</option>`).join('')}
@@ -5299,8 +5331,7 @@ function renderTrades(){
       ${loanLedgerMissing() ? `<div class="muted neg" style="margin-top:8px;">${LOAN_LEDGER_MSG}</div>` : ''}
     </div>
 
-    <div class="card">
-      <h3>買賣紀錄</h3>
+    ${cardOpen('lv-trades', `買賣紀錄`, { def:'closed', sub: tradesSub(), force: !!editingTrade || String(pendingConfirm || '').startsWith('del-trade') })}
       ${trades.length ? trades.map(t => t.id === editingTrade ? `
         <div class="tx-edit">
           ${t.action === 'buy' ? `
@@ -5404,8 +5435,7 @@ function renderDrawRecords(){
       <button class="btn${pendingConfirm === 'del-draw:' + t.id ? ' danger' : ''}" data-act="del-draw" data-id="${t.id}" style="margin-top:8px;">${pendingConfirm === 'del-draw:' + t.id ? '⚠️ 有還款紀錄,再按一次刪除' : '刪除這筆'}</button>
     </div>`;
   return `
-    <div class="card">
-      <h3>房貸動用記錄</h3>
+    ${cardOpen('lv-draws', `房貸動用記錄`, { def:'closed', sub: drawsSub(), force: drawsNeedAttention() })}
       <details class="tip" style="margin-bottom:10px;"><summary>按「訊號」分頁實際買進之後怎麼記</summary><div class="body">按「訊號」分頁的趨勢/曝險目標實際買進之後,在這裡記一筆動用金額——借款餘額跟利息都是從這裡算的,不是自動推算。</div></details>
       ${(() => {
         const paid = r.draws.filter(t => t.useDate && t.useDate <= today && !t.balance && t.amount && pendingConfirm !== 'del-draw:' + t.id);
@@ -5441,8 +5471,7 @@ function renderRepayments(){
   items.forEach(it => (it.repayments || []).forEach(r => rows.push({ it, r })));
   rows.sort((a, b) => a.r.date < b.r.date ? 1 : -1);
   return `
-    <div class="card">
-      <h3>記一筆還款</h3>
+    ${cardOpen('lv-addrepay', `記一筆還款`, { def:'closed', force: !!(repayDraft.amount || repayError) })}
       ${items.length ? `
         <div class="field"><label>還哪一筆</label>
           <select data-k="rd-target">
@@ -5458,8 +5487,8 @@ function renderRepayments(){
       ` : `<div class="empty">還沒有動用中的記錄。<br>在上面「房貸動用記錄」填了動用日期之後,這裡才能記還款。</div>`}
     </div>
 
-    <div class="card">
-      <h3>還款紀錄</h3>
+    ${cardOpen('lv-repays', `還款紀錄`, { def:'closed', sub: rows.length + ' 筆' + (rows.length ? ' · 最近 ' + esc(rows[0].r.date.slice(2).replace(/-/g, '/')) : ''),
+      force: String(pendingConfirm || '').startsWith('del-repay') || rows.some(({ it, r }) => !r.date || r.date < it.useDate || overRepaid(it, r) > 0.5) })}
       ${(() => {
         // 每筆動用一行,點了才列出它的還款(2026-10:每月自動還本每筆動用各記一筆,一年就幾十列可以改的欄位)。
         // 有問題的還款(沒日期、早於動用日、還超過)或刪除待確認的那筆直接打開
@@ -5526,8 +5555,7 @@ function renderExposurePlanCard(){
   if (!p) return '';
   if (loanLedgerMissing()){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="muted neg">${LOAN_LEDGER_MSG}</div>
     </div>`;
   }
@@ -5539,24 +5567,21 @@ function renderExposurePlanCard(){
   // 還沒處理的分割:持股可能少算成 1/N,算出來的加碼金額會大錯,先請使用者處理分割提醒
   if (splitTradeIssues().some(x => p.instruments.includes(x.it.key))){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="muted neg">上面有「分割過」的提醒還沒處理:持股可能少算,現在算出來的加碼/減碼金額不可靠,先處理那個提醒。</div>
     </div>`;
   }
   // 分母(部位淨值 + 額度)≤ 0:借款已經超過市值 + 額度,比例跟加碼/減碼金額都是拿負的分母解出來的,沒有意義
   if (computeRisk().capacity <= 0 && computeRisk().pv > 0){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="muted neg">借款已經超過「部位市值 + 房貸額度」,曝險比例沒有意義,算不出該加碼或減碼多少。
         先確認「紀錄」分頁的動用/還款金額跟「設定」分頁的房貸額度是不是填對了。</div>
     </div>`;
   }
   if (short.length){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="muted" style="margin-top:6px;">${short.map(it => esc(it.id || '未命名')).join('、')} 的歷史價格還不夠(或中間缺了一段)算均線,
         算不出目前在第幾層,先不給加碼/減碼金額。到「設定」分頁按「從證交所更新收盤價」會自動回補。</div>
@@ -5623,8 +5648,7 @@ function renderExposurePlanCard(){
         : `<div class="muted" style="font-size:12px;">這一層已經調整過,等下一層、轉回續抱或出場。接刀期間漲跌都不加碼也不減碼。</div>`}`}`;
     };
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="muted" style="font-size:12px;">接刀只用自有資金,兩檔分開算:每檔出場時記下自己的那份(出場時市值 − 按市值比例分到的房貸),各層照這份的 % 買回。</div>
       ${p.own.items.map(block).join('')}
       ${ackKeys.length ? `
@@ -5638,8 +5662,7 @@ function renderExposurePlanCard(){
   const overTarget = p.deltaLoan < -0.5;   // 現值超過目標,允許一點點浮點誤差
   if (p.progress > p.layerCount && !p.holdAdjustPending){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="row"><span class="label">目前階段</span><span class="val">續抱中(兩檔都 HOLD)</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="muted" style="margin-top:6px;">續抱期間不做再平衡:${p.targetRatio}% 只在剛轉成 HOLD 時調整一次,之後漲跌造成的曝險變化都不加碼也不減碼,等出場訊號。</div>
@@ -5647,16 +5670,14 @@ function renderExposurePlanCard(){
   }
   if (p.progress >= 1 && p.progress <= p.layerCount && !p.layerAdjustPending){
     return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="row"><span class="label">目前階段</span><span class="val">${esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="muted" style="margin-top:6px;">這一層已經調整過:${p.targetRatio}% 只在剛接到這一層時調整一次,之後漲跌造成的曝險變化都不加碼也不減碼,等下一層、轉回續抱或出場。</div>
     </div>`;
   }
   return `
-    <div class="card">
-      <h3>正2 曝險目標</h3>
+    ${cardOpen('sg-exposure', `正2 曝險目標`, {})}
       <div class="row"><span class="label">目前階段</span><span class="val">${p.holdAdjustPending ? '剛轉成 HOLD' : p.layerAdjustPending ? `剛接到第 ${p.progress} / ${p.layerCount} 層` : esc(stageLabel)}</span></div>
       <div class="row"><span class="label">目前曝險</span><span class="val">${p.currentRatio.toFixed(1)}%</span></div>
       <div class="row"><span class="label" style="font-weight:700;">目標曝險</span><span class="val" style="font-weight:800;">${p.targetRatio}%</span></div>
@@ -5834,8 +5855,7 @@ function renderTrendTab(){
     ${renderStaleSignalAlert()}
     ${renderTrendChangeAlerts()}
     ${renderExposurePlanCard()}
-    <div class="card">
-      <h3>均線趨勢訊號</h3>
+    ${cardOpen('sg-trend', `均線趨勢訊號`, {})}
       <details class="tip" style="margin-bottom:12px;"><summary>這個訊號怎麼用</summary><div class="body">只顯示訊號,不會自動買賣——參考「距出場線」(續抱中)或「下一層加碼」「轉回續抱」(接刀中)的價位自己決定要不要動作。價位是用今天的均線估明天的,均線每天會再動一點,實際買賣一樣記在「紀錄」分頁。</div></details>
       ${trends.map(t => {
         const it = findInstrumentByKey(t.key);
@@ -6443,8 +6463,7 @@ function renderLeverage(){
       ${renderDrawRecords()}
       ${renderRepayments()}
     ` : `
-    <div class="card">
-      <h3>持股與報價</h3>
+    ${cardOpen('st-hold', `持股與報價`, {})}
       ${(() => { const p = computePosition();
       const gainRow = (value, costBasis) => `
           <div class="row sub"><span class="label">未實現損益</span><span class="val ${value >= 0 ? 'pos' : 'neg'}">${value >= 0 ? '+' : '−'}NT$ ${fmt(Math.abs(value))}(${value >= 0 ? '+' : '−'}${(costBasis > 0 ? Math.abs(value / costBasis * 100) : 0).toFixed(1)}%)</span></div>`;
@@ -6519,8 +6538,7 @@ function renderLeverage(){
           </div>` : ''}` : ''}
     </div>
 
-    <div class="card">
-      <h3>曝險目標設定</h3>
+    ${cardOpen('st-exptarget', `曝險目標設定`, { def:'closed' })}
       <details class="tip" style="margin-bottom:10px;"><summary>這個設定是做什麼用的</summary><div class="body">正2(00631L/00675L)加碼到第幾層,該把曝險拉到多少% ——「訊號」分頁會照這個算出該投入/該減碼多少錢。</div></details>
       <div class="field"><label>接刀各層怎麼算</label>
         <div>${[['exposure', '曝險比例(%)'], ['own', '只用自有資金(不動用房貸)']].map(([v, t]) =>
@@ -6540,8 +6558,7 @@ function renderLeverage(){
         <input type="number" inputmode="decimal" data-k="expo-hold" value="${L.exposureTargets.hold}"></div>
     </div>
 
-    <div class="card">
-      <h3>借款與利息</h3>
+    ${cardOpen('st-loan', `借款與利息`, {})}
       <div class="row"><span class="label">借款餘額(還欠銀行)</span><span class="val" id="out-usedAmount">NT$ ${fmt(r.usedAmount)}</span></div>
       ${(() => {
         // 動用日在未來的(預定動用)不算借款、也不是已還——以前「已還」用「累計動用 − 餘額」倒推,預定動用被當成已還
@@ -7844,7 +7861,8 @@ function onClick(el){
   if (act !== 'diag-copy' && act !== 'fold') diagText = '';
 
   switch (act){
-    case 'cancel-confirm': break;   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
+    case 'cancel-confirm': break;
+    case 'cfold': rerender = toggleCardFold(String(el.dataset.v || ''), el); break;   // 整張卡片收合   // 上面已經清掉 pendingConfirm,重畫就恢復成 ✕
     case 'month': viewMonth = shiftMonth(viewMonth, Number(el.dataset.v)); break;
     case 'go': switchTab(el.dataset.v); return;
     case 'todo-check': toggleTodoCheck(String(el.dataset.v || '')); break;   // 今天要做什麼的勾選框
@@ -8252,7 +8270,7 @@ function onClick(el){
       break;
     default: rerender = false;
   }
-  if (!['month', 'sum-year', 'edit-tpl', 'close-tpl', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist'].includes(act)) scheduleSave();
+  if (!['month', 'sum-year', 'edit-tpl', 'close-tpl', 'edit-tx', 'close-tx', 'edit-trade', 'close-trade', 'run-backtest', 'item-hist', 'cfold'].includes(act)) scheduleSave();
   if (rerender) renderAll();
 }
 

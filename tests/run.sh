@@ -37,6 +37,9 @@ echo
 echo "=== 計算正確性(隨機 400 組:會計恆等式、XIRR 是真的解、同日買賣順序) ==="
 node semantic.js || fail=1
 echo
+echo "=== 整張卡片收合 ==="
+node cardfold.js || fail=1
+echo
 echo "=== 固定收支範本 ==="
 node templates.js || fail=1
 echo

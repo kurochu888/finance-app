@@ -426,6 +426,12 @@ id 沿用舊值以確保重複呼叫不會飄動。
 - **拖拉排序**(2026-11 使用者要的):股票分頁的持股、槓桿設定的持股與報價,按住 ⠿ 上下拉(`dragRow()` 畫把手,
   init 的 pointerdown/move/up 搬畫面上的列,放開時 `reorderList()` 照畫面順序重排陣列)。只改陣列順序;拖拉中 `renderAll()` 直接 return。
   新增可排序的清單:加進 `DRAG_LISTS`、每列外面包一層 div 再用 `dragRow()`(拖的是外層那個 div)。測試 `tests/stocks.js`。
+- **整張卡片收合 `cardOpen(key, 標題, {sub, def, force})`**(2026-11 使用者要的,「各頁檢查哪些縮起來比較精簡」):取代 `<div class="card"><h3>標題</h3>`,
+  點標題收起/展開,記在 localStorage `financeCardFolds_v1`(每台裝置各自,不同步;1 = 收、0 = 開,沒記過照 `def`)。
+  **收著時內容照樣畫,只用 CSS 藏**(`.card.cf-closed > :not(h3.cf-h)`),打字時靠 id 局部更新的數字照常;所以卡片裡不能直接放裸文字
+  (CSS 藏不掉文字節點),要包在元素裡。預設收著的:資料、買賣紀錄、房貸動用記錄、記一筆還款、還款紀錄、曝險目標設定;
+  `force` 用在填到一半、待確認刪除、有錯誤的還款/動用。沒做的:淨資產、股票總值(主數字)、今天要做什麼、月份切換、已經用 `fold()` 的固定收支/回測與研究。
+  新增卡片照這個寫。測試 `tests/cardfold.js`;收著有沒有漏出東西要在真的瀏覽器量(每張收著的卡片高度 ≈ 標題高度)。
 - **總覽「房貸要繳」理財型列算式**(`monthLoanDues()` 的 `lines`):最低還本 = 餘額 × 千分之幾(`leverageMonthPrincipal()` 的 `base`,
   已經自動記的用扣之前的餘額)、利息 = 上次繳款日~這次繳款日(`levPeriodFrom()`)逐日計息。本月自己記過還款的不列算式(對不上)。
 - **證交所休市日**(`refreshHolidays()`/`marketClosed()`,2026-10):抓報價時順便問證交所 `holidaySchedule`(有清單 30 天、還沒公布 3 天問一次,
