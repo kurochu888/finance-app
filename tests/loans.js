@@ -28,7 +28,7 @@ eval(appJs + `;globalThis.A = { get state(){return state}, set state(v){state=v}
   maybePostInterest, maybeAutoRepay, amortize, nextLoanPayment, addMonthsISO, syncLoanLiabilities, postLoanInterest,
   applyLoanRate, applyPayDay, maybeDailySnapshot, computePosition, levDueDate, leverageMonthPrincipal, monthLoanDues, nextLevInterest, computeLeverage, keepFieldsOldVersionsDrop, merge3, renderAssets,
   renderOverview, renderLeverage, normalizeLoan, cashFlows, AUTO_REPAY_PREFIX, set levTab(v){ levTab = v; },
-  loanBankRecon, loanPay, todoItems, healthCheck, levPayDate, get tombs(){ return tombs; }, autoPostedKeys, set lastSavedObj(v){ lastSavedObj = v; }, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
+  loanBankRecon, loanPay, todoItems, fmt, healthCheck, levPayDate, get tombs(){ return tombs; }, autoPostedKeys, set lastSavedObj(v){ lastSavedObj = v; }, get loanOpen(){ return loanOpen; }, get currentTab(){ return currentTab; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -411,6 +411,15 @@ console.log('本月要繳本金:月中自己還清不能顯示成要繳整筆');
   const mp = A.leverageMonthPrincipal();
   must(mp.amount === 5000, '整筆還清的那個月,要繳的最低還本是 5,000 不是 100 萬:' + JSON.stringify(mp));
   must(A.monthLoanDues()[0].principal === 5000, '總覽本月要繳本金:' + A.monthLoanDues()[0].principal);
+  // 2026-11-11 使用者回報:全部還清了,「今天要做什麼」還叫他留 最低還本 + 利息 的錢(35,355,其實只會扣利息 4,224)
+  const due = A.monthLoanDues()[0];
+  must(mp.prepaid === 5000 && due.prepaid === 5000, '自己已經還掉的最低還本要標出來:' + JSON.stringify(mp));
+  must(due.lines.some(t => t.includes('只扣利息 ' + A.fmt(due.interest))), '算式要講只扣利息:' + due.lines.join(' / '));
+  const bank = A.todoItems().find(x => x.icon === '🏦');
+  must(bank && bank.text.endsWith('約 NT$ ' + A.fmt(due.interest)) && due.interest > 0, '提醒只留利息的錢:' + JSON.stringify(bank) + ' 利息 ' + due.interest);
+  // 預定之後才還的(日期在今天之後)還沒還,照樣要留
+  A.state.leverage.draws[0].repayments[0].date = '2026-10-12';
+  must(A.leverageMonthPrincipal().prepaid === 0, '還沒到日子的還款不算已經還了:' + JSON.stringify(A.leverageMonthPrincipal()));
 }
 
 console.log('兩台裝置同時補記、舊版分頁寫回來');

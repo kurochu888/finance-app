@@ -840,8 +840,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-09 · 72c96d6a05';
-const BUILD_HASH = '72c96d6a05';
+const BUILD_VERSION = '2026-11-11 · aa843f221a';
+const BUILD_HASH = 'aa843f221a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -3049,12 +3049,13 @@ function monthLoanDues(){
     if (mp.amount > 0 || mp.base > 0) lines.push(!mp.manual && mp.base > 0
       ? `最低還本 ${fmt(mp.amount)} = 餘額 ${fmt(mp.base)} × 千分之 ${L.repayPermille}`
       : `最低還本 ${fmt(mp.amount)}(每筆餘額 × 千分之 ${L.repayPermille},本月自己還過的照實際)`);
+    if (mp.prepaid > 0) lines.push(`其中 ${fmt(mp.prepaid)} 自己已經還了,扣款日${mp.amount - mp.prepaid > 0 ? `還要扣 ${fmt(mp.amount - mp.prepaid + li)}` : `只扣利息 ${fmt(li)}`}`);
     if (mp.newDraws) lines.push(`繳款日以後才動用的 ${mp.newDraws} 筆下個月起才還本`);
     lines.push(`利息 ${fmt(li)} = ${md(levPeriodFrom(m))}~${md(due)} 逐日計息(年利率 ${rateAt(L, due)}%)`);
     lines.push(passed
       ? (mp.estimate ? `${payTxt} 已扣款;還本還沒記${L.autoRepay ? '' : '(自動還本關著,要自己到「紀錄」記一筆還款)'}` : `${payTxt} 已扣款`)
       : `${payTxt} 扣款${mp.estimate ? '(還本照目前餘額估,扣款日自動記)' : ''}`);
-    out.push({ name: '理財型房貸(槓桿)', date: pay, principal: mp.amount, interest: li, lines });
+    out.push({ name: '理財型房貸(槓桿)', date: pay, principal: mp.amount, prepaid: mp.prepaid, interest: li, lines });
   }
   state.liabilities.forEach(l => {
     if (!loanReady(l)) return;
@@ -3235,11 +3236,11 @@ function renderOverview(){
     ${(() => {
       const dues = monthLoanDues();
       if (!dues.length) return '';
-      const total = sum(dues, d => d.principal + d.interest);
+      const total = sum(dues, d => d.principal - (d.prepaid || 0) + d.interest);
       return `
     ${cardOpen('ov-dues', `${monthLabel(thisMonth())}房貸要繳`, {})}
       ${dues.map(d => `
-      <div class="row"><span class="label">${esc(d.name)}</span><span class="val">NT$ ${fmt(d.principal + d.interest)}</span></div>
+      <div class="row"><span class="label">${esc(d.name)}</span><span class="val">NT$ ${fmt(d.principal - (d.prepaid || 0) + d.interest)}</span></div>
       ${d.lines ? d.lines.map(t => `<div class="row sub"><span class="label">${esc(t)}</span><span class="val"></span></div>`).join('')
         : `<div class="row sub"><span class="label">本金 ${fmt(d.principal)} + 利息 ${fmt(d.interest)}${d.note ? ' · ' + esc(d.note) : ''}</span><span class="val"></span></div>`}`).join('')}
       ${dues.length > 1 ? `<div class="row total"><span class="label">合計</span><span class="val">NT$ ${fmt(total)}</span></div>` : ''}
@@ -6347,7 +6348,7 @@ function todoItems(){
   if (future) go('📅', `有 ${future} 筆買賣的日期在未來`, '是不是年份打錯了', 'log');
   monthLoanDues().forEach(d => {
     const days = d.date ? daysBetweenISO(today, d.date) : -1;
-    if (d.date >= today && days <= 7) go('🏦', `${d.date.slice(5).replace('-', '/')} ${d.name}扣款 約 NT$ ${fmt(d.principal + d.interest)}`,
+    if (d.date >= today && days <= 7) go('🏦', `${d.date.slice(5).replace('-', '/')} ${d.name}扣款 約 NT$ ${fmt(d.principal - (d.prepaid || 0) + d.interest)}`,
       (days === 0 ? '今天' : days + ' 天後') + ',帳戶記得留錢', state.liabilities.some(l => l.name === d.name) ? '' : 'setup');
   });
   // 動用日當天也要列(2026-10-12 使用者回報:以前只列「之後」的,撥款那天反而從清單消失)
@@ -6577,7 +6578,7 @@ function renderLeverage(){
         { sub: !rc ? '還沒對過' : rc.ok ? `✓ ${rc.date} 對得上` : `⚠ ${rc.date} 對不上`, force: !!(rc && !rc.ok) }); })()}
       ${(() => { const mp = leverageMonthPrincipal(); return `
       <div class="row"><span class="label">本月最低還本${mp.estimate ? '(預估)' : ''}</span><span class="val" id="out-monthPrincipal">NT$ ${fmt(mp.amount)}</span></div>
-      <div class="row"><span class="label" style="font-weight:700;">本月要繳(本金 + 利息)</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
+      <div class="row"><span class="label" style="font-weight:700;" id="out-monthDueLabel">${monthDueLabel(mp)}</span><span class="val" id="out-monthDue" style="font-weight:800;">NT$ ${fmt(mp.amount - mp.prepaid + Math.round(levPeriodInterest(thisMonth())))}</span></div>`; })()}
       <div class="field" style="margin-top:8px;"><label>每月最低還本(剩餘餘額的千分之幾)</label>
         <input type="number" inputmode="decimal" step="0.1" data-k="lev-repayPermille" value="${L.repayPermille}"></div>
       <div class="field"><label>每月繳款日(幾號,還本跟利息都記在這天)</label>
@@ -6636,7 +6637,7 @@ function refreshLeverage(){
   set('out-remainingLine', 'NT$ ' + fmt(Math.max(0, L.creditLimit - r.usedAmount - plannedDrawAmount())));
   set('out-monthlyInterest', 'NT$ ' + fmt(nextLevInterest().amount));
   set('out-nextInterestLabel', nextLevInterest().label);
-  { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount + Math.round(levPeriodInterest(thisMonth())))); }
+  { const mp = leverageMonthPrincipal(); set('out-monthPrincipal', 'NT$ ' + fmt(mp.amount)); set('out-monthDue', 'NT$ ' + fmt(mp.amount - mp.prepaid + Math.round(levPeriodInterest(thisMonth())))); set('out-monthDueLabel', monthDueLabel(mp)); }
   const recon = document.getElementById('bankrecon-out');
   if (recon) recon.innerHTML = bankReconResult();
 }
@@ -6788,9 +6789,14 @@ function levPeriodInterest(m, onlyDrawn = false){
    - 都還沒有 → 繳款日以後才動用的不還(下個月);否則預估繳款日那天的餘額 × ‰ */
 /* 本月最低還本。base = 拿來乘千分之幾的餘額合計(總覽列「餘額 × 千分之 5」用);manual = 有一筆是自己記的還款,
    算式對不上就不列;newDraws = 本月繳款日以後才動用、下個月起才還的筆數 */
+/* 設定頁「本月要繳」那行的標題:自己已經還掉的最低還本不會再扣,金額也扣掉了,標題要講清楚 */
+function monthDueLabel(mp){
+  return mp.prepaid > 0 ? (mp.amount - mp.prepaid > 0 ? '扣款日還要扣(自己還過的不算)' : '扣款日還要扣(本金自己還了,只剩利息)') : '本月要繳(本金 + 利息)';
+}
 function leverageMonthPrincipal(){
   const L = state.leverage, m = thisMonth(), due = levDueDate(m), rid = AUTO_REPAY_PREFIX + m.replace('-', '');
-  let amount = 0, estimate = false, base = 0, manual = false, newDraws = 0;
+  let amount = 0, estimate = false, base = 0, manual = false, newDraws = 0, prepaid = 0;
+  const today = todayISO();
   L.draws.forEach(d => {
     const rs = (d.repayments || []).filter(r => !isAutoRepay(r) && r.date && r.date.slice(0, 7) === m);
     const auto = (d.repayments || []).find(r => r.id === rid);
@@ -6800,7 +6806,10 @@ function leverageMonthPrincipal(){
     if (rs.length){
       // 最低還本照「自己還之前」的餘額:繳款日的餘額加回本月繳款日以前自己還的
       const min = Math.round((balanceAt(d, due) + sum(rs.filter(r => r.date <= due), r => r.amount)) * L.repayPermille / 1000);
-      amount += Math.min(min, sum(rs, r => r.amount));
+      const owed = Math.min(min, sum(rs, r => r.amount));
+      amount += owed;
+      // 自己已經還掉的那部分,扣款日銀行不會再扣(2026-11-11 使用者全部還清,提醒還叫他留 最低還本 + 利息 的錢)
+      prepaid += Math.min(owed, sum(rs.filter(r => r.date <= today), r => r.amount));
       manual = true;
       return;
     }
@@ -6809,7 +6818,7 @@ function leverageMonthPrincipal(){
     base += balanceAt(d, due);
     estimate = true;
   });
-  return { amount, estimate, base, manual, newDraws };
+  return { amount, estimate, base, manual, newDraws, prepaid };
 }
 
 /* ---------- 一般型房貸(本利攤還) ---------- */
