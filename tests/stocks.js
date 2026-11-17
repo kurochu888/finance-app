@@ -368,7 +368,7 @@ await_(async () => {
   must(workerHits === 1, '設了網址,抓報價時一起抓折溢價');
   let sh2 = A.renderStocks();
   must(sh2.includes('預估淨值 237.84 · 溢價 +0.19%(09:02)'), '今天的顯示時間:' + (sh2.match(/預估淨值 237[^<]*/) || [''])[0]);
-  must(sh2.includes('預估淨值 27.9 · 折價 -1.43%(11/6 13:30) ⚠ 偏離較大'), '不是今天的標日期、偏離 1% 以上標 ⚠:' + (sh2.match(/預估淨值 27[^<]*/) || [''])[0]);
+  must(sh2.includes('預估淨值 27.9 · <b class="neg">折價 -1.43%</b>(11/6 13:30) <span class="badge red">⚠ 偏離較大</span>'), '不是今天的標日期、偏離 1% 以上標 ⚠:' + (sh2.match(/預估淨值 27[^<]*/) || [''])[0]);
   must(!/AAPL[\s\S]*預估淨值/.test(sh2.slice(sh2.indexOf('sk-code-c'))), '美股不顯示折溢價');
   must(sh2.includes('ETF 即時折溢價') && sh2.includes('已設定') && !sh2.includes('data-k="sk-navurl"'), '設好了平常收著,標題寫已設定');
   A.onClick({ dataset:{ act:'fold', v:'etf-nav' } });

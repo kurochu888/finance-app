@@ -19,7 +19,7 @@ const blocks = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
 const appJs = blocks.sort((a, b) => b.length - a.length)[0];
 eval(appJs + `globalThis.A = { computeTrend, defaultTrendParams, mergeHistory, normalize, PRICE_HIST_KEEP,
   computeExposurePlan, renderExposurePlanCard, onClick, renderAll, trendChanges, renderTrendTab, sampleData, adjustForSplits, applyKnownSplitRatios, get state(){return state}, set state(v){state=v}, emptyState, onField, renderLeverage, exitScenario, computePosition, trendHistoryGap, defaultFee, renderOverview, set levTab(v){ levTab = v; },
-  exposureTodo, captureOwnBase, keepFieldsOldVersionsDrop, ownGroupStart };`);
+  exposureTodo, captureOwnBase, keepFieldsOldVersionsDrop, ownGroupStart, trendDrawdown, set backtestFullHistory(v){ backtestFullHistory = v; } };`);
 
 const bugs = [];
 const must = (cond, msg) => { if (!cond) bugs.push(msg); };
@@ -869,6 +869,28 @@ console.log('接刀只用自有資金:兩檔出場差一天(先出場的先轉�
     A.onClick({ dataset: { act: 'ack-hold', v } });
     must(a.trend.lastSeenLayers === 1 && b.trend.lastSeenStatus !== 'WAIT_RECOVER', '剛出場那檔的提醒不能被另一檔的「已調整完成」按掉');
   }
+})();
+console.log('  ok');
+
+console.log('訊號卡的回撤(目前、最大):');
+(() => {
+  const h = (arr, y = '2024') => arr.map((c, i) => ({ d: `${y}-01-${String(i + 1).padStart(2, '0')}`, c }));
+  A.backtestFullHistory = {};
+  const it = { id: 'DD', priceHistory: h([10, 12, 9, 11, 6, 8]) };
+  const dd = A.trendDrawdown(it);
+  must(Math.abs(dd.cur - (8 / 12 - 1) * 100) < 1e-9 && dd.peak.c === 12, '目前回撤 = 最後收盤 ÷ 最高 − 1:' + JSON.stringify(dd));
+  must(Math.abs(dd.mdd - (6 / 12 - 1) * 100) < 1e-9 && dd.mddPeak.d === '2024-01-02' && dd.mddLow.d === '2024-01-05', '最大回撤是 12 → 6');
+  // 完整歷史接得上:往前接,更早的高點算進來
+  A.backtestFullHistory = { DD: h([20, 15], '2023').concat([{ d: '2024-01-01', c: 10 }]) };
+  const d2 = A.trendDrawdown(it);
+  must(d2.from === '2023-01-01' && d2.peak.c === 20 && Math.abs(d2.mdd - (6 / 20 - 1) * 100) < 1e-9, '接得上就從完整歷史起算:' + JSON.stringify(d2));
+  // 接不上(之後又分割、完整歷史沒重抓):只用 priceHistory
+  A.backtestFullHistory = { DD: h([200, 150], '2023').concat([{ d: '2024-01-01', c: 100 }]) };
+  must(A.trendDrawdown(it).from === '2024-01-01', '重疊那天收盤對不上就不接');
+  must(A.trendDrawdown({ id: 'X', priceHistory: [] }) === null, '沒資料回 null');
+  A.backtestFullHistory = {};
+  const s = A.sampleData(); A.state = s;
+  must(/目前回撤/.test(A.renderTrendTab()) && /年起最大回撤/.test(A.renderTrendTab()), '訊號卡有回撤兩列');
 })();
 console.log('  ok');
 

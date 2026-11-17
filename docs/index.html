@@ -874,8 +874,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-11 · aa843f221a';
-const BUILD_HASH = 'aa843f221a';
+const BUILD_VERSION = '2026-11-18 · 3a75724204';
+const BUILD_HASH = '3a75724204';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -2187,6 +2187,28 @@ function trendHistoryGap(it){
   const p = it.trend || defaultTrendParams(it.leverage);
   const need = Math.max(p.maFast, p.maSlow) + 1;
   return findHistoryGap((it.priceHistory || []).slice(-need));
+}
+/* 訊號卡的「回撤」(使用者要的,看現在離高點多遠):目前回撤 = 最後收盤 ÷ 期間最高收盤 − 1,
+   最大回撤 = 期間內最深的一次。資料用 priceHistory(約 4 年);有抓過完整歷史(回測用)且跟 priceHistory 接得上
+   (重疊那天收盤差 < 1%,之後有新分割、完整歷史還沒重抓時會接不上,就只用 priceHistory)時往前接,從上市起算。 */
+function trendDrawdown(it){
+  const ph = (it.priceHistory || []).filter(r => r && r.c > 0);
+  if (ph.length < 2) return null;
+  let hist = ph;
+  const full = (backtestFullHistory[it.id] || []).filter(r => r && r.c > 0 && r.d < ph[0].d);
+  if (full.length){
+    const fh = backtestFullHistory[it.id];
+    const same = fh.find(r => r.d === ph[0].d);
+    if (same && Math.abs(same.c / ph[0].c - 1) < 0.01) hist = full.concat(ph);
+  }
+  let peak = hist[0], mdd = 0, mddPeak = hist[0], mddLow = hist[0];
+  for (const r of hist){
+    if (r.c > peak.c) peak = r;
+    const dd = r.c / peak.c - 1;
+    if (dd < mdd){ mdd = dd; mddPeak = peak; mddLow = r; }
+  }
+  const last = hist[hist.length - 1];
+  return { from: hist[0].d, cur: (last.c / peak.c - 1) * 100, peak, mdd: mdd * 100, mddPeak, mddLow };
 }
 async function fetchQuotes(manual){
   if (!QUOTES_ENABLED || quoteBusy) return;
@@ -3881,7 +3903,10 @@ function etfNavText(h){
   if (!q) return '';
   const when = q.d && q.d !== todayISO() ? Number(q.d.slice(5, 7)) + '/' + Number(q.d.slice(8)) + (q.t ? ' ' + q.t : '') : q.t;
   const kind = q.pct > 0 ? '溢價' : q.pct < 0 ? '折價' : '平價';
-  return `預估淨值 ${fmtPx(q.nav)} · ${kind} ${q.pct >= 0 ? '+' : ''}${q.pct.toFixed(2)}%${when ? `(${esc(when)})` : ''}${Math.abs(q.pct) >= 1 ? ' ⚠ 偏離較大' : ''}`;
+  const pctTxt = `${kind} ${q.pct >= 0 ? '+' : ''}${q.pct.toFixed(2)}%`;
+  /* 偏離 1% 以上:折溢價那段紅色粗體 + 紅色徽章,一眼看得到(使用者要的,原本跟灰字混在一起) */
+  const far = Math.abs(q.pct) >= 1;
+  return `預估淨值 ${fmtPx(q.nav)} · ${far ? `<b class="neg">${pctTxt}</b>` : pctTxt}${when ? `(${esc(when)})` : ''}${far ? ' <span class="badge red">⚠ 偏離較大</span>' : ''}`;
 }
 /* 鉅亨網一次查完:匯率 + 每一檔。查不到的代號回應裡直接沒有那一筆 */
 async function fetchStockQuotes(auto = false){
@@ -4359,6 +4384,8 @@ function renderHelp(){
       <div class="formula">HOLD 時:收盤 &lt; 快線 × 出場緩衝 → 出場,轉入 WAIT_RECOVER
 非 HOLD 時:站回快線且斜率轉正,或強力反彈 → 一次補滿倉位,轉入 HOLD(優先判斷)
            否則,跌破「加碼間距」且還沒加滿層數 → 加碼一層,維持 WAIT_RECOVER</div>
+      <p>每檔另外列<strong>回撤</strong>(只是參考,不影響訊號):目前回撤 = 最後收盤 ÷ 期間最高收盤 − 1;最大回撤 = 期間內從高點跌到低點最深的一次。
+      期間是 app 存的收盤價(約 4 年);按過「抓完整歷史」(回測卡)的話從上市起算。價格都是分割還原過的。</p>
       <p>五個參數各自在管什麼:</p>
       <ul>
         <li><strong>快線/慢線天數</strong>(正2 預設 120/240,1倍標的預設 100/200)——決定多久算一次趨勢,
@@ -5865,6 +5892,14 @@ function renderStaleSignalAlert(){
       </div>
     </div>`;
 }
+function trendDrawdownRows(it){
+  const dd = trendDrawdown(it);
+  if (!dd) return '';
+  const md = s => Number(s.slice(5, 7)) + '/' + Number(s.slice(8));
+  const ymd = s => s.slice(0, 4) + '/' + md(s);
+  return `<div class="row sub"><span class="label">目前回撤(高點 ${dd.peak.c.toFixed(2)},${ymd(dd.peak.d)})</span><span class="val ${dd.cur <= -10 ? 'neg' : ''}">${dd.cur > -0.05 ? '在高點' : dd.cur.toFixed(1) + '%'}</span></div>
+          <div class="row sub"><span class="label">${dd.from.slice(0, 4)} 年起最大回撤</span><span class="val">${dd.mdd > -0.05 ? '—' : `${dd.mdd.toFixed(1)}%(${ymd(dd.mddPeak.d)} → ${ymd(dd.mddLow.d)})`}</span></div>`;
+}
 function renderTrendTab(){
   const trends = computeAllTrends();
   return `
@@ -5901,6 +5936,7 @@ function renderTrendTab(){
           <div class="row"><span class="label" style="font-weight:700; color:var(--text);">${esc(it.id || it.name || '(未命名)')}</span>${trendBadge(t.status)}</div>
           <div class="row sub"><span class="label">快線(${t.params.maFast}日) / 慢線(${t.params.maSlow}日)</span><span class="val">${t.maFast == null ? '—' : t.maFast.toFixed(2)} / ${t.maSlow == null ? '—' : t.maSlow.toFixed(2)}</span></div>
           <div class="row sub"><span class="label">收盤(${esc(t.lastDate)})</span><span class="val">${t.lastClose == null ? '—' : t.lastClose.toFixed(2)}</span></div>
+          ${trendDrawdownRows(it)}
           ${t.status === 'HOLD'
             ? `<div class="row sub"><span class="label">距出場線</span><span class="val">${t.cushionPct == null ? '—' : `${t.exitLine.toFixed(2)}(再跌 ${t.cushionPct.toFixed(1)}% 就出場)`}</span></div>`
             : `<div class="row sub"><span class="label">已加碼層數</span><span class="val">${t.pyramidCount} / ${t.params.pyramidLevels}</span></div>
