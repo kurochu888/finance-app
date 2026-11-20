@@ -844,8 +844,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這個 Artifact 的雲端資料庫,只有你的 Claude 帳號看得到。';
-const BUILD_VERSION = '2026-11-20 · 935192e0ab';
-const BUILD_HASH = '935192e0ab';
+const BUILD_VERSION = '2026-11-20 · 3246a8a89a';
+const BUILD_HASH = '3246a8a89a';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -7309,7 +7309,9 @@ function healthCheck(){
     // 歷史不夠、有缺口:抓報價時會自動回補,訊號分頁也會說不給訊號,今天要做什麼不另外列(剛開始用的人一定會碰到)
     if (t.barsAvailable < t.barsNeeded) warn(`${it.id} 價格歷史 ${t.barsAvailable} 筆,算均線要 ${t.barsNeeded} 筆`, true);
     else if (gap) warn(`${it.id} 價格歷史中間缺一段(${gap.from || ''}~${gap.to || ''}),訊號不可信`, true);
-    else ok(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${t.status}${t.status === 'WAIT_RECOVER' ? ` 第 ${t.pyramidCount} 層` : ''}${t.cushionPct != null ? `,再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''}`);
+    else ok(`${it.id} ${t.lastDate} 收盤 ${t.lastClose}:${t.status}${t.status === 'WAIT_RECOVER' ? ` 第 ${t.pyramidCount} 層` : ''}${t.cushionPct != null ? `,再跌 ${t.cushionPct.toFixed(1)}% 出場` : ''}`
+      // 接刀中/觀望:下一層加碼跟轉回續抱的價位(2026-11-20 使用者要的,跟訊號分頁同一組數字)
+      + (t.reboundLine == null ? '' : `,${t.addLine == null ? '已加滿' : `第 ${t.pyramidCount + 1} 層 ≤ ${t.addLine.toFixed(2)}(再跌 ${t.addPct.toFixed(1)}%)`}、轉回 ≥ ${t.reboundLine.toFixed(2)}(再漲 ${Math.max(0, t.reboundPct).toFixed(1)}%)`));
   });
   const st = signalStaleness();
   if (st) warn(`收盤價停在 ${st.date}(${staleLabel(st)})`, true);
@@ -7363,8 +7365,20 @@ function renderDiagPanel(){
     ${diagLoad().length ? `<button class="btn quiet" data-act="diag-clear" style="margin-top:8px;">${pendingConfirm === 'diag-clear' ? '⚠️ 再按一次清除紀錄' : '清除紀錄'}</button>` : ''}`;
 }
 /* 複製出去的報告:版本、同步狀態、健康檢查、最近的紀錄(新到舊)。金額照 👁 開關遮或不遮 */
+/* 診斷報告的「最近的買賣」(2026-11-20 使用者要的):從別台同步過來的買賣紀錄裡只看得到「收到改動」,
+   對不出那天照訊號買了什麼、什麼價。股數跟金額照 👁 遮,價格是公開的不遮。 */
+const DIAG_TRADE_DAYS = 7;
+function diagRecentTrades(){
+  const from = addDaysISO(todayISO(), -DIAG_TRADE_DAYS);
+  const act = { buy:'買進', sell:'賣出', dividend:'配息' };
+  return state.trades.filter(t => t.date >= from)
+    .slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
+    .map(t => t.action === 'dividend'
+      ? `${t.date} ${act[t.action]} ${t.symbol} ${$n(t.amount)}`
+      : `${t.date} ${act[t.action]} ${t.symbol} ${$n(t.shares)} 股 @ ${t.price}、手續費稅 ${$n(t.fee)}${t.action === 'buy' ? (t.source === 'loan' ? '(房貸)' : '(自有)') : ''}${t.note ? ' · ' + t.note : ''}`);
+}
 function diagReport(){
-  const h = healthCheck(), log = diagLoad().slice().reverse();
+  const h = healthCheck(), log = diagLoad().slice().reverse(), tr = diagRecentTrades();
   const mark = { ok:'✓', warn:'⚠', info:'·' };
   const lines = [
     '財務 app 診斷報告',
@@ -7373,6 +7387,9 @@ function diagReport(){
     '',
     `== 健康檢查(${h.filter(x => x.lv === 'warn').length} 項要注意) ==`,
     ...h.map(x => mark[x.lv] + ' ' + x.t),
+    '',
+    `== 最近 ${DIAG_TRADE_DAYS} 天的買賣(${tr.length} 筆,新到舊) ==`,
+    ...(tr.length ? tr : ['(沒有)']),
     '',
     `== 紀錄(最近 ${log.length} 筆,新到舊) ==`,
     ...(log.length ? log.map(x => `${x.t} [${x.k}] ${x.m}${x.c > 1 ? `(×${x.c})` : ''}`) : ['(還沒有紀錄)'])

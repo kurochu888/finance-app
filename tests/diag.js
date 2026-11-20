@@ -121,6 +121,42 @@ const logText = () => A.diagLoad().map(x => x.m).join('\n');
   must(store.content.innerHTML.includes('最近的紀錄') && store.content.innerHTML.includes('<textarea readonly'), '展開診斷紀錄時全文框要還在、要列最近紀錄');
   console.log('  ok');
 
+  console.log('最近 7 天的買賣、接刀的價位');
+  {
+    const keep = A.state;
+    A.state = A.normalize(A.emptyState());
+    const today = new Date().toISOString().slice(0, 10);
+    const old = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
+    A.state.trades = [
+      { id:'t1', date: today, symbol:'00631L', action:'buy', shares:45000, price:22.1, fee:1417, source:'cash', amount:0, note:'' },
+      { id:'t2', date: old, symbol:'00685L', action:'buy', shares:1000, price:9, fee:20, source:'loan', amount:0, note:'' },
+    ];
+    A.state = A.normalize(A.state);
+    let r = A.diagReport();
+    must(/最近 7 天的買賣\(1 筆/.test(r) && r.includes('買進 00631L 45,000 股 @ 22.1、手續費稅 1,417(自有)'), '要列今天那筆:\n' + r.split('\n').filter(l => /買/.test(l)).join('\n'));
+    must(!r.includes('00685L 1,000 股'), '20 天前的不列');
+    if (!A.privacy) A.togglePrivacy();
+    r = A.diagReport();
+    must(r.includes('00631L •••• 股 @ 22.1') && !r.includes('45,000'), '隱藏金額時股數、手續費要遮,價格不遮');
+    A.togglePrivacy();
+    // 接刀中:健康檢查列下一層跟轉回的價位(用 sampleData 的價格歷史)
+    A.state = A.normalize(A.sampleData());
+    // 00675L 換成先漲再跌 30% 的歷史:出場後接刀中
+    const ph = [], start = new Date(Date.now() - 420 * 86400000);
+    for (let i = 0, d = start; ph.length < 300; d = new Date(d.getTime() + 86400000)){
+      if ([0, 6].includes(d.getDay())) continue;
+      ph.push({ d: d.toISOString().slice(0, 10), c: +(i < 260 ? 100 + i * 0.2 : 152 - (i - 259) * 1.5).toFixed(2) }); i++;
+    }
+    const w = A.state.instruments.find(x => x.id === '00675L');
+    w.priceHistory = ph; w.price = ph[ph.length - 1].c;
+    const lines = A.healthCheck().map(x => x.t).filter(t => /收盤/.test(t));
+    const wait = lines.filter(t => /WAIT_RECOVER|WATCH/.test(t));
+    must(wait.length === 1 && /第 [12] 層 ≤ \d/.test(wait[0]), '要有一檔接刀中、列下一層價:\n' + lines.join('\n'));
+    must(wait.every(t => /轉回 ≥ \d/.test(t) && (/層 ≤ \d/.test(t) || /已加滿/.test(t))), '接刀中/觀望要列加碼跟轉回價:\n' + lines.join('\n'));
+    must(lines.filter(t => /HOLD/.test(t)).every(t => !/轉回/.test(t)), '續抱中不列轉回價');
+    A.state = keep;
+  }
+
   if (bugs.length){
     console.log('\n發現 ' + bugs.length + ' 個問題:');
     bugs.forEach(b => console.log('  ✗ ' + b));
