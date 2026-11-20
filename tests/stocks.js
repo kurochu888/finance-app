@@ -230,6 +230,26 @@ await_(async () => {
   histCalls = [];
   await A.finalizeStockHistory();
   must(histCalls.length === 0, '都定案了就不再抓');
+  {
+    // 今天(10/28)盤中加買、下午才補 10/27 的定案:10/27 要用加買前的股數跟成本(h.base)
+    const keep = JSON.parse(JSON.stringify(A.state));
+    fresh();
+    simNow = new RealDate('2026-10-28T10:30:00').getTime();
+    const a = S().holdings[0], b = S().holdings[1];
+    a.qt = '2026-10-28 10:30'; a.base = { q:'2026-10-28', shares:500, cost:900 };     // 今天從 500 股加到 1000 股
+    b.qt = '2026-10-28 05:00'; b.base = { q:'2026-10-27', shares:20, cost:200 };      // AAPL 的時段是 10/27,10/27 那天就是改過之後的
+    S().history.find(h => h.d === '2026-10-26').f = true;
+    await A.finalizeStockHistory();
+    const x27 = S().history.find(h => h.d === '2026-10-27');
+    must(x27.f && x27.v === 500 * 2400 + 10 * 347 * 32.4 && x27.c === 500 * 900 + 10 * 200 * 32.4, '10/27 用加買前的 500 股、AAPL 用現在的 10 股:' + JSON.stringify(x27));
+    // 今天賣光(現在 0 股)的,前一天還要算
+    fresh();
+    S().holdings[0].shares = 0; S().holdings[0].qt = '2026-10-28 10:30'; S().holdings[0].base = { q:'2026-10-28', shares:1000, cost:1000 };
+    S().history.find(h => h.d === '2026-10-26').f = true;
+    await A.finalizeStockHistory();
+    must(S().history.find(h => h.d === '2026-10-27').v === 1000 * 2400 + 10 * 347 * 32.4, '今天賣光的,10/27 還有 1000 股:' + JSON.stringify(S().history.find(h => h.d === '2026-10-27')));
+    A.state = A.normalize(keep);
+  }
   // 每天那條線只畫定案的:10/26、10/27 兩天(今天 10/28 還沒定案的 333 不畫)
   A.currentTab = 'stocks'; A.renderAll();
   must(/每天\(最近 2 天/.test(store.content.innerHTML), '每天那條線只畫定案的 2 天:' + (store.content.innerHTML.match(/每天\([^)]*\)/) || [''])[0]);

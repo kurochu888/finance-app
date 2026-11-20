@@ -4005,7 +4005,7 @@ const addDaysISO = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDat
 const stockFinalThrough = () => addDaysISO(todayISO(), new Date().getHours() >= STOCK_FINAL_HOUR ? -1 : -2);
 function stockDaysToFinalize(){
   const S = state.stocks, hist = S.history;
-  if (!S.holdings.some(h => stockCodeOk(h.code) && h.shares > 0) || !hist.length) return [];
+  if (!S.holdings.some(h => stockCodeOk(h.code) && (h.shares > 0 || (h.base && h.base.shares > 0))) || !hist.length) return [];
   const last = stockFinalThrough(), first = hist[0].d, out = [];
   for (let d = addDaysISO(last, -(STOCK_FINAL_DAYS - 1)); d <= last; d = addDaysISO(d, 1)){
     if (d < first) continue;
@@ -4032,6 +4032,9 @@ async function cnyesDaily(symbol, fromISO){
   }finally{ if (timer) clearTimeout(timer); }
 }
 const closeOn = (series, d) => { let v = null; for (const [x, c] of series){ if (x > d) break; v = c; } return v; };
+/* 過去某天的股數跟平均成本:那天在最近一次改股數的交易時段(h.base.q)之前,就用改之前的。
+   只記得最近一個時段改之前的值,更早改過的分不出來(2026-11-20:加買當天下午才補前一天的定案,前一天的總值把今天買的也算進去) */
+const stockHoldingOn = (h, d) => h.base && h.base.q && d < h.base.q ? { shares: h.base.shares, cost: h.base.cost } : { shares: h.shares, cost: h.cost };
 async function finalizeStockHistory(){
   if (!QUOTES_ENABLED || stockFinalBusy) return false;
   const days = stockDaysToFinalize();
@@ -4043,7 +4046,8 @@ async function finalizeStockHistory(){
   stockFinalBusy = true;
   let wrote = 0;
   try{
-    const codes = [...new Set(state.stocks.holdings.filter(h => stockCodeOk(h.code) && h.shares > 0).map(h => h.code))];
+    const held = h => h.shares > 0 || (h.base && h.base.shares > 0);   // 今天賣光的,前幾天還有
+    const codes = [...new Set(state.stocks.holdings.filter(h => stockCodeOk(h.code) && held(h)).map(h => h.code))];
     const sym = c => (stockMarket(c) === 'TW' ? 'TWS:' : 'USS:') + c + ':STOCK';
     const fromISO = addDaysISO(days[0], -15);   // 往前多抓一段:連假、颱風假的前一個收盤
     const series = new Map();
@@ -4056,13 +4060,14 @@ async function finalizeStockHistory(){
       let v = 0, cost = 0, traded = false, ok = true;
       const rate = needFx ? closeOn(fx, d) : 1;
       S.holdings.forEach(h => {
-        if (!ok || !(h.shares > 0) || !stockCodeOk(h.code)) return;
+        const on = stockHoldingOn(h, d);
+        if (!ok || !(on.shares > 0) || !stockCodeOk(h.code)) return;
         const ser = series.get(h.code) || [], px = closeOn(ser, d), us = stockMarket(h.code) === 'US';
         if (!ser.length && !(h.price > 0)) return;   // 打錯、從來沒抓到報價的代號:即時總值也當 0 算,不能讓它卡住每一天
         if (px === null || (us && !(rate > 0))){ ok = false; return; }   // 那天以前沒有收盤(還沒上市、查不到):這天先不定案
         if (ser.some(x => x[0] === d)) traded = true;
-        v += h.shares * px * (us ? rate : 1);
-        cost += h.shares * h.cost * (us ? rate : 1);
+        v += on.shares * px * (us ? rate : 1);
+        cost += on.shares * on.cost * (us ? rate : 1);
       });
       if (!ok) return;
       const found = S.history.find(x => x.d === d);
