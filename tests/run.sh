@@ -52,6 +52,9 @@ echo
 echo "=== 房貸買進自動記動用、隱藏金額、年度總結 ==="
 node extras.js || fail=1
 echo
+echo "=== 停用標的(不抓報價、不看訊號,紀錄留著) ==="
+node instoff.js || fail=1
+echo
 echo "=== 診斷報告(紀錄、金額遮罩、健康檢查) ==="
 node diag.js || fail=1
 echo

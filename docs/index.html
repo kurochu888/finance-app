@@ -531,8 +531,8 @@ const PRICE_HIST_KEEP = 1000;   // 約 4 年份,遠超過 240 日均線需要的
 
 /* key 是內部識別碼,id 是股票代號 —— 代號可能空白或重複,不能拿來當 key */
 const DEFAULT_INSTRUMENTS = [
-  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] },
-  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] }
+  { id:'00631L', name:'元大台灣50正2',   leverage:2, price:0, shares:0, auto:true, off:false, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] },
+  { id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:0, shares:0, auto:true, off:false, trend:defaultTrendParams(2), priceHistory:[], splits:[], splitsAcked:[] }
 ];
 /* 認得的代號:新增一列、代號打這幾個時自動帶入名稱、倍數跟那個倍數的預設訊號參數(2026-11-04 使用者要加 00685L,參數跟正2 一樣)。
    不放進 DEFAULT_INSTRUMENTS:已存的資料不會自動多一檔(使用者自己決定要不要加),新資料預設還是兩檔。
@@ -667,6 +667,7 @@ function normalize(raw){
         price: Math.max(0, num(x.price)),
         shares: Math.max(0, num(x.shares)),
         auto: x.auto !== false,
+        off: x.off === true,           // 停用(見 instOn);一定寫出這個 key,keepFieldsOldVersionsDrop() 靠「沒有 key = 舊版寫的」補回
         trend: {
           maFast: Math.max(1, Math.round(finiteNum(t.maFast, 0)) || def.maFast),   // 天數取整數,跟設定欄位一致
           maSlow: Math.max(1, Math.round(finiteNum(t.maSlow, 0)) || def.maSlow),
@@ -874,8 +875,8 @@ let state = emptyState();
      · 網頁版           → Firebase Firestore,需用 Google 帳號登入
    兩者都沒有時就只存本機 localStorage,功能完全不受影響。      */
 const STORAGE_NOTE = '資料存在這台裝置的瀏覽器裡,不會上傳到任何地方,也不需要登入。';
-const BUILD_VERSION = '2026-11-18 · 3a75724204';
-const BUILD_HASH = '3a75724204';
+const BUILD_VERSION = '2026-11-20 · 94e0c9617d';
+const BUILD_HASH = '94e0c9617d';
 const DOC_PATH = 'state/finance';
 const LEGACY_DOC_PATH = 'state/leverage';
 const BACKTEST_DOC_PATH = 'state/backtestHistory';   // Claude Artifact 版用,跟主資料分開的獨立文件
@@ -1478,6 +1479,8 @@ function keepFieldsOldVersionsDrop(prev, raw, next){
       it.priceHistory = JSON.parse(JSON.stringify(p.priceHistory));
       restored = true;
     }
+    // 停用(2026-11 加):舊版分頁寫回來沒有 off,停用的又會開始抓報價、跳訊號
+    if (r && typeof r === 'object' && !('off' in r) && p && p.off === true){ it.off = true; restored = true; }
   });
   return restored;
 }
@@ -2174,7 +2177,7 @@ function closedRows(rows, nowMs = Date.now()){
 /* 有沒有標的的歷史價格還不夠算慢線——不夠的話,更新收盤價順便自動回補,
    使用者不用記得另外跑去「訊號」分頁按「回補歷史價格」。 */
 function needsBackfill(){
-  return state.instruments.some(it => {
+  return activeInstruments().some(it => {
     if (!it.auto || !/^[0-9A-Za-z]{3,8}$/.test(it.id)) return false;
     const t = computeTrend(it);
     return t.barsAvailable < t.barsNeeded || !!trendHistoryGap(it);
@@ -2222,7 +2225,7 @@ async function fetchQuotes(manual){
   try{
     // 跟 backfillHistory 一樣只記 key:排隊抓要好幾秒,這段時間雲端同步可能把 state.instruments 整個換掉,
     // 抓著舊物件寫進去的股價會跟著孤兒物件一起消失(壓測重現過)
-    const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+    const targets = activeInstruments().filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
       .map(it => ({ key: it.key, id: it.id }));
     const results = await Promise.all([
       ...targets.map(t => twseRows(TWSE_STOCK + encodeURIComponent(t.id))),
@@ -2271,7 +2274,7 @@ async function fetchQuotes(manual){
   // 以前每小時更新報價就再補一次 14 個月(每次十幾個請求、一半是「查無資料」)。手動按回補不受限。
   let autoDay = '';
   try{ autoDay = localStorage.getItem(AUTO_BACKFILL_KEY) || ''; }catch(e){}
-  const gapNow = state.instruments.some(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && trendHistoryGap(it));   // 缺口關係到訊號對不對,不受一天一次限制
+  const gapNow = activeInstruments().some(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && trendHistoryGap(it));   // 缺口關係到訊號對不對,不受一天一次限制
   if (needsBackfill() && !backfillBusy && (manual || gapNow || autoDay !== todayISO())){
     try{ localStorage.setItem(AUTO_BACKFILL_KEY, todayISO()); }catch(e){}
     await backfillHistory();   // 歷史不夠就順便補,不用再多按一次
@@ -2315,7 +2318,7 @@ async function backfillHistory(){
   // 這段時間如果雲端同步收到遠端更新,applyRemote() 會把整個 state.instruments 換掉,
   // 抓著舊物件參照的話,後面寫入的都是沒人在用的孤兒物件,畫面看起來跑完了但其實沒真的存進去。
   // 每次要寫入前都用 key 重新查一次「現在活著」的物件,才不會被雲端同步蓋掉。
-  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
+  const targets = activeInstruments().filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id))
     .map(it => ({ key: it.key, id: it.id }));
   const incomplete = [];
   let blocked = null;
@@ -2394,7 +2397,7 @@ function completeHistoryMonths(hist){
 async function backfillFullHistory(){
   if (!QUOTES_ENABLED || backtestHistBusy) return;
   backtestHistBusy = true;
-  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).map(it => it.id);
+  const targets = activeInstruments().filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id)).map(it => it.id);
   const incomplete = [];
   let blocked = null;
   if (twseCooldownLeft() > 0) blocked = new TwseBlocked(twseCooldownMsg());
@@ -2481,6 +2484,12 @@ function symbolLeverage(sym){
   return it && it.leverage !== 0 ? it.leverage : 1;
 }
 const hasTrades = () => state.trades.length > 0;
+/* 停用的標的(2026-11 使用者要的:改用 00631L/00685L、不再用 00675L,但買賣紀錄要留著,標的就刪不掉):
+   不抓報價、不回補歷史、不算訊號、不進曝險目標、提醒、今天要做什麼、診斷、回測。
+   還有持股的照常算(停用只是不想再看它的訊號;還拿著的話出場線、報價都還要對)。
+   倍數、名稱、價格歷史還在,買賣紀錄的損益、曝險照舊算(findInstrument 不看停用)。 */
+const instOn = it => !it.off || (hasTrades() ? heldShares(it.id) : it.shares) > 0;
+const activeInstruments = () => state.instruments.filter(instOn);
 function heldShares(sym){
   // 賣出只扣實際賣得掉的股數(soldQtyById),跟損益的回放一致。以前直接買減賣,
   // 「先記了一筆超賣、之後才買」會算成 0 股,損益卻說持有,市值/曝險/報酬率各算各的
@@ -3030,7 +3039,7 @@ function ackTrend(it){
 }
 function seedTrendBaselines(){
   let changed = false;
-  state.instruments.forEach(it => {
+  activeInstruments().forEach(it => {
     if (!it.trend) return;
     const seedStatus = !it.trend.lastSeenStatus;
     // 舊資料只記了狀態、沒記層數:狀態跟現在一樣的話,安靜補上現在的層數(不跳提醒);狀態不一樣的話提醒本來就會跳,按知道了時一起記
@@ -4716,7 +4725,7 @@ function computeTrend(it){
            maFast: fLast, maSlow: sLast, lastClose, lastDate: dates[last], cushionPct, exitLine, exitDate, recoverDate,
            addLine, addPct, reboundLine, reboundPct, aboveFast, slopeOk };
 }
-const computeAllTrends = () => state.instruments.map(computeTrend);
+const computeAllTrends = () => activeInstruments().map(computeTrend);
 
 /* ===================== 均線策略回測 =====================
    拿「訊號」分頁同一套均線判斷規則,從頭到尾套用在完整歷史價格上,算出「照訊號進出」
@@ -4888,7 +4897,7 @@ function backtestFromHistory(id, hist, p, leverage, errMissing, btn = '抓完整
   };
 }
 function runAllBacktests(){
-  const targets = state.instruments.filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
+  const targets = activeInstruments().filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id));
   backtestResults = targets.map(it => backtestFromHistory(it.id, backtestFullHistory[it.id], it.trend || defaultTrendParams(it.leverage), it.leverage));
   runIndexSim();   // 加權指數模擬(可拆:見 INDEX_SIM 區塊)
 }
@@ -4963,7 +4972,7 @@ function ownExitCash(it, lev2, trends){
 function captureOwnBase(){
   const L = state.leverage;
   if (L.exposureTargets.mode !== 'own') return false;
-  const lev2 = state.instruments.filter(it => it.leverage === 2);
+  const lev2 = activeInstruments().filter(it => it.leverage === 2);
   if (!lev2.length) return false;
   const trends = lev2.map(computeTrend);
   if (trends.some(t => t.barsAvailable < t.barsNeeded) || lev2.some(it => trendHistoryGap(it))) return false;
@@ -4993,9 +5002,9 @@ function captureOwnBase(){
 }
 /* 設定頁要列幾層:正2 裡最大的加碼層數上限,至少列出已經設過的 */
 const expoLayerCount = () => Math.min(MAX_PYRAMID_LEVELS, Math.max(state.leverage.exposureTargets.byLayer.length,
-  ...state.instruments.filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels)));
+  ...activeInstruments().filter(it => it.leverage === 2 && it.trend).map(it => it.trend.pyramidLevels)));
 function computeExposurePlan(){
-  const lev2 = state.instruments.filter(it => it.leverage === 2);
+  const lev2 = activeInstruments().filter(it => it.leverage === 2);
   if (!lev2.length) return null;
   const trends = lev2.map(computeTrend);
   const N = Math.max(1, Math.min(...lev2.map(it => it.trend.pyramidLevels)));
@@ -5662,7 +5671,7 @@ function renderExposurePlanCard(){
   // 另一檔還在續抱就不用動(兩檔都轉回續抱才一起照 hold% 動用房貸)
   if (p.own){
     const hold = state.leverage.exposureTargets.hold;
-    const lev2All = state.instruments.filter(it => it.leverage === 2), trendsAll = lev2All.map(computeTrend);
+    const lev2All = activeInstruments().filter(it => it.leverage === 2), trendsAll = lev2All.map(computeTrend);
     const ackKeys = p.own.items.filter(x => x.status === 'WAIT_RECOVER' && x.layer >= 1 && x.pending).map(x => x.key);
     const block = x => {
       const head = `<div class="row" style="margin-top:10px;"><span class="label" style="font-weight:700;">${esc(x.id)}</span><span class="val">`;
@@ -5858,7 +5867,7 @@ function renderSplitAlerts(){
    知道休市日時:最後一筆收盤價之後、今天以前,只要有一天有開盤卻沒抓到就警告(今天的收盤價下午才有,不算);
    missed = 少了幾個交易日。不知道(那幾年的休市日沒抓到、Artifact 版)時照舊:超過 4 天才警告(週末只隔 3 天),連假會誤報。 */
 function signalStaleness(today = todayISO()){
-  const dates = state.instruments
+  const dates = activeInstruments()
     .filter(it => it.auto && /^[0-9A-Za-z]{3,8}$/.test(it.id) && (it.priceHistory || []).length)
     .map(it => it.priceHistory[it.priceHistory.length - 1].d);
   if (!dates.length) return null;
@@ -6025,7 +6034,7 @@ function backtestReportText(){
   const out = [];
   out.push(`回測結果(${todayISO()} 複製,build ${BUILD_HASH})`);
   out.push(`算法:一筆錢,接刀 50%/50%、續抱全押;買進持有第一天全押`);
-  state.instruments.filter(it => it.auto && it.trend).forEach(it => {
+  activeInstruments().filter(it => it.auto && it.trend).forEach(it => {
     const p = it.trend;
     out.push(`${it.id} 參數:快線 ${p.maFast} / 慢線 ${p.maSlow} / 出場緩衝 ${p.exitBuffer} / 接刀間距 ${p.pyramidGap} / 層數 ${p.pyramidLevels} / 轉回斜率 ${p.recoverSlopeThreshold} / 強反彈 ${p.recoverStrongRebound}`);
   });
@@ -6225,8 +6234,8 @@ function runIndexSim(){
   if (indexSimHist.length < 2) return;
   const { one, two } = indexSimSeries();
   // 用使用者現在的策略參數:正2 用第一檔 2 倍標的的,1 倍用第一檔 1 倍標的(例如 0050)的,沒有就用預設
-  const p2 = (state.instruments.find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2);
-  const p1 = (state.instruments.find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1);
+  const p2 = (activeInstruments().find(it => it.leverage === 2) || {}).trend || defaultTrendParams(2);
+  const p1 = (activeInstruments().find(it => it.leverage === 1) || {}).trend || defaultTrendParams(1);
   const miss = '加權指數歷史還不夠長,先按「抓加權指數歷史」。';
   indexSimResults = [
     Object.assign(backtestFromHistory('SIM2X', two, p2, 2, miss, '抓加權指數歷史'), { label: '模擬正2(加權×2)', sim: true }),
@@ -6530,6 +6539,7 @@ function renderLeverage(){
         // 沒持股的(預設的 0050 只拿來看訊號、或已經賣光)收成一行,2026-10 以前一樣佔一整塊;
         // 2026-11 以前有買賣紀錄的不收,賣光之後還是攤開一整塊
         const idle = !h.shares && !hasCost && !h.dup && it.id && pendingConfirm !== 'del-instrument:' + it.key;
+        const off = it.off && !instOn(it) ? true : false;
         const body = `
           <div class="erow" style="margin-top:0;">
             <input class="f-code" data-k="in-id-${it.key}" value="${esc(it.id)}" placeholder="代號">
@@ -6537,6 +6547,8 @@ function renderLeverage(){
             ${xDel('del-instrument', it.key)}
           </div>
           ${h.dup ? `<div class="muted neg">代號和上面某一列重複了,這一列不計入市值。</div>` : ''}
+          ${it.id ? `<button class="btn quiet" data-act="inst-off" data-id="${it.key}" style="margin-bottom:8px;">${it.off ? '恢復使用(重新抓報價、看訊號)' : '停用(不抓報價、不看訊號,買賣紀錄留著)'}</button>
+          ${it.off && !off ? `<div class="muted neg" style="margin-bottom:8px;">設成停用了,但還有持股,照常抓報價、算訊號;賣光之後才會停。</div>` : ''}` : ''}
           <div class="grid2">
             <div class="field"><label>股數${hasTrades() ? '(自動)' : ''}</label>
               <input type="number" inputmode="decimal" data-k="in-shares-${it.key}" value="${h.shares || ''}" ${hasTrades() ? 'readonly' : ''}></div>
@@ -6569,7 +6581,7 @@ function renderLeverage(){
           </details>`;
         return `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
-          ${dragRow('inst', it.key, idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: lot ? '已賣光' : '沒有持股' }) : body, r.holdings.length > 1)}
+          ${dragRow('inst', it.key, idle ? fold('inst-' + it.key, esc(it.id) + ' <span class="muted" style="font-weight:400;">' + esc(it.name) + '</span>', body, { sub: off ? '已停用' : lot ? '已賣光' : '沒有持股' }) : body, r.holdings.length > 1)}
         </div>`;
       }).join(''); })()}
       ${levMsg ? `<div class="muted neg" style="margin:8px 0;">${esc(levMsg)}</div>` : ''}
@@ -7281,7 +7293,8 @@ function healthCheck(){
   const fut = state.trades.filter(t => t.date > today).length, futTx = state.transactions.filter(t => t.date > today).length;
   if (fut || futTx) info(`未來日期:買賣 ${fut} 筆、記帳 ${futTx} 筆`);
   // 價格與訊號
-  state.instruments.filter(it => it.auto && it.id).forEach(it => {
+  state.instruments.filter(it => it.id && !instOn(it)).forEach(it => info(`${it.id} 已停用(不抓報價、不看訊號)`));
+  activeInstruments().filter(it => it.auto && it.id).forEach(it => {
     const t = computeTrend(it), gap = trendHistoryGap(it);
     // 歷史不夠、有缺口:抓報價時會自動回補,訊號分頁也會說不給訊號,今天要做什麼不另外列(剛開始用的人一定會碰到)
     if (t.barsAvailable < t.barsNeeded) warn(`${it.id} 價格歷史 ${t.barsAvailable} 筆,算均線要 ${t.barsNeeded} 筆`, true);
@@ -7701,11 +7714,11 @@ function sampleData(){
   s.leverage.draws.push({ id: uid(), label: '動用記錄 1', amount: 350000,
     useDate: shiftMonth(m, -1) + '-05', note: '00631L 10,000 股', purpose: 'invest', repayments: [] });
   s.instruments = [
-    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true,
+    { key:uid(), id:'00631L', name:'元大台灣50正2',   leverage:2, price:36.64,  shares:0, auto:true, off:false,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(36.64, 260), splits:[], splitsAcked:[] },
-    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true,
+    { key:uid(), id:'00675L', name:'富邦臺灣加權正2', leverage:2, price:322.05, shares:0, auto:true, off:false,
       trend:defaultTrendParams(2), priceHistory:genSamplePriceHistory(322.05, 260), splits:[], splitsAcked:[] },
-    { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true,
+    { key:uid(), id:'0050',   name:'元大台灣50',      leverage:1, price:52.30,  shares:0, auto:true, off:false,
       trend:defaultTrendParams(1), priceHistory:genSamplePriceHistory(52.30, 220), splits:[], splitsAcked:[] }
   ];
   s.stocks = { holdings: [
@@ -7996,10 +8009,19 @@ function onClick(el){
       break;
     }
     case 'add-instrument':
-      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true,
+      state.instruments.push({ key: uid(), id:'', name:'', leverage:1, price:0, shares:0, auto:true, off:false,
         trend: defaultTrendParams(1), priceHistory:[], splits:[], splitsAcked:[] });
       levMsg = '新的一列請填股票代號,填了才抓得到報價。';
       break;
+    case 'inst-off': {   // 停用/恢復(見 instOn)
+      const it = findInstrumentByKey(id);
+      if (!it) break;
+      it.off = !it.off;
+      levMsg = '';
+      if (it.off) diag('標的', `${it.id || '未命名'} 停用`);
+      else { diag('標的', `${it.id || '未命名'} 恢復使用`); ackTrend(it); }   // 停用期間的狀態變化不補跳提醒,恢復時從現在的狀態開始看
+      break;
+    }
     case 'del-instrument': {
       const it = findInstrumentByKey(id);
       if (!it) break;
@@ -8007,7 +8029,7 @@ function onClick(el){
       const twin = state.instruments.some(x => x.key !== it.key && x.id === it.id);
       const used = twin ? 0 : state.trades.filter(t => t.symbol === it.id).length;
       if (used){
-        levMsg = '「' + (it.id || '未命名') + '」還有 ' + used + ' 筆買賣紀錄,先把那些紀錄刪掉或改成別的代號。';
+        levMsg = '「' + (it.id || '未命名') + '」還有 ' + used + ' 筆買賣紀錄,先把那些紀錄刪掉或改成別的代號。只是不想再看它的訊號的話,展開它按「停用」就好,紀錄會留著。';
         break;
       }
       if ((it.id || (it.priceHistory || []).length) && needsConfirm('del-instrument:' + id)) return;
@@ -8173,7 +8195,7 @@ function onClick(el){
     case 'ack-hold': { // 曝險卡片的「已調整完成」:兩檔正2 一起確認,跟按提醒的「知道了」效果一樣
       // 接刀只用自有資金(兩檔分開)時只確認卡片上列的那幾檔:另一檔剛出場的提醒不能被順手按掉
       const only = el.dataset.v ? new Set(String(el.dataset.v).split(',')) : null;
-      state.instruments.filter(it => it.leverage === 2 && (!only || only.has(it.key))).forEach(ackTrend);
+      activeInstruments().filter(it => it.leverage === 2 && (!only || only.has(it.key))).forEach(ackTrend);
       break;
     }
     case 'ack-trend': {
